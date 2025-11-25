@@ -30,18 +30,8 @@ func LoadCookieFile(path string) ([]*http.Cookie, error) {
 	}
 	defer file.Close()
 
-	// Check file permissions for security
-	info, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat cookie file: %w", err)
-	}
-
-	// Warn about insecure permissions (group or world readable)
-	mode := info.Mode().Perm()
-	if mode&0077 != 0 {
-		// Note: We log a warning but still proceed. Caller may want to display this.
-		// For now, we just continue reading the file.
-	}
+	// Note: File permissions can be checked separately via CheckCookieFilePermissions() if desired.
+	// We don't log here since we don't have access to the IO streams.
 
 	var cookies []*http.Cookie
 	scanner := bufio.NewScanner(file)
@@ -175,11 +165,12 @@ func cookieMatchesURL(cookie *http.Cookie, targetURL *url.URL) bool {
 	if path == "" {
 		path = "/"
 	}
-	if !strings.HasPrefix(targetURL.Path, path) {
-		// Special case: path "/" matches everything
-		if path != "/" {
-			return false
-		}
+	targetPath := targetURL.Path
+	if targetPath == "" {
+		targetPath = "/"
+	}
+	if !strings.HasPrefix(targetPath, path) {
+		return false
 	}
 
 	// Check secure flag
@@ -209,7 +200,7 @@ func CheckCookieFilePermissions(path string) error {
 	}
 
 	mode := info.Mode().Perm()
-	if mode&0077 != 0 {
+	if mode&0o077 != 0 {
 		return fmt.Errorf("cookie file %s has insecure permissions %o, should be 0600 or more restrictive", path, mode)
 	}
 

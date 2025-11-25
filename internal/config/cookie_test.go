@@ -28,6 +28,7 @@ func TestLoadCookieFile(t *testing.T) {
 `,
 			expectedLen: 1,
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
+				t.Helper()
 				if cookies[0].Name != "session_id" {
 					t.Errorf("expected cookie name 'session_id', got '%s'", cookies[0].Name)
 				}
@@ -51,6 +52,7 @@ gitlab.com	FALSE	/api	TRUE	0	api_token	token456
 `,
 			expectedLen: 3,
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
+				t.Helper()
 				if cookies[0].Name != "_gitlab_session" {
 					t.Errorf("expected first cookie name '_gitlab_session', got '%s'", cookies[0].Name)
 				}
@@ -92,6 +94,7 @@ malformed line without enough fields
 `,
 			expectedLen: 1,
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
+				t.Helper()
 				if !cookies[0].Expires.IsZero() {
 					t.Error("expected session cookie with zero expiration")
 				}
@@ -103,8 +106,10 @@ malformed line without enough fields
 `,
 			expectedLen: 1,
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
-				if cookies[0].Value != "val%20ue%3D%26test" {
-					t.Errorf("expected value 'val%%20ue%%3D%%26test', got '%s'", cookies[0].Value)
+				t.Helper()
+				expected := "val%20ue%3D%26test"
+				if cookies[0].Value != expected {
+					t.Errorf("expected value '%s', got '%s'", expected, cookies[0].Value)
 				}
 			},
 		},
@@ -114,7 +119,7 @@ malformed line without enough fields
 		t.Run(tt.name, func(t *testing.T) {
 			// Create temp file
 			cookieFile := filepath.Join(tmpDir, tt.name+".txt")
-			err := os.WriteFile(cookieFile, []byte(tt.content), 0600)
+			err := os.WriteFile(cookieFile, []byte(tt.content), 0o600)
 			if err != nil {
 				t.Fatalf("failed to create test file: %v", err)
 			}
@@ -144,12 +149,9 @@ func TestLoadCookieFile_NonExistent(t *testing.T) {
 }
 
 func TestExpandPath(t *testing.T) {
-	// Save and restore HOME
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-
-	os.Setenv("HOME", "/home/testuser")
-	os.Setenv("TEST_VAR", "testvalue")
+	// Use t.Setenv which automatically restores the original value
+	t.Setenv("HOME", "/home/testuser")
+	t.Setenv("TEST_VAR", "testvalue")
 
 	tests := []struct {
 		name     string
@@ -338,7 +340,7 @@ func TestCheckCookieFilePermissions(t *testing.T) {
 
 	t.Run("secure permissions", func(t *testing.T) {
 		secureFile := filepath.Join(tmpDir, "secure_cookies.txt")
-		err := os.WriteFile(secureFile, []byte("test"), 0600)
+		err := os.WriteFile(secureFile, []byte("test"), 0o600)
 		if err != nil {
 			t.Fatalf("failed to create file: %v", err)
 		}
@@ -351,7 +353,7 @@ func TestCheckCookieFilePermissions(t *testing.T) {
 
 	t.Run("insecure permissions", func(t *testing.T) {
 		insecureFile := filepath.Join(tmpDir, "insecure_cookies.txt")
-		err := os.WriteFile(insecureFile, []byte("test"), 0644)
+		err := os.WriteFile(insecureFile, []byte("test"), 0o644)
 		if err != nil {
 			t.Fatalf("failed to create file: %v", err)
 		}
