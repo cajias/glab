@@ -35,9 +35,10 @@ type LoginOptions struct {
 
 	Interactive bool
 
-	Hostname string
-	Token    string
-	JobToken string
+	Hostname   string
+	Token      string
+	JobToken   string
+	CookieFile string
 
 	ApiHost     string
 	ApiProtocol string
@@ -151,6 +152,7 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 	cmd.Flags().StringVarP(&opts.ApiHost, "api-host", "a", "", "API host url.")
 	cmd.Flags().StringVarP(&opts.ApiProtocol, "api-protocol", "p", "", "API protocol: https, http")
 	cmd.Flags().StringVarP(&opts.GitProtocol, "git-protocol", "g", "", "Git protocol: ssh, https, http")
+	cmd.Flags().StringVar(&opts.CookieFile, "cookie-file", "", "Path to a Netscape/Mozilla format cookie file for IdP/SSO authentication.")
 
 	return cmd
 }
@@ -196,6 +198,13 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 				}
 			}
 
+			if opts.CookieFile != "" {
+				err = cfg.Set(opts.Hostname, "cookie_file", opts.CookieFile)
+				if err != nil {
+					return err
+				}
+			}
+
 			return cfg.Write()
 		}
 
@@ -230,6 +239,13 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 
 			if opts.GitProtocol != "" {
 				err = cfg.Set(opts.Hostname, "git_protocol", opts.GitProtocol)
+				if err != nil {
+					return err
+				}
+			}
+
+			if opts.CookieFile != "" {
+				err = cfg.Set(opts.Hostname, "cookie_file", opts.CookieFile)
 				if err != nil {
 					return err
 				}
