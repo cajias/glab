@@ -38,6 +38,10 @@ hosts:
         # - name: Cf-Access-Client-Secret
         #   valueFromEnv: MY_SECRET_VALUE
         custom_headers: []
+        # Path to a Netscape/Mozilla format cookie file for IdP/SSO authentication.
+        # Used when GitLab is deployed behind an identity provider requiring browser-based SAML authentication.
+        # Example: ~/.idp/cookie
+        cookie_file:
 # Use aliases to create nicknames for glab commands. Supports shell-executable aliases that may not be glab commands.
 aliases:
     ci: pipeline ci

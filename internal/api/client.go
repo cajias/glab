@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"strconv"
@@ -45,6 +46,8 @@ type Client struct {
 	// client certificate files
 	clientCertFile string
 	clientKeyFile  string
+	// cookie file for IdP/SSO authentication
+	cookieFile string
 
 	baseURL    string
 	authSource gitlab.AuthSource
@@ -203,7 +206,44 @@ func (c *Client) initializeHTTPClient() error {
 	}
 
 	c.httpClient = &http.Client{Transport: rt}
+
+	// Configure cookie jar if cookie file is provided
+	if c.cookieFile != "" {
+		jar, err := c.createCookieJar()
+		if err != nil {
+			return fmt.Errorf("failed to create cookie jar: %w", err)
+		}
+		c.httpClient.Jar = jar
+	}
+
 	return nil
+}
+
+// createCookieJar creates a cookie jar and loads cookies from the configured cookie file.
+func (c *Client) createCookieJar() (http.CookieJar, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
+	}
+
+	cookies, err := config.LoadCookieFile(c.cookieFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load cookies from file: %w", err)
+	}
+
+	// Parse the base URL to set cookies for the correct domain
+	baseURL, err := url.Parse(c.baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse base URL: %w", err)
+	}
+
+	// Filter cookies that match the target URL and add them to the jar
+	matchingCookies := config.GetCookiesForURL(cookies, baseURL)
+	if len(matchingCookies) > 0 {
+		jar.SetCookies(baseURL, matchingCookies)
+	}
+
+	return jar, nil
 }
 
 // WithCustomHeaders is a ClientOption that sets custom headers
@@ -271,6 +311,15 @@ func WithUserAgent(userAgent string) ClientOption {
 	}
 }
 
+// WithCookieFile configures the client to use cookies from a Netscape/Mozilla format cookie file.
+// This is useful for GitLab instances behind identity providers requiring browser-based SAML authentication.
+func WithCookieFile(cookieFile string) ClientOption {
+	return func(c *Client) error {
+		c.cookieFile = cookieFile
+		return nil
+	}
+}
+
 // NewClientFromConfig initializes the global api with the config data
 func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, userAgent string) (*Client, error) {
 	apiHost, _ := cfg.Get(repoHost, "api_host")
@@ -292,6 +341,7 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 	caCert, _ := cfg.Get(repoHost, "ca_cert")
 	clientCert, _ := cfg.Get(repoHost, "client_cert")
 	keyFile, _ := cfg.Get(repoHost, "client_key")
+	cookieFile, _ := cfg.Get(repoHost, "cookie_file")
 
 	// Build options based on configuration
 	options := []ClientOption{
@@ -346,6 +396,10 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 
 	if skipTlsVerify {
 		options = append(options, WithInsecureSkipVerify(skipTlsVerify))
+	}
+
+	if cookieFile != "" {
+		options = append(options, WithCookieFile(cookieFile))
 	}
 
 	return NewClient(newAuthSource, options...)

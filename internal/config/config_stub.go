@@ -164,6 +164,15 @@ func rootConfig() *yaml.Node {
 										Kind:  yaml.SequenceNode,
 										Value: "",
 									},
+									{
+										HeadComment: "# Path to a Netscape/Mozilla format cookie file for IdP/SSO authentication.\n# Used when GitLab is deployed behind an identity provider requiring browser-based SAML authentication.\n# Example: ~/.idp/cookie",
+										Kind:        yaml.ScalarNode,
+										Value:       "cookie_file",
+									},
+									{
+										Kind:  yaml.ScalarNode,
+										Value: "",
+									},
 								},
 							},
 						},
