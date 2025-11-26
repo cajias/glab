@@ -32,7 +32,7 @@ jobs:
           - os: ubuntu-latest
             goos: linux
             goarch: arm64
-          - os: macos-latest
+          - os: macos-13
             goos: darwin
             goarch: amd64
           - os: macos-latest
@@ -65,7 +65,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: glab-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: glab-*
+          path: glab-${{ matrix.goos }}-${{ matrix.goarch }}*
 
   release:
     needs: build
