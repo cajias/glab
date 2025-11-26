@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -23,6 +24,18 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/oauth2"
 	"gitlab.com/gitlab-org/cli/internal/utils"
 )
+
+// SSORedirectError is returned when a mutating request (POST/PUT/PATCH/DELETE) is being
+// redirected to a different host (typically an IdP for SSO authentication).
+// This allows the caller to complete the SSO flow with a GET request and retry the original request.
+type SSORedirectError struct {
+	RedirectURL string
+	Method      string
+}
+
+func (e *SSORedirectError) Error() string {
+	return fmt.Sprintf("SSO redirect detected for %s request to %s", e.Method, e.RedirectURL)
+}
 
 // ClientOption represents a function that configures a Client
 type ClientOption func(*Client) error
@@ -61,6 +74,71 @@ type Client struct {
 
 func (c *Client) HTTPClient() *http.Client {
 	return c.httpClient
+}
+
+// DoWithSSORetry performs an HTTP request with automatic SSO redirect handling.
+// For mutating requests (POST/PUT/PATCH/DELETE) that are redirected to an IdP for SSO,
+// this method completes the SSO flow with a GET request and retries the original request.
+func (c *Client) DoWithSSORetry(req *http.Request) (*http.Response, error) {
+	// Save request body for potential retry (only for mutating methods)
+	var bodyBytes []byte
+	if req.Body != nil && isMutatingMethod(req.Method) {
+		var err error
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err == nil {
+		return resp, nil
+	}
+
+	// Check if this is an SSO redirect error
+	var ssoErr *SSORedirectError
+	if !errors.As(err, &ssoErr) {
+		return nil, err
+	}
+
+	// Complete SSO flow with a GET request (which the IdP expects)
+	ctx := req.Context()
+	ssoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ssoErr.RedirectURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SSO request: %w", err)
+	}
+
+	ssoResp, err := c.httpClient.Do(ssoReq)
+	if err != nil {
+		return nil, fmt.Errorf("SSO flow failed: %w", err)
+	}
+	// Consume and close the response body
+	_, _ = io.Copy(io.Discard, ssoResp.Body)
+	ssoResp.Body.Close()
+
+	// Retry the original request with fresh cookies from the jar.
+	// CRITICAL: Do NOT copy the original Cookie header - let the cookie jar provide
+	// the fresh session cookies that were set during the SSO flow.
+	retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create retry request: %w", err)
+	}
+
+	// Copy headers BUT NOT the Cookie header
+	for key, values := range req.Header {
+		if !strings.EqualFold(key, "Cookie") {
+			retryReq.Header[key] = values
+		}
+	}
+
+	return c.httpClient.Do(retryReq)
+}
+
+// isMutatingMethod returns true if the HTTP method modifies data (POST, PUT, PATCH, DELETE).
+func isMutatingMethod(method string) bool {
+	return method == http.MethodPost || method == http.MethodPut ||
+		method == http.MethodPatch || method == http.MethodDelete
 }
 
 // AuthSource returns the auth source
@@ -207,13 +285,47 @@ func (c *Client) initializeHTTPClient() error {
 
 	c.httpClient = &http.Client{Transport: rt}
 
-	// Configure cookie jar if cookie file is provided
+	// Configure cookie jar and SSO redirect handling if cookie file is provided
 	if c.cookieFile != "" {
 		jar, err := c.createCookieJar()
 		if err != nil {
 			return fmt.Errorf("failed to create cookie jar: %w", err)
 		}
 		c.httpClient.Jar = jar
+
+		// Add custom redirect handler for SSO authentication.
+		// When using cookie-based auth, mutating requests (POST/PUT/PATCH/DELETE) may be
+		// redirected to an IdP for SSO authentication. The IdP expects GET requests
+		// (browser-based OAuth flow), not the original method. We detect this and return
+		// an SSORedirectError so the caller can complete the SSO flow with GET and retry.
+		c.httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+
+			if len(via) == 0 {
+				return nil
+			}
+
+			originalReq := via[0]
+			originalHost := originalReq.URL.Host
+			newHost := req.URL.Host
+
+			// For mutating methods redirecting to a different host (IdP), stop redirect
+			// and return SSORedirectError so the caller can handle SSO flow
+			if originalHost != newHost {
+				method := originalReq.Method
+				if method == http.MethodPost || method == http.MethodPut ||
+					method == http.MethodPatch || method == http.MethodDelete {
+					return &SSORedirectError{
+						RedirectURL: req.URL.String(),
+						Method:      method,
+					}
+				}
+			}
+
+			return nil
+		}
 	}
 
 	return nil
