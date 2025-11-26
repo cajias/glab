@@ -313,14 +313,10 @@ func (c *Client) initializeHTTPClient() error {
 
 			// For mutating methods redirecting to a different host (IdP), stop redirect
 			// and return SSORedirectError so the caller can handle SSO flow
-			if originalHost != newHost {
-				method := originalReq.Method
-				if method == http.MethodPost || method == http.MethodPut ||
-					method == http.MethodPatch || method == http.MethodDelete {
-					return &SSORedirectError{
-						RedirectURL: req.URL.String(),
-						Method:      method,
-					}
+			if originalHost != newHost && isMutatingMethod(originalReq.Method) {
+				return &SSORedirectError{
+					RedirectURL: req.URL.String(),
+					Method:      originalReq.Method,
 				}
 			}
 
