@@ -231,16 +231,25 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 		return nil, fmt.Errorf("failed to load cookies from file: %w", err)
 	}
 
-	// Parse the base URL to set cookies for the correct domain
-	baseURL, err := url.Parse(c.baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse base URL: %w", err)
+	// Group cookies by domain and add them to the jar.
+	// We need to load ALL cookies (not just those matching the base URL) because
+	// the request may be redirected to an identity provider (e.g., SAML/SSO) on
+	// a different domain, and those redirects need the IdP cookies to authenticate.
+	domainCookies := make(map[string][]*http.Cookie)
+	for _, cookie := range cookies {
+		// Normalize domain - remove leading dot for URL construction
+		domain := strings.TrimPrefix(cookie.Domain, ".")
+		domainCookies[domain] = append(domainCookies[domain], cookie)
 	}
 
-	// Filter cookies that match the target URL and add them to the jar
-	matchingCookies := config.GetCookiesForURL(cookies, baseURL)
-	if len(matchingCookies) > 0 {
-		jar.SetCookies(baseURL, matchingCookies)
+	// Add cookies to jar for each domain
+	for domain, domainCookieList := range domainCookies {
+		domainURL, err := url.Parse("https://" + domain + "/")
+		if err != nil {
+			// Invalid domain format - skip this domain as it won't be usable anyway
+			continue
+		}
+		jar.SetCookies(domainURL, domainCookieList)
 	}
 
 	return jar, nil
