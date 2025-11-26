@@ -17,7 +17,7 @@ func TestCreateCookieJar_MultipleDomains(t *testing.T) {
 	cookieFile := filepath.Join(tmpDir, "cookies.txt")
 
 	// Use a future timestamp (now + 1 year) for cookie expiration
-	futureTimestamp := time.Now().Add(365 * 24 * time.Hour).Unix()
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
 
 	// Create a cookie file with cookies for multiple domains (simulating IdP/SSO scenario)
 	// This includes:
@@ -102,7 +102,7 @@ func TestCreateCookieJar_DomainWithLeadingDot(t *testing.T) {
 	cookieFile := filepath.Join(tmpDir, "cookies.txt")
 
 	// Use a future timestamp (now + 1 year) for cookie expiration
-	futureTimestamp := time.Now().Add(365 * 24 * time.Hour).Unix()
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
 
 	// Create a cookie file with domains that have leading dots (subdomain matching)
 	cookieContent := fmt.Sprintf(`.example.com	TRUE	/	TRUE	%d	root_cookie	value1

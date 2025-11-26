@@ -246,6 +246,7 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 	for domain, domainCookieList := range domainCookies {
 		domainURL, err := url.Parse("https://" + domain + "/")
 		if err != nil {
+			// Invalid domain format - skip this domain as it won't be usable anyway
 			continue
 		}
 		jar.SetCookies(domainURL, domainCookieList)
