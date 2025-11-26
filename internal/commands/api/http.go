@@ -79,7 +79,7 @@ func httpRequest(ctx context.Context, client *api.Client, method, p string, para
 	if err != nil {
 		return nil, err
 	}
-	return client.HTTPClient().Do(req)
+	return client.DoWithSSORetry(req)
 }
 
 func groupGraphQLVariables(params map[string]any) map[string]any {
