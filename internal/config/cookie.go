@@ -41,9 +41,20 @@ func LoadCookieFile(path string) ([]*http.Cookie, error) {
 		lineNum++
 		line := scanner.Text()
 
-		// Skip empty lines and comments
+		// Skip empty lines
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
+			continue
+		}
+
+		// Handle #HttpOnly_ prefix - this is a valid cookie with HttpOnly flag
+		// See https://curl.se/docs/http-cookies.html
+		httpOnly := false
+		if strings.HasPrefix(line, "#HttpOnly_") {
+			line = strings.TrimPrefix(line, "#HttpOnly_")
+			httpOnly = true
+		} else if strings.HasPrefix(line, "#") {
+			// Skip regular comments
 			continue
 		}
 
@@ -53,6 +64,7 @@ func LoadCookieFile(path string) ([]*http.Cookie, error) {
 			continue
 		}
 
+		cookie.HttpOnly = httpOnly
 		cookies = append(cookies, cookie)
 	}
 

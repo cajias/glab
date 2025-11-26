@@ -113,6 +113,57 @@ malformed line without enough fields
 				}
 			},
 		},
+		{
+			name: "httponly cookie with #HttpOnly_ prefix",
+			content: `# Netscape HTTP Cookie File
+#HttpOnly_.example.com	TRUE	/	TRUE	1735689600	session_id	abc123
+.example.com	TRUE	/	TRUE	1735689600	regular_cookie	def456
+`,
+			expectedLen: 2,
+			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
+				t.Helper()
+				// First cookie should have HttpOnly flag set
+				if cookies[0].Name != "session_id" {
+					t.Errorf("expected first cookie name 'session_id', got '%s'", cookies[0].Name)
+				}
+				if !cookies[0].HttpOnly {
+					t.Error("expected first cookie to have HttpOnly flag set")
+				}
+				if cookies[0].Domain != ".example.com" {
+					t.Errorf("expected domain '.example.com', got '%s'", cookies[0].Domain)
+				}
+				// Second cookie should NOT have HttpOnly flag
+				if cookies[1].Name != "regular_cookie" {
+					t.Errorf("expected second cookie name 'regular_cookie', got '%s'", cookies[1].Name)
+				}
+				if cookies[1].HttpOnly {
+					t.Error("expected second cookie to NOT have HttpOnly flag set")
+				}
+			},
+		},
+		{
+			name: "httponly cookies for multiple domains",
+			content: `# Netscape HTTP Cookie File
+#HttpOnly_.gitlab.example.com	TRUE	/	TRUE	1735689600	_gitlab_session	sess123
+#HttpOnly_.idp.example.com	TRUE	/	TRUE	1735689600	sso_token	idp456
+.gitlab.example.com	TRUE	/	TRUE	1735689600	known_sign_in	true
+`,
+			expectedLen: 3,
+			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
+				t.Helper()
+				// First and second cookies should have HttpOnly flag
+				if !cookies[0].HttpOnly {
+					t.Error("expected first cookie to have HttpOnly flag set")
+				}
+				if !cookies[1].HttpOnly {
+					t.Error("expected second cookie to have HttpOnly flag set")
+				}
+				// Third cookie should NOT have HttpOnly flag
+				if cookies[2].HttpOnly {
+					t.Error("expected third cookie to NOT have HttpOnly flag set")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
