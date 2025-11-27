@@ -1,0 +1,321 @@
+//go:build !integration
+
+package api
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestSSOTransport_NoRedirect(t *testing.T) {
+	// Setup test server that returns success immediately
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status": "success"}`))
+	}))
+	defer server.Close()
+
+	// Create a simple client without cookie file (transport should pass through)
+	client := &Client{
+		baseURL: server.URL,
+	}
+	err := client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v4/projects", bytes.NewBufferString(`{"name": "test"}`))
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+}
+
+func TestSSOTransport_WithSSOFlow(t *testing.T) {
+	// Track request counts
+	var gitlabRequestCount int32
+	var idpRequestCount int32
+
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&idpRequestCount, 1)
+		// IdP should only receive GET requests
+		if r.Method != http.MethodGet {
+			t.Errorf("IdP received %s request, expected GET", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&gitlabRequestCount, 1)
+		if count == 1 {
+			// First request: redirect to IdP
+			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+			return
+		}
+		// Second request: success (after SSO flow)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Use a future timestamp
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+
+	// Create cookie file with cookies for both servers
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Verify that ssoTransport is being used
+	if _, ok := client.httpClient.Transport.(*ssoTransport); !ok {
+		t.Fatal("expected ssoTransport to be used when cookie file is configured")
+	}
+
+	// Make a POST request directly through the HTTP client (simulates gitlab.Client behavior)
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify we got the success response
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
+	}
+
+	// Verify IdP received a GET request (SSO flow)
+	if atomic.LoadInt32(&idpRequestCount) != 1 {
+		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
+	}
+
+	// Verify GitLab received 2 requests (initial + retry)
+	if atomic.LoadInt32(&gitlabRequestCount) != 2 {
+		t.Errorf("expected 2 GitLab requests, got %d", gitlabRequestCount)
+	}
+}
+
+func TestSSOTransport_PreservesRequestBody(t *testing.T) {
+	var receivedBodies []string
+
+	// Create GitLab server that captures request bodies
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		receivedBodies = append(receivedBodies, string(bodyBytes))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Use a future timestamp
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request with a body
+	expectedBody := `{"important": "data"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(expectedBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify the body was received correctly
+	if len(receivedBodies) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(receivedBodies))
+	}
+	if receivedBodies[0] != expectedBody {
+		t.Errorf("expected body %q, got %q", expectedBody, receivedBodies[0])
+	}
+}
+
+func TestSSOTransport_HeadersPreserved(t *testing.T) {
+	var receivedHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Use a future timestamp
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v4/projects", nil)
+	req.Header.Set("X-Custom-Header", "custom-value")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer token123")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify custom headers were preserved
+	if receivedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("X-Custom-Header not preserved: got %q", receivedHeaders.Get("X-Custom-Header"))
+	}
+	if receivedHeaders.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type not preserved: got %q", receivedHeaders.Get("Content-Type"))
+	}
+	if receivedHeaders.Get("Authorization") != "Bearer token123" {
+		t.Errorf("Authorization not preserved: got %q", receivedHeaders.Get("Authorization"))
+	}
+}
+
+func TestSSOTransport_GETRequestNotIntercepted(t *testing.T) {
+	// Track request counts
+	var requestCount int32
+
+	// Create server that would trigger SSO redirect for POST but not GET
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status": "success"}`))
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Use a future timestamp
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a GET request
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v4/projects", nil)
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify only one request was made (no retry)
+	if atomic.LoadInt32(&requestCount) != 1 {
+		t.Errorf("expected 1 request for GET, got %d", requestCount)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+}
+
+func TestSSOTransport_NotSetWithoutCookieFile(t *testing.T) {
+	client := &Client{
+		baseURL: "https://example.com/api/v4",
+		// No cookie file configured
+	}
+
+	err := client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// ssoTransport should NOT be used when no cookie file is configured
+	if _, ok := client.httpClient.Transport.(*ssoTransport); ok {
+		t.Error("ssoTransport should not be used when cookie file is not configured")
+	}
+}
