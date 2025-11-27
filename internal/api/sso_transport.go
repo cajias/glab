@@ -28,8 +28,8 @@ func isRedirectResponse(statusCode int) bool {
 	return statusCode >= 300 && statusCode < 400
 }
 
-// isSSOREdirect returns true if the redirect is to a different host (IdP).
-func isSSOREdirect(originalHost, locationHeader string) bool {
+// isSSORedirect returns true if the redirect is to a different host (IdP).
+func isSSORedirect(originalHost, locationHeader string) bool {
 	if locationHeader == "" {
 		return false
 	}
@@ -76,7 +76,7 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	location := resp.Header.Get("Location")
-	if !isSSOREdirect(req.URL.Host, location) {
+	if !isSSORedirect(req.URL.Host, location) {
 		return resp, nil
 	}
 
