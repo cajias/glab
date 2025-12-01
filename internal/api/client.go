@@ -293,12 +293,10 @@ func (c *Client) initializeHTTPClient() error {
 		}
 		c.httpClient.Jar = jar
 
-		// Add custom redirect handler for SSO authentication.
-		// When using cookie-based auth, mutating requests (POST/PUT/PATCH/DELETE) may be
-		// redirected to an IdP for SSO authentication. The IdP expects GET requests
-		// (browser-based OAuth flow), not the original method. We detect this and return
-		// an SSORedirectError so the caller can complete the SSO flow with GET and retry.
-		c.httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// Create the CheckRedirect handler for limiting redirects and SSO detection.
+		// For mutating methods redirecting to different host (IdP), this returns
+		// SSORedirectError for backward compatibility with DoWithSSORetry.
+		checkRedirect := func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("stopped after 10 redirects")
 			}
@@ -321,6 +319,32 @@ func (c *Client) initializeHTTPClient() error {
 			}
 
 			return nil
+		}
+		c.httpClient.CheckRedirect = checkRedirect
+
+		// Create a separate ssoClient that uses the underlying transport directly.
+		// This client shares the same cookie jar but doesn't use ssoTransport,
+		// avoiding infinite loops when completing the SSO flow.
+		ssoClient := &http.Client{
+			Transport: rt, // Use underlying transport, NOT ssoTransport
+			Jar:       jar,
+			// Limit redirects to prevent infinite redirect loops during SSO flow
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				return nil
+			},
+		}
+
+		// Wrap the transport with ssoTransport for automatic SSO handling.
+		// This ensures all requests (including those from gitlab.Client library)
+		// automatically complete the SSO flow when needed.
+		// The ssoTransport detects redirects at the response level (before http.Client
+		// processes them with CheckRedirect), allowing it to handle SSO seamlessly.
+		c.httpClient.Transport = &ssoTransport{
+			rt:        rt,
+			ssoClient: ssoClient,
 		}
 	}
 
