@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -59,7 +60,7 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		var err error
 		bodyBytes, err = io.ReadAll(req.Body)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read request body: %w", err)
 		}
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
@@ -88,19 +89,19 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Resolve the absolute URL for the redirect location
 	redirectURL, err := req.URL.Parse(location)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse redirect URL: %w", err)
 	}
 
 	// Complete SSO flow with a GET request (which the IdP expects)
 	ctx := req.Context()
 	ssoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, redirectURL.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create SSO request: %w", err)
 	}
 
 	ssoResp, err := t.ssoClient.Do(ssoReq)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("SSO flow request failed: %w", err)
 	}
 	// Consume and close the response body
 	_, _ = io.Copy(io.Discard, ssoResp.Body)
@@ -111,7 +112,7 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// the fresh session cookies that were set during the SSO flow.
 	retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create retry request: %w", err)
 	}
 
 	// Copy headers BUT NOT the Cookie header

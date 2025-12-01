@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -317,5 +318,113 @@ func TestSSOTransport_NotSetWithoutCookieFile(t *testing.T) {
 	// ssoTransport should NOT be used when no cookie file is configured
 	if _, ok := client.httpClient.Transport.(*ssoTransport); ok {
 		t.Error("ssoTransport should not be used when cookie file is not configured")
+	}
+}
+
+func TestSSOTransport_SSOFlowFails(t *testing.T) {
+	// Create IdP server that returns an error
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("IdP error"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server that redirects to IdP
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Always redirect to IdP
+		http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Use a future timestamp
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request - should complete SSO flow but IdP returns error
+	// The SSO flow should still succeed (we just consume the IdP response)
+	// and the retry should be attempted
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Even though IdP returned 500, the SSO flow completed and retry was attempted
+	// The retry will get another redirect (since our test server always redirects)
+	// But that's expected - the important thing is that errors are handled gracefully
+	// and the flow doesn't crash
+}
+
+func TestSSOTransport_SSOFlowConnectionFails(t *testing.T) {
+	// Create GitLab server that redirects to a non-existent IdP
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Redirect to non-existent server
+		http.Redirect(w, r, "http://127.0.0.1:1/oauth/authorize", http.StatusFound)
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Use a future timestamp
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request - SSO flow should fail because IdP is unreachable
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	_, err = client.httpClient.Do(req)
+	if err == nil {
+		t.Fatal("expected error when SSO flow fails, got nil")
+	}
+
+	// Verify the error message contains context about SSO flow failure
+	if !strings.Contains(err.Error(), "SSO flow request failed") {
+		t.Errorf("expected error to contain 'SSO flow request failed', got: %v", err)
 	}
 }

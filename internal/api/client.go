@@ -328,7 +328,13 @@ func (c *Client) initializeHTTPClient() error {
 		ssoClient := &http.Client{
 			Transport: rt, // Use underlying transport, NOT ssoTransport
 			Jar:       jar,
-			// Don't use the same CheckRedirect - allow normal redirects for SSO flow
+			// Limit redirects to prevent infinite redirect loops during SSO flow
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				return nil
+			},
 		}
 
 		// Wrap the transport with ssoTransport for automatic SSO handling.
