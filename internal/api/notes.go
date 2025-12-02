@@ -4,6 +4,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -64,8 +65,10 @@ func isJSONArrayUnmarshalError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for the specific unmarshal type error
-	if unmarshalErr, ok := err.(*json.UnmarshalTypeError); ok {
+	// Check for the specific unmarshal type error using errors.As
+	// to properly handle wrapped errors
+	var unmarshalErr *json.UnmarshalTypeError
+	if errors.As(err, &unmarshalErr) {
 		return unmarshalErr.Value == "array"
 	}
 	return false
