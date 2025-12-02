@@ -15,6 +15,12 @@ import (
 // This function handles both single note and array responses from the GitLab API,
 // as some self-hosted GitLab instances return an array instead of a single object.
 //
+// Note: When the fallback to listing notes is used, there is a potential race condition
+// in high-concurrency environments where multiple notes are being created simultaneously.
+// The function retrieves the most recently created note, which may not be the one just created
+// if another note was created in between. This is an acceptable trade-off for handling
+// non-standard API responses from certain GitLab instances.
+//
 // Attention: this is a global variable and may be overridden in tests.
 var CreateMergeRequestNote = func(client *gitlab.Client, projectID string, mrID int64, opts *gitlab.CreateMergeRequestNoteOptions) (*gitlab.Note, error) {
 	note, resp, err := client.Notes.CreateMergeRequestNote(projectID, mrID, opts)
@@ -38,6 +44,12 @@ var CreateMergeRequestNote = func(client *gitlab.Client, projectID string, mrID 
 // CreateIssueNote creates a note on an issue.
 // This function handles both single note and array responses from the GitLab API,
 // as some self-hosted GitLab instances return an array instead of a single object.
+//
+// Note: When the fallback to listing notes is used, there is a potential race condition
+// in high-concurrency environments where multiple notes are being created simultaneously.
+// The function retrieves the most recently created note, which may not be the one just created
+// if another note was created in between. This is an acceptable trade-off for handling
+// non-standard API responses from certain GitLab instances.
 //
 // Attention: this is a global variable and may be overridden in tests.
 var CreateIssueNote = func(client *gitlab.Client, projectID string, issueID int64, opts *gitlab.CreateIssueNoteOptions) (*gitlab.Note, error) {
