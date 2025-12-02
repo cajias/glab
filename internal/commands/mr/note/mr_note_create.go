@@ -70,7 +70,7 @@ func NewCmdNote(f cmdutils.Factory) *cobra.Command {
 				}
 			}
 
-			noteInfo, _, err := client.Notes.CreateMergeRequestNote(repo.FullName(), mr.IID, &gitlab.CreateMergeRequestNoteOptions{Body: &body})
+			noteInfo, err := api.CreateMergeRequestNote(client, repo.FullName(), mr.IID, &gitlab.CreateMergeRequestNoteOptions{Body: &body})
 			if err != nil {
 				return err
 			}

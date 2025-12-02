@@ -85,6 +85,61 @@ func Test_NewCmdNote(t *testing.T) {
 		assert.NotNil(t, err)
 		assert.Equal(t, "failed to get merge request 122: 404 Not Found", err.Error())
 	})
+
+	t.Run("API returns array instead of single note", func(t *testing.T) {
+		// Some GitLab instances return an array of notes instead of a single note
+		// when creating a note. The API should handle this gracefully.
+		fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests/2/notes",
+			httpmock.NewStringResponse(http.StatusCreated, `
+		[
+			{
+				"id": 401,
+				"created_at": "2024-01-02T08:57:14Z",
+				"updated_at": "2024-01-02T08:57:14Z",
+				"system": false,
+				"noteable_id": 2,
+				"noteable_type": "MergeRequest",
+				"noteable_iid": 2,
+				"body": "Test comment"
+			}
+		]
+	`))
+
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/2",
+			httpmock.NewStringResponse(http.StatusOK, `
+		{
+  			"id": 2,
+  			"iid": 2,
+			"web_url": "https://gitlab.com/OWNER/REPO/merge_requests/2"
+		}
+	`))
+
+		// When array is returned, we fall back to listing notes
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/2/notes",
+			httpmock.NewStringResponse(http.StatusOK, `
+		[
+			{
+				"id": 401,
+				"created_at": "2024-01-02T08:57:14Z",
+				"updated_at": "2024-01-02T08:57:14Z",
+				"system": false,
+				"noteable_id": 2,
+				"noteable_type": "MergeRequest",
+				"noteable_iid": 2,
+				"body": "Test comment"
+			}
+		]
+	`))
+
+		// glab mr note 2 --message "Test comment"
+		output, err := runCommand(t, fakeHTTP, `2 --message "Test comment"`)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		assert.Equal(t, output.Stderr(), "")
+		assert.Equal(t, output.String(), "https://gitlab.com/OWNER/REPO/merge_requests/2#note_401\n")
+	})
 }
 
 func Test_NewCmdNote_error(t *testing.T) {
