@@ -85,6 +85,61 @@ func Test_NewCmdNote(t *testing.T) {
 		assert.NotNil(t, err)
 		assert.Equal(t, "failed to get merge request 122: 404 Not Found", err.Error())
 	})
+
+	t.Run("API returns array instead of single note", func(t *testing.T) {
+		// Some GitLab instances return an array of notes instead of a single note
+		// when creating a note. The API should handle this gracefully.
+		fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests/2/notes",
+			httpmock.NewStringResponse(http.StatusCreated, `
+		[
+			{
+				"id": 401,
+				"created_at": "2024-01-02T08:57:14Z",
+				"updated_at": "2024-01-02T08:57:14Z",
+				"system": false,
+				"noteable_id": 2,
+				"noteable_type": "MergeRequest",
+				"noteable_iid": 2,
+				"body": "Test comment"
+			}
+		]
+	`))
+
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/2",
+			httpmock.NewStringResponse(http.StatusOK, `
+		{
+  			"id": 2,
+  			"iid": 2,
+			"web_url": "https://gitlab.com/OWNER/REPO/merge_requests/2"
+		}
+	`))
+
+		// When array is returned, we fall back to listing notes
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/2/notes",
+			httpmock.NewStringResponse(http.StatusOK, `
+		[
+			{
+				"id": 401,
+				"created_at": "2024-01-02T08:57:14Z",
+				"updated_at": "2024-01-02T08:57:14Z",
+				"system": false,
+				"noteable_id": 2,
+				"noteable_type": "MergeRequest",
+				"noteable_iid": 2,
+				"body": "Test comment"
+			}
+		]
+	`))
+
+		// glab mr note 2 --message "Test comment"
+		output, err := runCommand(t, fakeHTTP, `2 --message "Test comment"`)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		assert.Equal(t, output.Stderr(), "")
+		assert.Equal(t, output.String(), "https://gitlab.com/OWNER/REPO/merge_requests/2#note_401\n")
+	})
 }
 
 func Test_NewCmdNote_error(t *testing.T) {
@@ -215,5 +270,142 @@ func Test_mrNoteCreate_no_duplicate(t *testing.T) {
 		println(output.String())
 		assert.Equal(t, output.Stderr(), "")
 		assert.Equal(t, output.String(), "https://gitlab.com/OWNER/REPO/merge_requests/1#note_222\n")
+	})
+}
+
+// Test_mrNote_ArrayResponse_Regression tests the regression fix for GitLab instances
+// that return an array of notes instead of a single note when creating a note.
+// This is the main regression test for the issue:
+// "glab mr note/comment fails with JSON unmarshal error"
+func Test_mrNote_ArrayResponse_Regression(t *testing.T) {
+	fakeHTTP := httpmock.New()
+	defer fakeHTTP.Verify(t)
+
+	t.Run("API returns array with multiple notes", func(t *testing.T) {
+		// Register the merge request lookup
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/3",
+			httpmock.NewStringResponse(http.StatusOK, `
+		{
+  			"id": 3,
+  			"iid": 3,
+			"web_url": "https://gitlab.com/OWNER/REPO/merge_requests/3"
+		}
+	`))
+
+		// The POST request returns an array with multiple notes (buggy GitLab behavior)
+		fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests/3/notes",
+			httpmock.NewStringResponse(http.StatusCreated, `
+		[
+			{
+				"id": 100,
+				"created_at": "2024-01-01T08:00:00Z",
+				"body": "Old comment"
+			},
+			{
+				"id": 200,
+				"created_at": "2024-01-02T08:00:00Z",
+				"body": "Newer comment"
+			},
+			{
+				"id": 501,
+				"created_at": "2024-01-03T08:57:14Z",
+				"body": "My new comment"
+			}
+		]
+	`))
+
+		// Fallback: listing notes to get the most recent one
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/3/notes",
+			httpmock.NewStringResponse(http.StatusOK, `
+		[
+			{
+				"id": 501,
+				"created_at": "2024-01-03T08:57:14Z",
+				"body": "My new comment"
+			}
+		]
+	`))
+
+		output, err := runCommand(t, fakeHTTP, `3 --message "My new comment"`)
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+			return
+		}
+		assert.Equal(t, "", output.Stderr())
+		assert.Equal(t, "https://gitlab.com/OWNER/REPO/merge_requests/3#note_501\n", output.String())
+	})
+
+	t.Run("API returns array with single note", func(t *testing.T) {
+		// Register the merge request lookup
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/4",
+			httpmock.NewStringResponse(http.StatusOK, `
+		{
+  			"id": 4,
+  			"iid": 4,
+			"web_url": "https://gitlab.com/OWNER/REPO/merge_requests/4"
+		}
+	`))
+
+		// The POST request returns an array with single note
+		fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests/4/notes",
+			httpmock.NewStringResponse(http.StatusCreated, `
+		[
+			{
+				"id": 601,
+				"created_at": "2024-01-03T08:57:14Z",
+				"body": "Single array note"
+			}
+		]
+	`))
+
+		// Fallback: listing notes to get the most recent one
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/4/notes",
+			httpmock.NewStringResponse(http.StatusOK, `
+		[
+			{
+				"id": 601,
+				"created_at": "2024-01-03T08:57:14Z",
+				"body": "Single array note"
+			}
+		]
+	`))
+
+		output, err := runCommand(t, fakeHTTP, `4 --message "Single array note"`)
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+			return
+		}
+		assert.Equal(t, "", output.Stderr())
+		assert.Equal(t, "https://gitlab.com/OWNER/REPO/merge_requests/4#note_601\n", output.String())
+	})
+
+	t.Run("normal single object response still works", func(t *testing.T) {
+		// Register the merge request lookup
+		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests/5",
+			httpmock.NewStringResponse(http.StatusOK, `
+		{
+  			"id": 5,
+  			"iid": 5,
+			"web_url": "https://gitlab.com/OWNER/REPO/merge_requests/5"
+		}
+	`))
+
+		// Normal response: single object (not array)
+		fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests/5/notes",
+			httpmock.NewStringResponse(http.StatusCreated, `
+		{
+			"id": 701,
+			"created_at": "2024-01-03T08:57:14Z",
+			"body": "Normal single object response"
+		}
+	`))
+
+		output, err := runCommand(t, fakeHTTP, `5 --message "Normal single object response"`)
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+			return
+		}
+		assert.Equal(t, "", output.Stderr())
+		assert.Equal(t, "https://gitlab.com/OWNER/REPO/merge_requests/5#note_701\n", output.String())
 	})
 }
