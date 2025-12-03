@@ -36,9 +36,15 @@ type ssoTransport struct {
 // balance between following legitimate redirect chains and preventing infinite loops.
 const maxRedirects = 10
 
-// isRedirectResponse returns true if the response is a redirect status code.
-func isRedirectResponse(statusCode int) bool {
-	return statusCode >= 300 && statusCode < 400
+// requiresMethodPreservation returns true if the status code is one that causes
+// standard HTTP clients to convert POST to GET. Per HTTP spec:
+// - 301, 302, 303: clients typically change POST to GET (historical behavior)
+// - 307, 308: clients MUST preserve the original method
+// We only need to intervene for 301/302/303; 307/308 already preserve the method.
+func requiresMethodPreservation(statusCode int) bool {
+	return statusCode == http.StatusMovedPermanently || // 301
+		statusCode == http.StatusFound || // 302
+		statusCode == http.StatusSeeOther // 303
 }
 
 // isSSORedirect returns true if the redirect is to a different host (IdP).
@@ -85,8 +91,9 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	// Check if this is a redirect for a mutating method
-	if !isRedirectResponse(resp.StatusCode) || !isMutatingMethod(req.Method) {
+	// Check if this is a redirect that requires method preservation for a mutating method.
+	// We only intervene for 301/302/303 redirects since 307/308 already preserve the method.
+	if !requiresMethodPreservation(resp.StatusCode) || !isMutatingMethod(req.Method) {
 		return resp, nil
 	}
 
@@ -141,9 +148,9 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		return nil, fmt.Errorf("failed to create retry request: %w", err)
 	}
 
-	// Copy headers BUT NOT the Cookie header
+	// Copy headers, excluding those that should be managed by the HTTP client
 	for key, values := range req.Header {
-		if !strings.EqualFold(key, "Cookie") {
+		if !shouldExcludeHeader(key) {
 			retryReq.Header[key] = values
 		}
 	}
@@ -175,15 +182,19 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 			return t.handleSSORedirect(req, nil, redirectURL.String(), bodyBytes)
 		}
 
-		// Create a new request with the same method and body
+		// Create a new request with the same method and body.
+		// We create a fresh bytes.Reader for each redirect because the reader
+		// position needs to be reset to read the body again for each request.
 		redirectReq, err := http.NewRequestWithContext(ctx, req.Method, redirectURL.String(), bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create redirect request: %w", err)
 		}
 
-		// Copy headers BUT NOT the Cookie header (let the cookie jar handle it)
+		// Copy headers, excluding those that should be managed by the HTTP client:
+		// - Cookie: let the cookie jar handle it
+		// - Content-Length: will be recalculated based on the body
 		for key, values := range req.Header {
-			if !strings.EqualFold(key, "Cookie") {
+			if !shouldExcludeHeader(key) {
 				redirectReq.Header[key] = values
 			}
 		}
@@ -194,8 +205,8 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 			return nil, err
 		}
 
-		// Check if we need to follow another redirect
-		if !isRedirectResponse(resp.StatusCode) {
+		// Check if we need to follow another redirect (only for 301/302/303)
+		if !requiresMethodPreservation(resp.StatusCode) {
 			return resp, nil
 		}
 
@@ -214,4 +225,10 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 	}
 
 	return nil, fmt.Errorf("stopped after %d redirects", maxRedirects)
+}
+
+// shouldExcludeHeader returns true if the header should not be copied to redirect requests.
+// These headers are either managed by the HTTP client or need to be recalculated.
+func shouldExcludeHeader(key string) bool {
+	return strings.EqualFold(key, "Cookie") || strings.EqualFold(key, "Content-Length")
 }

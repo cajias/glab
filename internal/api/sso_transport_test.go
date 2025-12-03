@@ -763,3 +763,65 @@ func TestSSOTransport_SameHostToSSORedirect(t *testing.T) {
 		t.Errorf("expected 3 GitLab requests, got %d", gitlabRequestCount)
 	}
 }
+
+func TestSSOTransport_307Redirect_NotIntercepted(t *testing.T) {
+	// 307 Temporary Redirect already preserves method per HTTP spec,
+	// so we should NOT intercept it - let the standard client handle it.
+	requestCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		// Return a 307 redirect - this should be handled by the standard client
+		if r.URL.Path == "/start" {
+			w.Header().Set("Location", "/final")
+			w.WriteHeader(http.StatusTemporaryRedirect) // 307
+			return
+		}
+		// The redirect should preserve the method
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST at %s, got %s", r.URL.Path, r.Method)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that gets a 307 redirect
+	body := `{"body": "Test note"}`
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify we got the success response
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
+	}
+}
