@@ -428,3 +428,254 @@ func TestSSOTransport_SSOFlowConnectionFails(t *testing.T) {
 		t.Errorf("expected error to contain 'SSO flow request failed', got: %v", err)
 	}
 }
+
+func TestSSOTransport_SameHostRedirect_PreservesMethod(t *testing.T) {
+	// Track the method received at the final endpoint
+	var receivedMethod string
+	var receivedBody string
+	requestCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path == "/redirect" {
+			// Redirect to the same host (relative URL)
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		// Final endpoint - capture method and body
+		receivedMethod = r.Method
+		if r.Body != nil {
+			bodyBytes, _ := io.ReadAll(r.Body)
+			receivedBody = string(bodyBytes)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123, "body": "Note created"}`))
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Use a future timestamp
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that will be redirected
+	body := `{"body": "Test note"}`
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/redirect", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify the final endpoint received POST (not GET)
+	if receivedMethod != http.MethodPost {
+		t.Errorf("expected method POST at final endpoint, got %s", receivedMethod)
+	}
+
+	// Verify the body was preserved
+	if receivedBody != body {
+		t.Errorf("expected body %q, got %q", body, receivedBody)
+	}
+
+	// Verify we got the success response
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
+	}
+
+	// Verify 2 requests were made (initial + follow redirect)
+	if requestCount != 2 {
+		t.Errorf("expected 2 requests, got %d", requestCount)
+	}
+}
+
+func TestSSOTransport_SameHostRedirect_MultipleRedirects(t *testing.T) {
+	// Track requests
+	requestCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch r.URL.Path {
+		case "/redirect1":
+			http.Redirect(w, r, "/redirect2", http.StatusFound)
+		case "/redirect2":
+			http.Redirect(w, r, "/redirect3", http.StatusMovedPermanently)
+		case "/redirect3":
+			http.Redirect(w, r, "/final", http.StatusSeeOther)
+		default:
+			// Verify POST method is preserved
+			if r.Method != http.MethodPost {
+				t.Errorf("expected POST at %s, got %s", r.URL.Path, r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status": "ok"}`))
+		}
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that will be redirected multiple times
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/redirect1", strings.NewReader(`{"test": "data"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+
+	// 4 requests: initial + 3 redirects
+	if requestCount != 4 {
+		t.Errorf("expected 4 requests, got %d", requestCount)
+	}
+}
+
+func TestSSOTransport_SameHostRedirect_MaxRedirectsExceeded(t *testing.T) {
+	// Create a server that always redirects
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/next", http.StatusFound)
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that will redirect forever
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/start", strings.NewReader(`{"test": "data"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	_, err = client.httpClient.Do(req)
+	if err == nil {
+		t.Fatal("expected error for too many redirects, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "stopped after") && !strings.Contains(err.Error(), "redirects") {
+		t.Errorf("expected error about max redirects, got: %v", err)
+	}
+}
+
+func TestSSOTransport_GETNotAffected(t *testing.T) {
+	// Verify that GET requests still work normally with redirects
+	var receivedMethod string
+	requestCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		receivedMethod = r.Method
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"id": 1}, {"id": 2}]`))
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a GET request that will be redirected
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/redirect", nil)
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// GET requests should work normally
+	if receivedMethod != http.MethodGet {
+		t.Errorf("expected GET at final endpoint, got %s", receivedMethod)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+}

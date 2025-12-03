@@ -8,14 +8,21 @@ import (
 	"strings"
 )
 
-// ssoTransport is an http.RoundTripper that handles SSO authentication redirects.
+// ssoTransport is an http.RoundTripper that handles SSO authentication redirects
+// and preserves HTTP methods for mutating requests during redirects.
+//
 // When a mutating request (POST/PUT/PATCH/DELETE) receives a redirect response
 // to a different host (typically an IdP for SSO), this transport completes the
 // SSO flow with a GET request and retries the original request.
 //
+// For same-host redirects, it follows the redirect while preserving the original
+// HTTP method and request body. This is necessary because Go's http.Client
+// converts POST to GET for 302/303 redirects by default (per HTTP spec), which
+// breaks APIs that use redirects while expecting the method to be preserved.
+//
 // This allows all HTTP requests (including those from the gitlab.Client library)
-// to automatically handle SSO authentication without requiring special handling
-// at the caller level.
+// to automatically handle SSO authentication and method-preserving redirects
+// without requiring special handling at the caller level.
 type ssoTransport struct {
 	// rt is the underlying RoundTripper (typically http.Transport)
 	rt http.RoundTripper
@@ -23,6 +30,9 @@ type ssoTransport struct {
 	// It shares the same cookie jar but uses the underlying transport.
 	ssoClient *http.Client
 }
+
+// maxRedirects is the maximum number of redirects to follow for same-host redirects.
+const maxRedirects = 10
 
 // isRedirectResponse returns true if the response is a redirect status code.
 func isRedirectResponse(statusCode int) bool {
@@ -52,7 +62,9 @@ func isSSORedirect(originalHost, locationHeader string) bool {
 }
 
 // RoundTrip implements http.RoundTripper.
-// It performs the request and handles SSO redirects for mutating methods.
+// It performs the request and handles redirects for mutating methods:
+// - For cross-host (SSO) redirects: completes SSO flow with GET, then retries original request
+// - For same-host redirects: follows redirect while preserving HTTP method and body
 func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Save request body for potential retry (only for mutating methods)
 	var bodyBytes []byte
@@ -71,17 +83,25 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	// Check if this is a redirect to a different host for a mutating method
+	// Check if this is a redirect for a mutating method
 	if !isRedirectResponse(resp.StatusCode) || !isMutatingMethod(req.Method) {
 		return resp, nil
 	}
 
 	location := resp.Header.Get("Location")
-	if !isSSORedirect(req.URL.Host, location) {
-		return resp, nil
+
+	// Handle cross-host SSO redirects
+	if isSSORedirect(req.URL.Host, location) {
+		return t.handleSSORedirect(req, resp, location, bodyBytes)
 	}
 
-	// This is an SSO redirect - we need to complete the SSO flow
+	// Handle same-host redirects - follow the redirect while preserving the method
+	return t.handleSameHostRedirect(req, resp, location, bodyBytes)
+}
+
+// handleSSORedirect handles cross-host redirects to an IdP for SSO authentication.
+// It completes the SSO flow with a GET request and then retries the original request.
+func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response, location string, bodyBytes []byte) (*http.Response, error) {
 	// Close the redirect response body first
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -123,4 +143,69 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	return t.ssoClient.Do(retryReq)
+}
+
+// handleSameHostRedirect handles same-host redirects while preserving the HTTP method and body.
+// This prevents the default HTTP client behavior of converting POST to GET for 302/303 redirects.
+func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Response, location string, bodyBytes []byte) (*http.Response, error) {
+	// Close the redirect response body first
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	ctx := req.Context()
+	currentURL := req.URL
+
+	// Follow redirects, preserving the method
+	for redirectCount := 0; redirectCount < maxRedirects; redirectCount++ {
+		// Resolve the redirect URL
+		redirectURL, err := currentURL.Parse(location)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse redirect URL: %w", err)
+		}
+
+		// Check if this redirect goes to a different host (SSO)
+		if isSSORedirect(req.URL.Host, redirectURL.String()) {
+			// This is now an SSO redirect - handle it
+			return t.handleSSORedirect(req, nil, redirectURL.String(), bodyBytes)
+		}
+
+		// Create a new request with the same method and body
+		redirectReq, err := http.NewRequestWithContext(ctx, req.Method, redirectURL.String(), bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create redirect request: %w", err)
+		}
+
+		// Copy headers BUT NOT the Cookie header (let the cookie jar handle it)
+		for key, values := range req.Header {
+			if !strings.EqualFold(key, "Cookie") {
+				redirectReq.Header[key] = values
+			}
+		}
+
+		// Perform the redirect request
+		resp, err = t.rt.RoundTrip(redirectReq)
+		if err != nil {
+			return nil, err
+		}
+
+		// Check if we need to follow another redirect
+		if !isRedirectResponse(resp.StatusCode) {
+			return resp, nil
+		}
+
+		// Get the next location and continue the loop
+		location = resp.Header.Get("Location")
+		if location == "" {
+			// No location header - return the response as is
+			return resp, nil
+		}
+
+		// Close the response body before following the next redirect
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		currentURL = redirectURL
+	}
+
+	return nil, fmt.Errorf("stopped after %d redirects", maxRedirects)
 }
