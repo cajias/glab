@@ -32,6 +32,8 @@ type ssoTransport struct {
 }
 
 // maxRedirects is the maximum number of redirects to follow for same-host redirects.
+// This matches the default limit used by Go's http.Client and provides a reasonable
+// balance between following legitimate redirect chains and preventing infinite loops.
 const maxRedirects = 10
 
 // isRedirectResponse returns true if the response is a redirect status code.
@@ -101,10 +103,14 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // handleSSORedirect handles cross-host redirects to an IdP for SSO authentication.
 // It completes the SSO flow with a GET request and then retries the original request.
+// The resp parameter may be nil if called from handleSameHostRedirect (where the
+// response body has already been closed).
 func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response, location string, bodyBytes []byte) (*http.Response, error) {
-	// Close the redirect response body first
-	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	// Close the redirect response body first (if present)
+	if resp != nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
 
 	// Resolve the absolute URL for the redirect location
 	redirectURL, err := req.URL.Parse(location)

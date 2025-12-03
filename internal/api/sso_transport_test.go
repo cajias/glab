@@ -679,3 +679,87 @@ func TestSSOTransport_GETNotAffected(t *testing.T) {
 		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
 	}
 }
+
+func TestSSOTransport_SameHostToSSORedirect(t *testing.T) {
+	// Test the scenario where a same-host redirect leads to an SSO redirect
+	var gitlabRequestCount, idpRequestCount int32
+
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&idpRequestCount, 1)
+		// IdP should receive GET request
+		if r.Method != http.MethodGet {
+			t.Errorf("IdP received %s request, expected GET", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server that first redirects locally, then to IdP
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&gitlabRequestCount, 1)
+		switch count {
+		case 1:
+			// First request: redirect to another path on same host
+			http.Redirect(w, r, "/step2", http.StatusFound)
+		case 2:
+			// Second request: redirect to IdP
+			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+		default:
+			// Third request (after SSO): success
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id": 456}`))
+		}
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that goes through same-host redirect then SSO redirect
+	body := `{"body": "Test note"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify we got the success response
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
+	}
+
+	// Verify IdP received exactly one GET request
+	if atomic.LoadInt32(&idpRequestCount) != 1 {
+		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
+	}
+
+	// Verify GitLab received 3 requests: initial, same-host redirect, and retry after SSO
+	if atomic.LoadInt32(&gitlabRequestCount) != 3 {
+		t.Errorf("expected 3 GitLab requests, got %d", gitlabRequestCount)
+	}
+}
