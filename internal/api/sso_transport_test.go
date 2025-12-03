@@ -825,3 +825,88 @@ func TestSSOTransport_307Redirect_NotIntercepted(t *testing.T) {
 		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
 	}
 }
+
+// TestRegression_MergeRequestNotesEndpoint_PreservesPostMethod is a regression test
+// for issue #14: POST to merge_requests/notes was returning GET response (array)
+// instead of creating a note. The root cause was that same-host 302 redirects
+// were being handled by Go's default HTTP client which converts POST to GET.
+func TestRegression_MergeRequestNotesEndpoint_PreservesPostMethod(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate GitLab redirecting the notes endpoint (common pattern)
+		if r.URL.Path == "/api/v4/projects/456/merge_requests/332/notes" && r.URL.RawQuery == "" {
+			http.Redirect(w, r, "/api/v4/projects/456/merge_requests/332/notes?internal=1", http.StatusFound)
+			return
+		}
+
+		// After redirect, verify we still have POST method
+		if r.Method == http.MethodGet {
+			// This is the bug behavior - return array (GET response)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"id": 1, "body": "existing note"}]`))
+			return
+		}
+
+		// Correct behavior - POST creates a new note
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id": 12345, "body": "Test comment", "author": {"name": "user"}}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// POST to notes endpoint - this is the exact scenario from issue #14
+	body := `{"body": "Test comment"}`
+	req, _ := http.NewRequest(http.MethodPost,
+		server.URL+"/api/v4/projects/456/merge_requests/332/notes",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// CRITICAL: Verify we get 201 Created (not 200 OK with array)
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("regression: expected status %d (Created), got %d - POST may have been converted to GET",
+			http.StatusCreated, resp.StatusCode)
+	}
+
+	// Verify response is a single object, not an array
+	respBody, _ := io.ReadAll(resp.Body)
+	if bytes.HasPrefix(respBody, []byte("[")) {
+		t.Error("regression: received array response, POST was likely converted to GET")
+	}
+
+	// Verify we got the expected note response
+	if !bytes.Contains(respBody, []byte(`"id": 12345`)) {
+		t.Errorf("regression: unexpected response body: %s", string(respBody))
+	}
+}
