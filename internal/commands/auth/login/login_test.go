@@ -48,21 +48,17 @@ func Test_NewCmdLogin(t *testing.T) {
 			stdinTTY: true,
 		},
 		{
-			name: "nontty, hostname",
-			cli:  "--hostname salsa.debian.org --token dummy-token",
-			wants: LoginOptions{
-				Hostname: "salsa.debian.org",
-				Token:    "dummy-token",
-			},
+			name:     "nontty, hostname",
+			cli:      "--hostname salsa.debian.org",
+			wantsErr: true,
+			err:      "could not get sign-in type",
 			stdinTTY: false,
 		},
 		{
-			name: "nontty",
-			cli:  "--token dummy-token",
-			wants: LoginOptions{
-				Hostname: "gitlab.com",
-				Token:    "dummy-token",
-			},
+			name:     "nontty",
+			cli:      "",
+			wantsErr: true,
+			err:      "could not prompt",
 			stdinTTY: false,
 		},
 		{
