@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"strconv"
@@ -22,6 +24,18 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/oauth2"
 	"gitlab.com/gitlab-org/cli/internal/utils"
 )
+
+// SSORedirectError is returned when a mutating request (POST/PUT/PATCH/DELETE) is being
+// redirected to a different host (typically an IdP for SSO authentication).
+// This allows the caller to complete the SSO flow with a GET request and retry the original request.
+type SSORedirectError struct {
+	RedirectURL string
+	Method      string
+}
+
+func (e *SSORedirectError) Error() string {
+	return fmt.Sprintf("SSO redirect detected for %s request to %s", e.Method, e.RedirectURL)
+}
 
 // ClientOption represents a function that configures a Client
 type ClientOption func(*Client) error
@@ -45,6 +59,8 @@ type Client struct {
 	// client certificate files
 	clientCertFile string
 	clientKeyFile  string
+	// cookie file for IdP/SSO authentication
+	cookieFile string
 
 	baseURL    string
 	authSource gitlab.AuthSource
@@ -58,6 +74,71 @@ type Client struct {
 
 func (c *Client) HTTPClient() *http.Client {
 	return c.httpClient
+}
+
+// DoWithSSORetry performs an HTTP request with automatic SSO redirect handling.
+// For mutating requests (POST/PUT/PATCH/DELETE) that are redirected to an IdP for SSO,
+// this method completes the SSO flow with a GET request and retries the original request.
+func (c *Client) DoWithSSORetry(req *http.Request) (*http.Response, error) {
+	// Save request body for potential retry (only for mutating methods)
+	var bodyBytes []byte
+	if req.Body != nil && isMutatingMethod(req.Method) {
+		var err error
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err == nil {
+		return resp, nil
+	}
+
+	// Check if this is an SSO redirect error
+	var ssoErr *SSORedirectError
+	if !errors.As(err, &ssoErr) {
+		return nil, err
+	}
+
+	// Complete SSO flow with a GET request (which the IdP expects)
+	ctx := req.Context()
+	ssoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ssoErr.RedirectURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SSO request: %w", err)
+	}
+
+	ssoResp, err := c.httpClient.Do(ssoReq)
+	if err != nil {
+		return nil, fmt.Errorf("SSO flow failed: %w", err)
+	}
+	// Consume and close the response body
+	_, _ = io.Copy(io.Discard, ssoResp.Body)
+	ssoResp.Body.Close()
+
+	// Retry the original request with fresh cookies from the jar.
+	// CRITICAL: Do NOT copy the original Cookie header - let the cookie jar provide
+	// the fresh session cookies that were set during the SSO flow.
+	retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create retry request: %w", err)
+	}
+
+	// Copy headers BUT NOT the Cookie header
+	for key, values := range req.Header {
+		if !strings.EqualFold(key, "Cookie") {
+			retryReq.Header[key] = values
+		}
+	}
+
+	return c.httpClient.Do(retryReq)
+}
+
+// isMutatingMethod returns true if the HTTP method modifies data (POST, PUT, PATCH, DELETE).
+func isMutatingMethod(method string) bool {
+	return method == http.MethodPost || method == http.MethodPut ||
+		method == http.MethodPatch || method == http.MethodDelete
 }
 
 // AuthSource returns the auth source
@@ -203,7 +284,107 @@ func (c *Client) initializeHTTPClient() error {
 	}
 
 	c.httpClient = &http.Client{Transport: rt}
+
+	// Configure cookie jar and SSO redirect handling if cookie file is provided
+	if c.cookieFile != "" {
+		jar, err := c.createCookieJar()
+		if err != nil {
+			return fmt.Errorf("failed to create cookie jar: %w", err)
+		}
+		c.httpClient.Jar = jar
+
+		// Create the CheckRedirect handler for limiting redirects and SSO detection.
+		// For mutating methods redirecting to different host (IdP), this returns
+		// SSORedirectError for backward compatibility with DoWithSSORetry.
+		checkRedirect := func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+
+			if len(via) == 0 {
+				return nil
+			}
+
+			originalReq := via[0]
+			originalHost := originalReq.URL.Host
+			newHost := req.URL.Host
+
+			// For mutating methods redirecting to a different host (IdP), stop redirect
+			// and return SSORedirectError so the caller can handle SSO flow
+			if originalHost != newHost && isMutatingMethod(originalReq.Method) {
+				return &SSORedirectError{
+					RedirectURL: req.URL.String(),
+					Method:      originalReq.Method,
+				}
+			}
+
+			return nil
+		}
+		c.httpClient.CheckRedirect = checkRedirect
+
+		// Create a separate ssoClient that uses the underlying transport directly.
+		// This client shares the same cookie jar but doesn't use ssoTransport,
+		// avoiding infinite loops when completing the SSO flow.
+		ssoClient := &http.Client{
+			Transport: rt, // Use underlying transport, NOT ssoTransport
+			Jar:       jar,
+			// Limit redirects to prevent infinite redirect loops during SSO flow
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				return nil
+			},
+		}
+
+		// Wrap the transport with ssoTransport for automatic SSO handling.
+		// This ensures all requests (including those from gitlab.Client library)
+		// automatically complete the SSO flow when needed.
+		// The ssoTransport detects redirects at the response level (before http.Client
+		// processes them with CheckRedirect), allowing it to handle SSO seamlessly.
+		c.httpClient.Transport = &ssoTransport{
+			rt:        rt,
+			ssoClient: ssoClient,
+		}
+	}
+
 	return nil
+}
+
+// createCookieJar creates a cookie jar and loads cookies from the configured cookie file.
+func (c *Client) createCookieJar() (http.CookieJar, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
+	}
+
+	cookies, err := config.LoadCookieFile(c.cookieFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load cookies from file: %w", err)
+	}
+
+	// Group cookies by domain and add them to the jar.
+	// We need to load ALL cookies (not just those matching the base URL) because
+	// the request may be redirected to an identity provider (e.g., SAML/SSO) on
+	// a different domain, and those redirects need the IdP cookies to authenticate.
+	domainCookies := make(map[string][]*http.Cookie)
+	for _, cookie := range cookies {
+		// Normalize domain - remove leading dot for URL construction
+		domain := strings.TrimPrefix(cookie.Domain, ".")
+		domainCookies[domain] = append(domainCookies[domain], cookie)
+	}
+
+	// Add cookies to jar for each domain
+	for domain, domainCookieList := range domainCookies {
+		domainURL, err := url.Parse("https://" + domain + "/")
+		if err != nil {
+			// Invalid domain format - skip this domain as it won't be usable anyway
+			continue
+		}
+		jar.SetCookies(domainURL, domainCookieList)
+	}
+
+	return jar, nil
 }
 
 // WithCustomHeaders is a ClientOption that sets custom headers
@@ -271,6 +452,15 @@ func WithUserAgent(userAgent string) ClientOption {
 	}
 }
 
+// WithCookieFile configures the client to use cookies from a Netscape/Mozilla format cookie file.
+// This is useful for GitLab instances behind identity providers requiring browser-based SAML authentication.
+func WithCookieFile(cookieFile string) ClientOption {
+	return func(c *Client) error {
+		c.cookieFile = cookieFile
+		return nil
+	}
+}
+
 // NewClientFromConfig initializes the global api with the config data
 func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, userAgent string) (*Client, error) {
 	apiHost, _ := cfg.Get(repoHost, "api_host")
@@ -292,6 +482,7 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 	caCert, _ := cfg.Get(repoHost, "ca_cert")
 	clientCert, _ := cfg.Get(repoHost, "client_cert")
 	keyFile, _ := cfg.Get(repoHost, "client_key")
+	cookieFile, _ := cfg.Get(repoHost, "cookie_file")
 
 	// Build options based on configuration
 	options := []ClientOption{
@@ -357,6 +548,10 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 
 	if skipTlsVerify {
 		options = append(options, WithInsecureSkipVerify(skipTlsVerify))
+	}
+
+	if cookieFile != "" {
+		options = append(options, WithCookieFile(cookieFile))
 	}
 
 	return NewClient(newAuthSource, options...)
