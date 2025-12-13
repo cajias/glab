@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/shlex"
@@ -210,6 +211,30 @@ func Test_NewCmdApi(t *testing.T) {
 			},
 			wantsErr: false,
 		},
+		{
+			name:     "invalid output format",
+			cli:      "projects --output xml",
+			wantsErr: true,
+		},
+		{
+			name: "valid ndjson output format",
+			cli:  "projects --output ndjson",
+			wants: options{
+				hostname:            "",
+				requestMethod:       http.MethodGet,
+				requestMethodPassed: false,
+				requestPath:         "projects",
+				requestInputFile:    "",
+				rawFields:           []string(nil),
+				magicFields:         []string(nil),
+				requestHeaders:      []string(nil),
+				showResponseHeaders: false,
+				paginate:            false,
+				silent:              false,
+				outputFormat:        "ndjson",
+			},
+			wantsErr: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -374,6 +399,42 @@ func Test_apiRun(t *testing.T) {
 			stdout: "HTTP/1.1 200 Okey-dokey\nContent-Type: text/plain\r\n\r\n",
 			stderr: ``,
 		},
+		{
+			name: "REST empty array errors",
+			httpResponse: &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"errors": []}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+			},
+			err:    cmdutils.SilentError,
+			stdout: `{"errors": []}`,
+			stderr: "glab: HTTP 400\n",
+		},
+		{
+			name: "REST nested array errors",
+			httpResponse: &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"errors": [["nested", "error"]]}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+			},
+			err:    cmdutils.SilentError,
+			stdout: `{"errors": [["nested", "error"]]}`,
+			stderr: "glab: HTTP 400\n",
+		},
+		{
+			name: "GraphQL error with empty errors array",
+			options: options{
+				requestPath: "graphql",
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"errors": []}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+			},
+			err:    nil,
+			stdout: `{"errors": []}`,
+			stderr: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -517,6 +578,7 @@ func Test_apiRun_paginationGraphQL(t *testing.T) {
 		requestMethod: http.MethodPost,
 		requestPath:   "graphql",
 		paginate:      true,
+		outputFormat:  "json",
 	}
 
 	err := options.run(t.Context())
@@ -544,6 +606,391 @@ func Test_apiRun_paginationGraphQL(t *testing.T) {
 	endCursor, hasCursor := requestData.Variables["endCursor"].(string)
 	assert.Equal(t, true, hasCursor)
 	assert.Equal(t, "PAGE1_END", endCursor)
+}
+
+// Test_apiRun_paginationGraphQL_bodyNotConsumedTwice verifies that the GraphQL
+// pagination flow doesn't consume the response body twice, ensuring cursor
+// extraction and output both work correctly.
+func Test_apiRun_paginationGraphQL_bodyNotConsumedTwice(t *testing.T) {
+	t.Parallel()
+
+	ios, _, stdout, stderr := cmdtest.TestIOStreams()
+
+	requestCount := 0
+	responses := []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{`application/json`}},
+			Body: io.NopCloser(bytes.NewBufferString(`{
+				"data": {
+					"project": {
+						"issues": {
+							"nodes": [
+								{"id": "1", "title": "First issue"}
+							],
+							"pageInfo": {
+								"endCursor": "CURSOR_PAGE_1",
+								"hasNextPage": true
+							}
+						}
+					}
+				}
+			}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{`application/json`}},
+			Body: io.NopCloser(bytes.NewBufferString(`{
+				"data": {
+					"project": {
+						"issues": {
+							"nodes": [
+								{"id": "2", "title": "Second issue"}
+							],
+							"pageInfo": {
+								"endCursor": "CURSOR_PAGE_2",
+								"hasNextPage": false
+							}
+						}
+					}
+				}
+			}`)),
+		},
+	}
+
+	var tr roundTripFunc = func(req *http.Request) (*http.Response, error) {
+		resp := responses[requestCount]
+		resp.Request = req
+		requestCount++
+		return resp, nil
+	}
+	a := cmdtest.NewTestApiClient(t, &http.Client{Transport: tr}, "OTOKEN", "gitlab.com")
+	options := options{
+		io: ios,
+		baseRepo: func() (glrepo.Interface, error) {
+			return nil, fmt.Errorf("not supposed to be called")
+		},
+		apiClient: func(repoHost string) (*api.Client, error) {
+			return a, nil
+		},
+
+		requestMethod: http.MethodPost,
+		requestPath:   "graphql",
+		paginate:      true,
+		outputFormat:  "json",
+	}
+
+	err := options.run(t.Context())
+	require.NoError(t, err)
+
+	// Verify both pages were output
+	output := stdout.String()
+	assert.Contains(t, output, "First issue")
+	assert.Contains(t, output, "Second issue")
+	assert.Equal(t, "", stderr.String(), "stderr should be empty")
+
+	// Verify exactly 2 requests were made (one per page)
+	assert.Equal(t, 2, requestCount, "expected 2 requests for pagination")
+
+	// Verify the second request included the endCursor from the first page
+	var requestData struct {
+		Variables map[string]any
+	}
+	bb, err := io.ReadAll(responses[1].Request.Body)
+	require.NoError(t, err)
+	err = json.Unmarshal(bb, &requestData)
+	require.NoError(t, err)
+	endCursor, hasCursor := requestData.Variables["endCursor"].(string)
+	assert.True(t, hasCursor, "second request should have endCursor variable")
+	assert.Equal(t, "CURSOR_PAGE_1", endCursor, "endCursor should match first page's endCursor")
+}
+
+// Test_apiRun_paginationGraphQL_emptyResults tests pagination with empty result sets
+func Test_apiRun_paginationGraphQL_emptyResults(t *testing.T) {
+	t.Parallel()
+
+	ios, _, stdout, stderr := cmdtest.TestIOStreams()
+
+	responses := []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{`application/json`}},
+			Body: io.NopCloser(bytes.NewBufferString(`{
+				"data": {
+					"project": {
+						"issues": {
+							"nodes": [],
+							"pageInfo": {
+								"endCursor": "",
+								"hasNextPage": false
+							}
+						}
+					}
+				}
+			}`)),
+		},
+	}
+
+	requestCount := 0
+	var tr roundTripFunc = func(req *http.Request) (*http.Response, error) {
+		resp := responses[requestCount]
+		resp.Request = req
+		requestCount++
+		return resp, nil
+	}
+	a := cmdtest.NewTestApiClient(t, &http.Client{Transport: tr}, "OTOKEN", "gitlab.com")
+	options := options{
+		io: ios,
+		baseRepo: func() (glrepo.Interface, error) {
+			return nil, fmt.Errorf("not supposed to be called")
+		},
+		apiClient: func(repoHost string) (*api.Client, error) {
+			return a, nil
+		},
+
+		requestMethod: http.MethodPost,
+		requestPath:   "graphql",
+		paginate:      true,
+		outputFormat:  "json",
+	}
+
+	err := options.run(t.Context())
+	require.NoError(t, err)
+
+	// Verify empty nodes array is in output
+	output := stdout.String()
+	assert.Contains(t, output, "nodes")
+	assert.Equal(t, "", stderr.String(), "stderr should be empty")
+
+	// Should only make 1 request since hasNextPage is false
+	assert.Equal(t, 1, requestCount, "expected only 1 request for empty results")
+}
+
+// Test_apiRun_paginationGraphQL_withNDJSON verifies that NDJSON output works with GraphQL pagination.
+// With GraphQL, each full response object is output as one line per page (not array elements).
+func Test_apiRun_paginationGraphQL_withNDJSON(t *testing.T) {
+	t.Parallel()
+
+	ios, _, stdout, stderr := cmdtest.TestIOStreams()
+
+	requestCount := 0
+	responses := []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{`application/json`}},
+			Body: io.NopCloser(bytes.NewBufferString(`{
+				"data": {
+					"nodes": [
+						{"id": "1", "title": "Issue 1"}
+					],
+					"pageInfo": {
+						"endCursor": "CURSOR_1",
+						"hasNextPage": true
+					}
+				}
+			}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{`application/json`}},
+			Body: io.NopCloser(bytes.NewBufferString(`{
+				"data": {
+					"nodes": [
+						{"id": "2", "title": "Issue 2"}
+					],
+					"pageInfo": {
+						"endCursor": "CURSOR_2",
+						"hasNextPage": false
+					}
+				}
+			}`)),
+		},
+	}
+
+	var tr roundTripFunc = func(req *http.Request) (*http.Response, error) {
+		resp := responses[requestCount]
+		resp.Request = req
+		requestCount++
+		return resp, nil
+	}
+	a := cmdtest.NewTestApiClient(t, &http.Client{Transport: tr}, "OTOKEN", "gitlab.com")
+	options := options{
+		io: ios,
+		baseRepo: func() (glrepo.Interface, error) {
+			return nil, fmt.Errorf("not supposed to be called")
+		},
+		apiClient: func(repoHost string) (*api.Client, error) {
+			return a, nil
+		},
+
+		requestMethod: http.MethodPost,
+		requestPath:   "graphql",
+		paginate:      true,
+		outputFormat:  "ndjson",
+	}
+
+	err := options.run(t.Context())
+	require.NoError(t, err)
+
+	// NDJSON with GraphQL outputs each full response object as one line
+	output := stdout.String()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+
+	// Each GraphQL response is output as a complete object per line
+	assert.GreaterOrEqual(t, len(lines), 2, "should have at least 2 lines")
+
+	// Verify both issues appear in the output
+	assert.Contains(t, output, "Issue 1")
+	assert.Contains(t, output, "Issue 2")
+	assert.Equal(t, "", stderr.String(), "stderr should be empty")
+
+	// Verify that both pages were fetched
+	assert.Equal(t, 2, requestCount, "should have made 2 requests for pagination")
+}
+
+func Test_apiRun_ndjson(t *testing.T) {
+	t.Parallel()
+
+	ios, _, stdout, stderr := cmdtest.TestIOStreams()
+
+	var tr roundTripFunc = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{`application/json`}},
+			Body:       io.NopCloser(bytes.NewBufferString(`[{"id":1,"title":"Issue 1"},{"id":2,"title":"Issue 2"}]`)),
+			Request:    req,
+		}, nil
+	}
+	a := cmdtest.NewTestApiClient(t, &http.Client{Transport: tr}, "OTOKEN", "gitlab.com")
+	options := options{
+		io: ios,
+		baseRepo: func() (glrepo.Interface, error) {
+			return nil, fmt.Errorf("not supposed to be called")
+		},
+		apiClient: func(repoHost string) (*api.Client, error) {
+			return a, nil
+		},
+		requestPath:  "issues",
+		outputFormat: "ndjson",
+	}
+
+	err := options.run(t.Context())
+	require.NoError(t, err)
+
+	// NDJSON should output each element on a separate line
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	assert.Equal(t, 2, len(lines), "should have 2 lines")
+
+	// Verify each line is valid JSON
+	var obj1, obj2 map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &obj1))
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &obj2))
+
+	assert.Equal(t, float64(1), obj1["id"])
+	assert.Equal(t, "Issue 1", obj1["title"])
+	assert.Equal(t, float64(2), obj2["id"])
+	assert.Equal(t, "Issue 2", obj2["title"])
+	assert.Equal(t, "", stderr.String(), "stderr")
+}
+
+func Test_apiRun_ndjson_singleObject(t *testing.T) {
+	t.Parallel()
+
+	ios, _, stdout, stderr := cmdtest.TestIOStreams()
+
+	var tr roundTripFunc = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{`application/json`}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"id":1,"title":"Single Issue"}`)),
+			Request:    req,
+		}, nil
+	}
+	a := cmdtest.NewTestApiClient(t, &http.Client{Transport: tr}, "OTOKEN", "gitlab.com")
+	options := options{
+		io: ios,
+		baseRepo: func() (glrepo.Interface, error) {
+			return nil, fmt.Errorf("not supposed to be called")
+		},
+		apiClient: func(repoHost string) (*api.Client, error) {
+			return a, nil
+		},
+		requestPath:  "issues/1",
+		outputFormat: "ndjson",
+	}
+
+	err := options.run(t.Context())
+	require.NoError(t, err)
+
+	// Single object should be output as one line
+	output := strings.TrimSpace(stdout.String())
+	assert.Equal(t, 1, len(strings.Split(output, "\n")), "should have 1 line")
+
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal([]byte(output), &obj))
+	assert.Equal(t, float64(1), obj["id"])
+	assert.Equal(t, "Single Issue", obj["title"])
+	assert.Equal(t, "", stderr.String(), "stderr")
+}
+
+func Test_apiRun_ndjson_pagination(t *testing.T) {
+	t.Parallel()
+
+	ios, _, stdout, stderr := cmdtest.TestIOStreams()
+
+	requestCount := 0
+	responses := []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{`application/json`},
+				"Link":         []string{`<https://gitlab.com/api/v4/issues?page=2>; rel="next"`},
+			},
+			Body: io.NopCloser(bytes.NewBufferString(`[{"id":1,"title":"Issue 1"}]`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{`application/json`},
+			},
+			Body: io.NopCloser(bytes.NewBufferString(`[{"id":2,"title":"Issue 2"}]`)),
+		},
+	}
+
+	var tr roundTripFunc = func(req *http.Request) (*http.Response, error) {
+		resp := responses[requestCount]
+		resp.Request = req
+		requestCount++
+		return resp, nil
+	}
+	a := cmdtest.NewTestApiClient(t, &http.Client{Transport: tr}, "OTOKEN", "gitlab.com")
+	options := options{
+		io: ios,
+		baseRepo: func() (glrepo.Interface, error) {
+			return nil, fmt.Errorf("not supposed to be called")
+		},
+		apiClient: func(repoHost string) (*api.Client, error) {
+			return a, nil
+		},
+		requestPath:  "issues",
+		paginate:     true,
+		outputFormat: "ndjson",
+	}
+
+	err := options.run(t.Context())
+	require.NoError(t, err)
+
+	// Should have 2 lines total (one from each page)
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	assert.Equal(t, 2, len(lines), "should have 2 lines from 2 pages")
+
+	var obj1, obj2 map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &obj1))
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &obj2))
+
+	assert.Equal(t, float64(1), obj1["id"])
+	assert.Equal(t, float64(2), obj2["id"])
+	assert.Equal(t, "", stderr.String(), "stderr")
 }
 
 func Test_apiRun_inputFile(t *testing.T) {
@@ -861,6 +1308,350 @@ func Test_fillPlaceholders(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("fillPlaceholders() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_processResponse_bodyConsumption(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		options        options
+		httpResponse   *http.Response
+		expectedCursor string
+		expectError    bool
+		checkStdout    func(t *testing.T, stdout string)
+		checkStderr    func(t *testing.T, stderr string)
+	}{
+		{
+			name: "GraphQL pagination - body read once",
+			options: options{
+				requestPath: "graphql",
+				paginate:    true,
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewBufferString(`{
+					"data": {
+						"issues": ["issue1", "issue2"],
+						"pageInfo": {
+							"endCursor": "CURSOR_123",
+							"hasNextPage": true
+						}
+					}
+				}`)),
+			},
+			expectedCursor: "CURSOR_123",
+			expectError:    false,
+			checkStdout: func(t *testing.T, stdout string) {
+				t.Helper()
+				assert.Contains(t, stdout, "issue")
+			},
+			checkStderr: func(t *testing.T, stderr string) {
+				t.Helper()
+				assert.Empty(t, stderr)
+			},
+		},
+		{
+			name: "GraphQL pagination - no next page",
+			options: options{
+				requestPath: "graphql",
+				paginate:    true,
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewBufferString(`{
+					"data": {
+						"issues": ["issue3"],
+						"pageInfo": {
+							"endCursor": "CURSOR_END",
+							"hasNextPage": false
+						}
+					}
+				}`)),
+			},
+			expectedCursor: "",
+			expectError:    false,
+			checkStdout: func(t *testing.T, stdout string) {
+				t.Helper()
+				assert.Contains(t, stdout, "issue")
+			},
+		},
+		{
+			name: "GraphQL pagination - empty data array",
+			options: options{
+				requestPath: "graphql",
+				paginate:    true,
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewBufferString(`{
+					"data": {
+						"issues": [],
+						"pageInfo": {
+							"endCursor": "",
+							"hasNextPage": false
+						}
+					}
+				}`)),
+			},
+			expectedCursor: "",
+			expectError:    false,
+			checkStdout: func(t *testing.T, stdout string) {
+				t.Helper()
+				assert.Contains(t, stdout, "issues")
+			},
+		},
+		{
+			name: "GraphQL error response with empty errors array",
+			options: options{
+				requestPath: "graphql",
+				paginate:    true,
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewBufferString(`{
+					"data": {
+						"issues": ["issue1"],
+						"pageInfo": {
+							"endCursor": "CURSOR_XYZ",
+							"hasNextPage": true
+						}
+					},
+					"errors": []
+				}`)),
+			},
+			expectedCursor: "CURSOR_XYZ",
+			expectError:    false,
+			checkStdout: func(t *testing.T, stdout string) {
+				t.Helper()
+				assert.Contains(t, stdout, "issue")
+			},
+		},
+		{
+			name: "GraphQL error response - body not consumed twice",
+			options: options{
+				requestPath: "graphql",
+				paginate:    true,
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewBufferString(`{
+					"data": {
+						"issues": [],
+						"pageInfo": {
+							"endCursor": "",
+							"hasNextPage": false
+						}
+					},
+					"errors": [{"message": "Invalid query"}]
+				}`)),
+			},
+			expectedCursor: "",
+			expectError:    true,
+			checkStdout: func(t *testing.T, stdout string) {
+				t.Helper()
+				assert.Contains(t, stdout, "errors")
+			},
+			checkStderr: func(t *testing.T, stderr string) {
+				t.Helper()
+				assert.Contains(t, stderr, "Invalid query")
+			},
+		},
+		{
+			name: "GraphQL error response with data and cursor",
+			options: options{
+				requestPath: "graphql",
+				paginate:    true,
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewBufferString(`{
+					"data": {
+						"issues": [{"id": 1}],
+						"pageInfo": {
+							"endCursor": "CURSOR_AFTER_ERROR",
+							"hasNextPage": true
+						}
+					},
+					"errors": [
+						{"message": "Field 'nonexistent' doesn't exist on type 'Issue'"},
+						{"message": "Some other error"}
+					]
+				}`)),
+			},
+			expectedCursor: "",
+			expectError:    true,
+			checkStdout: func(t *testing.T, stdout string) {
+				t.Helper()
+				assert.Contains(t, stdout, "issues")
+			},
+			checkStderr: func(t *testing.T, stderr string) {
+				t.Helper()
+				assert.Contains(t, stderr, "nonexistent")
+				assert.Contains(t, stderr, "Some other error")
+			},
+		},
+		{
+			name: "GraphQL with color output enabled",
+			options: options{
+				requestPath: "graphql",
+				paginate:    true,
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewBufferString(`{
+					"data": {
+						"issues": [{"id": 1, "title": "Test Issue"}],
+						"pageInfo": {
+							"endCursor": "NEXT_CURSOR",
+							"hasNextPage": true
+						}
+					}
+				}`)),
+			},
+			expectedCursor: "NEXT_CURSOR",
+			expectError:    false,
+			checkStdout: func(t *testing.T, stdout string) {
+				t.Helper()
+				assert.Contains(t, stdout, "Test Issue")
+			},
+		},
+		{
+			name: "REST pagination - body not consumed twice",
+			options: options{
+				requestPath: "issues",
+				paginate:    true,
+			},
+			httpResponse: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewBufferString(`[{"id": 1}]`)),
+			},
+			expectedCursor: "",
+			expectError:    false,
+			checkStdout: func(t *testing.T, stdout string) {
+				t.Helper()
+				assert.Contains(t, stdout, "id")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ios, _, stdout, stderr := cmdtest.TestIOStreams()
+			tt.options.io = ios
+			tt.options.baseRepo = func() (glrepo.Interface, error) {
+				return nil, fmt.Errorf("not supposed to be called")
+			}
+			tt.options.apiClient = func(repoHost string) (*api.Client, error) {
+				return nil, fmt.Errorf("not supposed to be called")
+			}
+
+			endCursor, err := processResponse(tt.httpResponse, &tt.options, io.Discard)
+
+			if tt.expectError {
+				assert.Error(t, err, "expected error but got none")
+			} else {
+				assert.NoError(t, err, "unexpected error: %v", err)
+			}
+
+			// Verify cursor extraction
+			assert.Equal(t, tt.expectedCursor, endCursor, "cursor mismatch")
+
+			// Run custom stdout/stderr checks if provided
+			if tt.checkStdout != nil {
+				tt.checkStdout(t, stdout.String())
+			}
+			if tt.checkStderr != nil {
+				tt.checkStderr(t, stderr.String())
+			}
+		})
+	}
+}
+
+// Test_findEndCursor_multiplePages verifies cursor extraction works across multiple pages
+func Test_findEndCursor_multiplePages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		jsonResponse   string
+		expectedCursor string
+	}{
+		{
+			name: "simple pagination",
+			jsonResponse: `{
+				"data": {
+					"issues": [{"id": 1}],
+					"pageInfo": {
+						"endCursor": "ABC123",
+						"hasNextPage": true
+					}
+				}
+			}`,
+			expectedCursor: "ABC123",
+		},
+		{
+			name: "nested pagination",
+			jsonResponse: `{
+				"data": {
+					"project": {
+						"issues": {
+							"nodes": [{"id": 1}],
+							"pageInfo": {
+								"endCursor": "XYZ789",
+								"hasNextPage": true
+							}
+						}
+					}
+				}
+			}`,
+			expectedCursor: "XYZ789",
+		},
+		{
+			name: "no next page",
+			jsonResponse: `{
+				"data": {
+					"issues": [{"id": 1}],
+					"pageInfo": {
+						"endCursor": "LAST",
+						"hasNextPage": false
+					}
+				}
+			}`,
+			expectedCursor: "",
+		},
+		{
+			name: "missing pageInfo",
+			jsonResponse: `{
+				"data": {
+					"issues": [{"id": 1}]
+				}
+			}`,
+			expectedCursor: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := bytes.NewBufferString(tt.jsonResponse)
+			cursor := findEndCursor(reader)
+			if cursor != tt.expectedCursor {
+				t.Errorf("expected cursor %q, got %q", tt.expectedCursor, cursor)
 			}
 		})
 	}

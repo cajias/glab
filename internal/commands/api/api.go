@@ -45,6 +45,7 @@ type options struct {
 	showResponseHeaders bool
 	paginate            bool
 	silent              bool
+	outputFormat        string
 }
 
 func NewCmdApi(f cmdutils.Factory, runF func(*options) error) *cobra.Command {
@@ -110,11 +111,21 @@ func NewCmdApi(f cmdutils.Factory, runF func(*options) error) *cobra.Command {
 
 		- The original query must accept an %[1]s$endCursor: String%[1]s variable.
 		- The query must fetch the %[1]spageInfo{ hasNextPage, endCursor }%[1]s set of fields from a collection.
+
+		The %[1]s--output%[1]s flag controls the output format:
+
+		- %[1]sjson%[1]s (default): Pretty-printed JSON. Arrays are output as a single JSON array.
+		- %[1]sndjson%[1]s: Newline-delimited JSON (also known as JSONL or JSON Lines). Each array element
+		  or object is output on a separate line. This format is more memory-efficient for large datasets
+		  and works well with tools like %[1]sjq%[1]s. See https://github.com/ndjson/ndjson-spec and
+		  https://jsonlines.org/ for format specifications.
 		`, "`"),
 		Example: heredoc.Doc(`
 			$ glab api projects/:fullpath/releases
 			$ glab api projects/gitlab-com%2Fwww-gitlab-com/issues
 			$ glab api issues --paginate
+			$ glab api issues --paginate --output ndjson
+			$ glab api issues --paginate --output ndjson | jq 'select(.state == "opened")'
 			$ glab api graphql -f query="query { currentUser { username } }"
 			$ glab api graphql -f query='
 			  query {
@@ -184,6 +195,7 @@ func NewCmdApi(f cmdutils.Factory, runF func(*options) error) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.paginate, "paginate", false, "Make additional HTTP requests to fetch all pages of results.")
 	cmd.Flags().StringVar(&opts.requestInputFile, "input", "", "The file to use as the body for the HTTP request.")
 	cmd.Flags().BoolVar(&opts.silent, "silent", false, "Do not print the response body.")
+	cmd.Flags().Var(cmdutils.NewEnumValue([]string{"json", "ndjson"}, "json", &opts.outputFormat), "output", "Format output as: json, ndjson.")
 	cmd.MarkFlagsMutuallyExclusive("paginate", "input")
 	return cmd
 }
@@ -202,6 +214,10 @@ func (o *options) validate(cmd *cobra.Command) error {
 
 	if o.paginate && !strings.EqualFold(o.requestMethod, http.MethodGet) && o.requestPath != "graphql" {
 		return &cmdutils.FlagError{Err: errors.New(`the '--paginate' option is not supported for non-GET requests.`)}
+	}
+
+	if o.outputFormat != "json" && o.outputFormat != "ndjson" {
+		return &cmdutils.FlagError{Err: fmt.Errorf("invalid output format %q: must be 'json' or 'ndjson'", o.outputFormat)}
 	}
 
 	return nil
@@ -335,7 +351,10 @@ func processResponse(resp *http.Response, opts *options, headersOutputStream io.
 	}
 
 	var err error
-	if isJSON && opts.io.ColorEnabled() {
+	// Handle NDJSON output format
+	if opts.outputFormat == "ndjson" && isJSON && resp.StatusCode == http.StatusOK {
+		err = streamNDJSON(responseBody, opts.io.StdOut)
+	} else if isJSON && opts.io.ColorEnabled() {
 		out := &bytes.Buffer{}
 		_, err = io.Copy(out, responseBody)
 		if err == nil {
@@ -362,6 +381,62 @@ func processResponse(resp *http.Response, opts *options, headersOutputStream io.
 	}
 
 	return "", nil
+}
+
+// streamNDJSON streams JSON response as newline-delimited JSON.
+// If the response is a JSON array, each element is written as a separate line.
+// If the response is a single JSON object, it's written as-is with a newline.
+func streamNDJSON(body io.Reader, out io.Writer) error {
+	dec := json.NewDecoder(body)
+
+	// Peek at the first token to determine if it's an array or object
+	token, err := dec.Token()
+	if err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		return err
+	}
+
+	// Check if it's an array
+	if delim, ok := token.(json.Delim); ok && delim == '[' {
+		// Stream each array element as a separate line
+		for dec.More() {
+			var element json.RawMessage
+			if err := dec.Decode(&element); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(out, string(element)); err != nil {
+				return err
+			}
+		}
+		// Consume the closing bracket
+		if _, err := dec.Token(); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// For non-array JSON, simply copy the entire body and add newline
+	// Reset the body reader since we consumed the first token
+	var tokenStr string
+	switch v := token.(type) {
+	case json.Delim:
+		tokenStr = string(rune(v))
+	default:
+		// For primitive values (string, number, bool, null), marshal back to JSON
+		b, _ := json.Marshal(v)
+		tokenStr = string(b)
+	}
+
+	fullBody := io.MultiReader(strings.NewReader(tokenStr), dec.Buffered(), body)
+
+	// Copy directly to output with newline
+	if _, err := io.Copy(out, fullBody); err != nil {
+		return err
+	}
+	_, err = out.Write([]byte("\n"))
+	return err
 }
 
 var placeholderRE = regexp.MustCompile(`:(group/:namespace/:repo|namespace/:repo|fullpath|id|user|username|group|namespace|repo|branch)\b`)
