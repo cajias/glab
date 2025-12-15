@@ -286,8 +286,8 @@ func inputCapture(
 	app *tview.Application,
 	root *tview.Pages,
 	navi navigator,
-	inputCh chan struct{},
-	forceUpdateCh chan bool,
+	inputCh chan<- struct{},
+	forceUpdateCh chan<- bool,
 	opts *options,
 	apiClient *gitlab.Client,
 	projectID string,
@@ -625,8 +625,8 @@ func adjacentStages(jobs []*ViewJob, s string) (string, string) {
 
 func jobsView(
 	app *tview.Application,
-	jobsCh chan []*ViewJob,
-	inputCh chan struct{},
+	jobsCh <-chan []*ViewJob,
+	inputCh <-chan struct{},
 	root *tview.Pages,
 	apiClient *gitlab.Client,
 	projectID string,
@@ -834,8 +834,8 @@ func recoverPanic(app *tview.Application) {
 
 func updateJobs(
 	app *tview.Application,
-	jobsCh chan []*ViewJob,
-	forceUpdateCh chan bool,
+	jobsCh chan<- []*ViewJob,
+	forceUpdateCh <-chan bool,
 	apiClient *gitlab.Client,
 	commit *gitlab.Commit,
 ) {
