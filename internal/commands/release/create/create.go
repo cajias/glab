@@ -49,8 +49,7 @@ var noteOptionsNames = map[noteOptions]string{
 }
 
 type options struct {
-	// The following fields must be exported because of survey
-	// TODO: make survey independent of command options struct.
+	// The following fields must be exported for use with huh forms
 	Name               string
 	ReleaseNotesAction string
 

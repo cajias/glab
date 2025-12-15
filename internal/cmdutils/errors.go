@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/AlecAivazis/survey/v2/terminal"
 	"github.com/charmbracelet/fang"
 	"github.com/spf13/cobra"
+
+	"gitlab.com/gitlab-org/cli/internal/iostreams"
 )
 
 // FlagError is the kind of error raised in flag processing
@@ -56,9 +57,9 @@ func WrapError(err error, log string) *ExitError {
 
 func CancelError(log ...any) error {
 	if len(log) < 1 {
-		return WrapErrorWithCode(terminal.InterruptErr, 2, "action cancelled")
+		return WrapErrorWithCode(iostreams.ErrUserCancelled, 2, "action cancelled")
 	}
-	return WrapErrorWithCode(terminal.InterruptErr, 2, fmt.Sprint(log...))
+	return WrapErrorWithCode(iostreams.ErrUserCancelled, 2, fmt.Sprint(log...))
 }
 
 func (e *ExitError) Error() string {

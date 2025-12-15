@@ -9,7 +9,6 @@ go 1.25.4
 replace github.com/survivorbat/huhtest => github.com/timofurrer/huhtest v0.0.0-20250922072747-46976a734937
 
 require (
-	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/MakeNowJust/heredoc/v2 v2.0.1
 	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d
 	github.com/adrg/xdg v0.5.3
@@ -29,7 +28,6 @@ require (
 	github.com/gosuri/uilive v0.0.4
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hashicorp/go-version v1.8.0
-	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/lunixbochs/vtclean v1.0.0
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/mattn/go-colorable v0.1.14
