@@ -305,7 +305,7 @@ func (o *options) revokeTokens(ctx context.Context, tokens []cachedToken) []erro
 
 		fmt.Fprintf(o.io.StdOut, "Revoking token for agent %d...\n", token.AgentID)
 
-		_, err := client.PersonalAccessTokens.RevokePersonalAccessToken(token.Token.ID, gitlab.WithContext(ctx))
+		_, err := client.PersonalAccessTokens.RevokePersonalAccessTokenByID(token.Token.ID, gitlab.WithContext(ctx))
 		if err != nil {
 			errors = append(errors, fmt.Errorf("failed to revoke token for agent %d: %w", token.AgentID, err))
 			continue

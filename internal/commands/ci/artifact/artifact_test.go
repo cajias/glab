@@ -178,7 +178,7 @@ func Test_NewCmdRun(t *testing.T) {
 			factory, fakeHTTP := makeTestFactory(t)
 			tempPath, tempFileName := createZipFile(t, tt.filename)
 
-			fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/jobs/artifacts/main/download?job=secret_detection`,
+			fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/jobs/artifacts/main/download`,
 				httpmock.NewFileResponse(http.StatusOK, tempFileName))
 
 			cmd := NewCmdRun(factory)

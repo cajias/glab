@@ -150,7 +150,7 @@ func (o *options) run() error {
 		default:
 			return cmdutils.FlagError{Err: fmt.Errorf("multiple tokens found with the name '%v'. Use the ID instead.", o.name)}
 		}
-		if _, err = client.PersonalAccessTokens.RevokePersonalAccessToken(token.ID); err != nil {
+		if _, err = client.PersonalAccessTokens.RevokePersonalAccessTokenByID(token.ID); err != nil {
 			return err
 		}
 		token.Revoked = true
