@@ -56,6 +56,7 @@ $ glab auth login --hostname $CI_SERVER_HOST --job-token $CI_JOB_TOKEN
 ```plaintext
   -a, --api-host string       API host url.
   -p, --api-protocol string   API protocol: https, http
+      --cookie-file string    Path to a Netscape/Mozilla format cookie file for IdP/SSO authentication.
   -g, --git-protocol string   Git protocol: ssh, https, http
       --hostname string       The hostname of the GitLab instance to authenticate with.
   -j, --job-token string      CI job token.
