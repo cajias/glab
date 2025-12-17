@@ -181,7 +181,7 @@ announce:
     icon_emoji: ':rocket:'
     message_template: |
       :rocket: *glab {{ .Tag }}* has been released!
-      {{ if .IsPrerelease }}
+      {{ if .Prerelease }}
       :warning: _This is a pre-release version_
       {{ end }}
       *What's Changed*
