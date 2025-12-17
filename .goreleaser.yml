@@ -184,15 +184,7 @@ announce:
       {{ if .Prerelease }}
       :warning: _This is a pre-release version_
       {{ end }}
-      *What's Changed*
-      {{ range .Changelog.Groups -}}
-      {{ if gt (len .Items) 0 -}}
-      *{{ .Title }}*
-      {{ range .Items -}}
-      • {{ .Message }} - <{{ .WebURL }}|{{ .ShortHash }}>{{ if .AuthorName }} by {{ .AuthorName }}{{ if .AuthorEmail }} <{{ .AuthorEmail }}>{{ end }}{{ end }}
-      {{ end }}
-      {{ end -}}
-      {{ end }}
-      *Get the Release*
-      • <{{ .ReleaseURL }}|View on GitLab>
-      • <https://gitlab.com/gitlab-org/cli/-/releases/{{ .Tag }}|Download Assets>
+
+      {{ .ReleaseNotes }}
+
+      <{{ .ReleaseURL }}|View Release on GitLab>
