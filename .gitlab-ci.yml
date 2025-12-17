@@ -55,6 +55,7 @@ default:
     - "saas-linux-medium-amd64"
 
 stages:
+  - .pre
   - documentation
   - test
   - build
@@ -79,19 +80,28 @@ include:
 # From: https://docs.gitlab.com/ci/caching/#cache-go-dependencies
 .go-cache:
   variables:
-    GOCACHE: $CI_PROJECT_DIR/.gocache-$CI_COMMIT_REF_PROTECTED
     GOPATH: $CI_PROJECT_DIR/.go
-    GOLANGCI_LINT_CACHE: $CI_PROJECT_DIR/.golangci-lint
-  before_script:
-    - mkdir -p "$GOCACHE"
-    - go env GOCACHE
   cache:
     paths:
-      # The .gocache-false only caches on unprotected branches
-      - $CI_PROJECT_DIR/.gocache-false/
       - $CI_PROJECT_DIR/.go/pkg/mod/
-      - $CI_PROJECT_DIR/.golangci-lint/
-    key: "${CI_JOB_NAME}"
+    key:
+      files:
+        - go.sum
+    policy: pull
+
+prepare_go_cache:
+  stage: .pre
+  variables:
+    GOPATH: $CI_PROJECT_DIR/.go
+  cache:
+    paths:
+      - $CI_PROJECT_DIR/.go/pkg/mod/
+    key:
+      files:
+        - go.sum
+    policy: pull-push
+  script:
+    - go mod download
 
 .documentation:
   stage: documentation
@@ -188,9 +198,9 @@ check_go_generated_code:
   extends:
     - .go-cache
     - .test
-  needs: []
-  before_script:
-    - unset GOCACHE # To prevent .gocache-false from creating
+  needs:
+    - job: prepare_go_cache
+      optional: true
   script:
     # Workaround config.yaml.lock file permissions
     - chmod 600 internal/config/config.yaml.lock
@@ -222,7 +232,9 @@ lint:
   extends:
     - .test
     - .go-cache
-  needs: []
+  needs:
+    - job: prepare_go_cache
+      optional: true
   image: ${GITLAB_DEPENDENCY_PROXY}golangci/golangci-lint:v$GOLANGCI_LINT_VERSION
   script:
     # Write the code coverage report to gl-code-quality-report.json
@@ -239,7 +251,9 @@ tests:unit:
   extends:
     - .go-cache
     - .test
-  needs: []
+  needs:
+    - job: prepare_go_cache
+      optional: true
   # We currently only test on the lastest versino of Go which we also build against.
   # If we need to introduce testing for future versions of compatibility reasons
   # uncomment the below lines and adjust the `GO_VERSION` to included versions to test.
@@ -265,7 +279,6 @@ tests:unit:
 tests:integration:
   extends:
     - .test
-    - .go-cache
   needs: []
   # We currently only test on the lastest versino of Go which we also build against.
   # If we need to introduce testing for future versions of compatibility reasons
@@ -419,6 +432,9 @@ windows_installer:
 build_windows:
   stage: build
   extends: .go-cache
+  needs:
+    - job: prepare_go_cache
+      optional: true
   rules:
     - if: $CI_COMMIT_TAG
     - if: $CI_MERGE_REQUEST_EVENT_TYPE == "merge_train"
