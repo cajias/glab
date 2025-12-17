@@ -23,7 +23,7 @@ variables:
     - if: $CI_COMMIT_TAG && $CI_SERVER_HOST == "gitlab.com" && ($CI_PROJECT_PATH == "gitlab-org/cli" || $CI_PROJECT_PATH == "gitlab-org/security/cli")
   stage: release
   artifacts:
-    expire_in: "30 days"
+    expire_in: 7 days
   variables:
     GCLOUD_PROJECT: gitlab-ci-runners-signing
     SERVICE_ACCOUNT: gitlab-cli-signer@gitlab-ci-runners-signing.iam.gserviceaccount.com
@@ -246,6 +246,7 @@ lint:
       codequality: gl-code-quality-report.json
     paths:
       - gl-code-quality-report.json
+    expire_in: 7 days
 
 tests:unit:
   extends:
@@ -275,6 +276,7 @@ tests:unit:
     reports:
       junit: coverage.xml
     access: "developer"
+    expire_in: 7 days
 
 tests:integration:
   extends:
@@ -356,7 +358,7 @@ build_test:
     name: goreleaser-artifacts
     paths:
       - dist/
-    expire_in: 1 week
+    expire_in: 7 days
   needs:
     - job: windows_installer
       optional: false
@@ -422,7 +424,7 @@ windows_installer:
   artifacts:
     paths:
       - "bin/*"
-    expire_in: "30 days"
+    expire_in: 7 days
   needs:
     - job: build_windows
       optional: false
@@ -448,7 +450,7 @@ build_windows:
   artifacts:
     paths:
       - "bin/glab.exe"
-    expire_in: "30 days"
+    expire_in: 7 days
 
 sign_windows_glab:
   extends: .sign_windows_base
@@ -491,7 +493,7 @@ sign_windows_installer:
   artifacts:
     paths:
       - "*.snap"
-    expire_in: "30 days"
+    expire_in: 7 days
 
 snapcraft_build_stable:
   extends: .snapcraft_base
