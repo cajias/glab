@@ -36,6 +36,18 @@ var createProject = func(client *gitlab.Client, opts *gitlab.CreateProjectOption
 	return project, nil
 }
 
+var addRemote = func(name, url string) (*git.Remote, error) {
+	return git.AddRemote(name, url)
+}
+
+var gitInitializer = func() error {
+	return initGit()
+}
+
+var repoInitializer = func(projectPath, remoteURL string) error {
+	return initializeRepo(projectPath, remoteURL)
+}
+
 func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 	projectCreateCmd := &cobra.Command{
 		Use:   "create [path] [flags]",
@@ -109,16 +121,23 @@ func runCreateProject(cmd *cobra.Command, args []string, f cmdutils.Factory) err
 		return err
 	}
 	skipGitInit, _ := cmd.Flags().GetBool("skipGitInit")
-	if !skipGitInit && f.IO().PromptEnabled() {
-		doInit := true
-		err := f.IO().Confirm(cmd.Context(), &doInit, "Directory not Git initialized. Run `git init`?")
-		if err != nil || !doInit {
-			return err
-		}
 
-		err = initGit(defaultBranch)
-		if err != nil {
-			return err
+	// Check if directory is already git initialized
+	gitDir := path.Join(config.GitDir(false)...)
+	stat, statErr := os.Stat(gitDir)
+	isGitInitialized := statErr == nil && stat.Mode().IsDir()
+
+	// Determine if we need to initialize git in the current directory
+	var needsGitInit bool
+	if !skipGitInit && !isGitInitialized {
+		// Default to running git init
+		needsGitInit = true
+		// If prompts are enabled, ask the user
+		if f.IO().PromptEnabled() {
+			err := f.IO().Confirm(cmd.Context(), &needsGitInit, "Directory not Git initialized. Run `git init`?")
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -139,12 +158,25 @@ func runCreateProject(cmd *cobra.Command, args []string, f cmdutils.Factory) err
 		if user.Username == namespace {
 			namespace = ""
 		}
+		// When a project name is provided as argument, we won't init git in current directory
+		// Instead, we'll create a subdirectory and init there (or just add remote if already in git repo)
+		needsGitInit = false
 	} else {
-		projectPath, err = git.ToplevelDir()
-		if err != nil {
-			return err
+		// If we're in a git repository, use the repo name
+		// Otherwise, use the current directory name
+		if isGitInitialized {
+			projectPath, err = git.ToplevelDir()
+			if err != nil {
+				return err
+			}
+			projectPath = path.Base(projectPath)
+		} else {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("cannot get current directory: %w", err)
+			}
+			projectPath = path.Base(cwd)
 		}
-		projectPath = path.Base(projectPath)
 		isPath = true
 
 		c, err := f.ApiClient(f.DefaultHostname())
@@ -156,7 +188,7 @@ func runCreateProject(cmd *cobra.Command, args []string, f cmdutils.Factory) err
 
 	group, err := cmd.Flags().GetString("group")
 	if err != nil {
-		return fmt.Errorf("could not parse group flag: %v", err)
+		return fmt.Errorf("could not parse group flag: %w", err)
 	}
 	if group != "" {
 		namespace = group
@@ -165,7 +197,7 @@ func runCreateProject(cmd *cobra.Command, args []string, f cmdutils.Factory) err
 	if namespace != "" {
 		group, _, err := gitlabClient.Groups.GetGroup(namespace, &gitlab.GetGroupOptions{})
 		if err != nil {
-			return fmt.Errorf("could not find group or namespace %s: %v", namespace, err)
+			return fmt.Errorf("could not find group or namespace %s: %w", namespace, err)
 		}
 		namespaceID = int(group.ID)
 	}
@@ -210,46 +242,74 @@ func runCreateProject(cmd *cobra.Command, args []string, f cmdutils.Factory) err
 	}
 
 	project, err := createProject(gitlabClient, opts)
+	if err != nil {
+		return fmt.Errorf("error creating project: %w", err)
+	}
 
 	greenCheck := c.Green("✓")
+	fmt.Fprintf(f.IO().StdOut, "%s Created project on GitLab: %s - %s\n", greenCheck, project.NameWithNamespace, project.WebURL)
 
-	if err == nil {
-		fmt.Fprintf(f.IO().StdOut, "%s Created repository %s on GitLab: %s\n", greenCheck, project.NameWithNamespace, project.WebURL)
-		if isPath {
-			cfg := f.Config()
-			webURL, _ := url.Parse(project.WebURL)
-			protocol, _ := cfg.Get(webURL.Host, "git_protocol")
+	// Execute git init if needed (we already validated it will work)
+	if needsGitInit {
+		if err := gitInitializer(); err != nil {
+			// Project exists on GitLab but git init failed
+			fmt.Fprintf(f.IO().StdErr, "Warning: Project created on GitLab but git init failed: %v\n", err)
+			fmt.Fprintf(f.IO().StdErr, "You can manually initialize the repository with: git init\n")
+			// Don't return error since project was created successfully
+		} else {
+			fmt.Fprintf(f.IO().StdOut, "%s Initialized git repository\n", greenCheck)
+		}
+	}
 
-			remote := glrepo.RemoteURL(project, protocol)
-			_, err = git.AddRemote(remoteName, remote)
-			if err != nil {
-				return err
-			}
+	if isPath {
+		cfg := f.Config()
+		webURL, _ := url.Parse(project.WebURL)
+		protocol, _ := cfg.Get(webURL.Host, "git_protocol")
+
+		remote := glrepo.RemoteURL(project, protocol)
+		if _, err := addRemote(remoteName, remote); err != nil {
+			// Remote already exists or other git error - warn but don't fail
+			fmt.Fprintf(f.IO().StdErr, "Warning: Could not add remote: %v\n", err)
+		} else {
 			fmt.Fprintf(f.IO().StdOut, "%s Added remote %s\n", greenCheck, remote)
+		}
 
-		} else if f.IO().PromptEnabled() {
-			doSetup := true
-			err := f.IO().Confirm(cmd.Context(), &doSetup, fmt.Sprintf("Create a local project directory for %s?", project.NameWithNamespace))
-			if err != nil {
-				return err
-			}
-
-			if doSetup {
-				projectPath := project.Path
-				err = initialiseRepo(projectPath, project.SSHURLToRepo)
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(f.IO().StdOut, "%s Initialized repository in './%s/'\n", greenCheck, projectPath)
+		// Create default branch after remote is added (if specified)
+		if needsGitInit && defaultBranch != "" {
+			gitBranch := git.GitCommand("checkout", "-b", defaultBranch)
+			gitBranch.Stdout = os.Stdout
+			gitBranch.Stdin = os.Stdin
+			if err := run.PrepareCmd(gitBranch).Run(); err != nil {
+				fmt.Fprintf(f.IO().StdErr, "Warning: Failed to create branch %s: %v\n", defaultBranch, err)
 			}
 		}
-	} else {
-		return fmt.Errorf("error creating project: %v", err)
+
+		return nil
 	}
-	return err
+
+	// When a project name is provided (not working in current directory)
+	// we need to set up a local subdirectory for it
+	// Default to creating the subdirectory
+	doSetup := true
+	// If prompts are enabled, ask the user
+	if f.IO().PromptEnabled() {
+		if err := f.IO().Confirm(cmd.Context(), &doSetup, fmt.Sprintf("Create a local project directory for %s?", project.NameWithNamespace)); err != nil {
+			return err
+		}
+	}
+
+	if doSetup {
+		projectPath := project.Path
+		if err := repoInitializer(projectPath, project.SSHURLToRepo); err != nil {
+			return err
+		}
+		fmt.Fprintf(f.IO().StdOut, "%s Initialized repository in './%s/'\n", greenCheck, projectPath)
+	}
+
+	return nil
 }
 
-func initGit(defaultBranch string) error {
+func initGit() error {
 	gitDir := path.Join(config.GitDir(false)...)
 	if stat, err := os.Stat(gitDir); err == nil && stat.Mode().IsDir() {
 		return nil
@@ -258,22 +318,10 @@ func initGit(defaultBranch string) error {
 	gitInit := git.GitCommand("init")
 	gitInit.Stdout = os.Stdout
 	gitInit.Stderr = os.Stderr
-	err := run.PrepareCmd(gitInit).Run()
-	if err != nil {
-		return err
-	}
-
-	if defaultBranch == "" {
-		return nil
-	}
-
-	gitBranch := git.GitCommand("checkout", "-b", defaultBranch)
-	gitBranch.Stdout = os.Stdout
-	gitBranch.Stdin = os.Stdin
-	return run.PrepareCmd(gitBranch).Run()
+	return run.PrepareCmd(gitInit).Run()
 }
 
-func initialiseRepo(projectPath, remoteURL string) error {
+func initializeRepo(projectPath, remoteURL string) error {
 	gitInit := git.GitCommand("init", projectPath)
 	gitInit.Stdout = os.Stdout
 	gitInit.Stderr = os.Stderr
