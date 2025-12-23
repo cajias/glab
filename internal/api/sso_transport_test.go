@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,14 @@ import (
 	"testing"
 	"time"
 )
+
+// autoApproveSSO returns an SSOConsentFunc that automatically approves all domains.
+// Used in tests to bypass the interactive consent prompt.
+func autoApproveSSO() SSOConsentFunc {
+	return func(domain string) (bool, error) {
+		return true, nil
+	}
+}
 
 func TestSSOTransport_NoRedirect(t *testing.T) {
 	// Setup test server that returns success immediately
@@ -95,6 +104,7 @@ func TestSSOTransport_WithSSOFlow(t *testing.T) {
 	client := &Client{
 		baseURL:    gitlabServer.URL,
 		cookieFile: cookieFile,
+		ssoPrompt:  autoApproveSSO(),
 	}
 
 	err = client.initializeHTTPClient()
@@ -354,6 +364,7 @@ func TestSSOTransport_SSOFlowFails(t *testing.T) {
 	client := &Client{
 		baseURL:    gitlabServer.URL,
 		cookieFile: cookieFile,
+		ssoPrompt:  autoApproveSSO(),
 	}
 
 	err = client.initializeHTTPClient()
@@ -361,23 +372,23 @@ func TestSSOTransport_SSOFlowFails(t *testing.T) {
 		t.Fatalf("failed to initialize HTTP client: %v", err)
 	}
 
-	// Make a POST request - should complete SSO flow but IdP returns error
-	// The SSO flow should still succeed (we just consume the IdP response)
-	// and the retry should be attempted
+	// Make a POST request - IdP returns 500, SSO flow should fail with clear error
 	body := `{"name": "test-project"}`
 	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
+	_, err = client.httpClient.Do(req)
+	if err == nil {
+		t.Fatal("expected error when IdP returns 500, got nil")
 	}
-	defer resp.Body.Close()
 
-	// Even though IdP returned 500, the SSO flow completed and retry was attempted
-	// The retry will get another redirect (since our test server always redirects)
-	// But that's expected - the important thing is that errors are handled gracefully
-	// and the flow doesn't crash
+	// Verify the error message indicates SSO authentication failure
+	if !strings.Contains(err.Error(), "SSO authentication failed") {
+		t.Errorf("expected error to contain 'SSO authentication failed', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("expected error to contain status code '500', got: %v", err)
+	}
 }
 
 func TestSSOTransport_SSOFlowConnectionFails(t *testing.T) {
@@ -406,6 +417,7 @@ func TestSSOTransport_SSOFlowConnectionFails(t *testing.T) {
 	client := &Client{
 		baseURL:    gitlabServer.URL,
 		cookieFile: cookieFile,
+		ssoPrompt:  autoApproveSSO(),
 	}
 
 	err = client.initializeHTTPClient()
@@ -730,6 +742,7 @@ func TestSSOTransport_SameHostToSSORedirect(t *testing.T) {
 	client := &Client{
 		baseURL:    gitlabServer.URL,
 		cookieFile: cookieFile,
+		ssoPrompt:  autoApproveSSO(),
 	}
 
 	err = client.initializeHTTPClient()
@@ -908,5 +921,539 @@ func TestRegression_MergeRequestNotesEndpoint_PreservesPostMethod(t *testing.T) 
 	// Verify we got the expected note response
 	if !bytes.Contains(respBody, []byte(`"id": 12345`)) {
 		t.Errorf("regression: unexpected response body: %s", string(respBody))
+	}
+}
+
+func TestSSOTransport_ConsentRequired(t *testing.T) {
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server that redirects to IdP
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	// Client without ssoPrompt - should fail with consent required error
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+		// No ssoPrompt set
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that triggers SSO redirect
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	_, err = client.httpClient.Do(req)
+	if err == nil {
+		t.Fatal("expected error when no consent callback is set, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "requires consent") {
+		t.Errorf("expected error about consent required, got: %v", err)
+	}
+}
+
+func TestSSOTransport_ConsentGranted(t *testing.T) {
+	var idpRequestCount int32
+	var gitlabRequestCount int32
+
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&idpRequestCount, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&gitlabRequestCount, 1)
+		if count == 1 {
+			// First request: redirect to IdP
+			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+			return
+		}
+		// Retry request: success
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	// Client with ssoPrompt that approves
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+		ssoPrompt:  autoApproveSSO(),
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that triggers SSO redirect
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify IdP was reached (consent was granted)
+	if atomic.LoadInt32(&idpRequestCount) != 1 {
+		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
+	}
+}
+
+func TestSSOTransport_ConsentDenied(t *testing.T) {
+	// Create IdP server - should never be reached
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("IdP should not be reached when consent is denied")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server that redirects to IdP
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	// Client with ssoPrompt that denies
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+		ssoPrompt: func(domain string) (bool, error) {
+			return false, nil // Deny consent
+		},
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that triggers SSO redirect
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	_, err = client.httpClient.Do(req)
+	if err == nil {
+		t.Fatal("expected error when consent is denied, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "declined") {
+		t.Errorf("expected error about consent declined, got: %v", err)
+	}
+}
+
+func TestSSOTransport_ConsentRemembered(t *testing.T) {
+	var promptCount int32
+
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server
+	var gitlabRequestCount int32
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&gitlabRequestCount, 1)
+		// First two requests redirect to IdP, remaining succeed
+		if count == 1 || count == 3 {
+			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	// Client with ssoPrompt that tracks how many times it's called
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+		ssoPrompt: func(domain string) (bool, error) {
+			atomic.AddInt32(&promptCount, 1)
+			return true, nil
+		},
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// First request - should prompt for consent
+	body := `{"name": "test-project"}`
+	req1, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req1.Header.Set("Content-Type", "application/json")
+
+	resp1, err := client.httpClient.Do(req1)
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	resp1.Body.Close()
+
+	// Second request - should NOT prompt again (domain remembered)
+	req2, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req2.Header.Set("Content-Type", "application/json")
+
+	resp2, err := client.httpClient.Do(req2)
+	if err != nil {
+		t.Fatalf("second request failed: %v", err)
+	}
+	resp2.Body.Close()
+
+	// Verify prompt was only called once (domain was remembered)
+	if atomic.LoadInt32(&promptCount) != 1 {
+		t.Errorf("expected prompt to be called once, got %d calls", promptCount)
+	}
+}
+
+func TestSSOTransport_PreApprovedDomain(t *testing.T) {
+	var promptCalled bool
+
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Extract the IdP hostname for pre-approval (without port)
+	// The consent check uses url.Hostname() which excludes the port
+	idpHost := "127.0.0.1" // httptest servers always use 127.0.0.1
+
+	// Create GitLab server
+	var gitlabRequestCount int32
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&gitlabRequestCount, 1)
+		if count == 1 {
+			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	// Client with pre-approved domain - prompt should NOT be called
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+		ssoPrompt: func(domain string) (bool, error) {
+			promptCalled = true
+			return true, nil
+		},
+		ssoAllowedDomains: map[string]bool{idpHost: true},
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that triggers SSO redirect
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Verify prompt was NOT called (domain was pre-approved)
+	if promptCalled {
+		t.Error("prompt should not be called for pre-approved domain")
+	}
+}
+
+func TestSSOTransport_PersistDomainCalled(t *testing.T) {
+	var persistedDomain string
+
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server
+	var gitlabRequestCount int32
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&gitlabRequestCount, 1)
+		if count == 1 {
+			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	// Client with persist callback
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+		ssoPrompt:  autoApproveSSO(),
+		ssoPersist: func(domain string) error {
+			persistedDomain = domain
+			return nil
+		},
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that triggers SSO redirect
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Verify persist was called with the IdP domain
+	if persistedDomain == "" {
+		t.Error("persist callback should have been called")
+	}
+	// The persisted domain should be the IdP hostname (127.0.0.1, without port)
+	// because url.Hostname() is used which excludes the port
+	if persistedDomain != "127.0.0.1" {
+		t.Errorf("expected persisted domain to be 127.0.0.1, got %s", persistedDomain)
+	}
+}
+
+func TestSSOTransport_ConsentPromptError(t *testing.T) {
+	// Create IdP server - should never be reached
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("IdP should not be reached when prompt fails")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server that redirects to IdP
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	// Client with ssoPrompt that returns an error
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+		ssoPrompt: func(domain string) (bool, error) {
+			return false, errors.New("terminal not available")
+		},
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that triggers SSO redirect
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	_, err = client.httpClient.Do(req)
+	if err == nil {
+		t.Fatal("expected error when prompt fails, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "consent prompt failed") {
+		t.Errorf("expected error about consent prompt failure, got: %v", err)
+	}
+}
+
+func TestSSOTransport_PersistDomainError_Resilient(t *testing.T) {
+	// Test that persist callback errors don't break the SSO flow
+	var persistCalled bool
+
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server
+	var gitlabRequestCount int32
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&gitlabRequestCount, 1)
+		if count == 1 {
+			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	// Client with persist callback that returns an error
+	client := &Client{
+		baseURL:    gitlabServer.URL,
+		cookieFile: cookieFile,
+		ssoPrompt:  autoApproveSSO(),
+		ssoPersist: func(domain string) error {
+			persistCalled = true
+			return errors.New("config write failed")
+		},
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that triggers SSO redirect
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// SSO flow should succeed even if persist fails
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request should succeed despite persist error: %v", err)
+	}
+	resp.Body.Close()
+
+	// Verify persist was called but SSO still worked
+	if !persistCalled {
+		t.Error("persist callback should have been called")
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
 	}
 }

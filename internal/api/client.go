@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -20,22 +19,12 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 
 	"gitlab.com/gitlab-org/cli/internal/config"
+	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	"gitlab.com/gitlab-org/cli/internal/iostreams"
 	"gitlab.com/gitlab-org/cli/internal/oauth2"
 	"gitlab.com/gitlab-org/cli/internal/utils"
 )
-
-// SSORedirectError is returned when a mutating request (POST/PUT/PATCH/DELETE) is being
-// redirected to a different host (typically an IdP for SSO authentication).
-// This allows the caller to complete the SSO flow with a GET request and retry the original request.
-type SSORedirectError struct {
-	RedirectURL string
-	Method      string
-}
-
-func (e *SSORedirectError) Error() string {
-	return fmt.Sprintf("SSO redirect detected for %s request to %s", e.Method, e.RedirectURL)
-}
 
 // ClientOption represents a function that configures a Client
 type ClientOption func(*Client) error
@@ -61,6 +50,12 @@ type Client struct {
 	clientKeyFile  string
 	// cookie file for IdP/SSO authentication
 	cookieFile string
+	// ssoPrompt is called to get user consent before SSO redirects
+	ssoPrompt SSOConsentFunc
+	// ssoPersist is called to save approved SSO domains to config
+	ssoPersist SSOPersistFunc
+	// ssoAllowedDomains are pre-approved SSO domains (loaded from config)
+	ssoAllowedDomains map[string]bool
 
 	baseURL    string
 	authSource gitlab.AuthSource
@@ -74,71 +69,6 @@ type Client struct {
 
 func (c *Client) HTTPClient() *http.Client {
 	return c.httpClient
-}
-
-// DoWithSSORetry performs an HTTP request with automatic SSO redirect handling.
-// For mutating requests (POST/PUT/PATCH/DELETE) that are redirected to an IdP for SSO,
-// this method completes the SSO flow with a GET request and retries the original request.
-func (c *Client) DoWithSSORetry(req *http.Request) (*http.Response, error) {
-	// Save request body for potential retry (only for mutating methods)
-	var bodyBytes []byte
-	if req.Body != nil && isMutatingMethod(req.Method) {
-		var err error
-		bodyBytes, err = io.ReadAll(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read request body: %w", err)
-		}
-		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err == nil {
-		return resp, nil
-	}
-
-	// Check if this is an SSO redirect error
-	var ssoErr *SSORedirectError
-	if !errors.As(err, &ssoErr) {
-		return nil, err
-	}
-
-	// Complete SSO flow with a GET request (which the IdP expects)
-	ctx := req.Context()
-	ssoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ssoErr.RedirectURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create SSO request: %w", err)
-	}
-
-	ssoResp, err := c.httpClient.Do(ssoReq)
-	if err != nil {
-		return nil, fmt.Errorf("SSO flow failed: %w", err)
-	}
-	// Consume and close the response body
-	_, _ = io.Copy(io.Discard, ssoResp.Body)
-	ssoResp.Body.Close()
-
-	// Retry the original request with fresh cookies from the jar.
-	// CRITICAL: Do NOT copy the original Cookie header - let the cookie jar provide
-	// the fresh session cookies that were set during the SSO flow.
-	retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create retry request: %w", err)
-	}
-
-	// Copy headers BUT NOT the Cookie header
-	for key, values := range req.Header {
-		if !strings.EqualFold(key, "Cookie") {
-			retryReq.Header[key] = values
-		}
-	}
-
-	return c.httpClient.Do(retryReq)
-}
-
-// isMutatingMethod returns true if the HTTP method modifies data (POST, PUT, PATCH, DELETE).
-func isMutatingMethod(method string) bool {
-	return method == http.MethodPost || method == http.MethodPut ||
-		method == http.MethodPatch || method == http.MethodDelete
 }
 
 // AuthSource returns the auth source
@@ -293,34 +223,15 @@ func (c *Client) initializeHTTPClient() error {
 		}
 		c.httpClient.Jar = jar
 
-		// Create the CheckRedirect handler for limiting redirects and SSO detection.
-		// For mutating methods redirecting to different host (IdP), this returns
-		// SSORedirectError for backward compatibility with DoWithSSORetry.
-		checkRedirect := func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
+		// Limit redirects to prevent infinite loops.
+		// Note: SSO redirects are handled by ssoTransport at the transport level,
+		// so this CheckRedirect only needs to enforce the redirect limit.
+		c.httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxRedirects)
 			}
-
-			if len(via) == 0 {
-				return nil
-			}
-
-			originalReq := via[0]
-			originalHost := originalReq.URL.Host
-			newHost := req.URL.Host
-
-			// For mutating methods redirecting to a different host (IdP), stop redirect
-			// and return SSORedirectError so the caller can handle SSO flow
-			if originalHost != newHost && isMutatingMethod(originalReq.Method) {
-				return &SSORedirectError{
-					RedirectURL: req.URL.String(),
-					Method:      originalReq.Method,
-				}
-			}
-
 			return nil
 		}
-		c.httpClient.CheckRedirect = checkRedirect
 
 		// Create a separate ssoClient that uses the underlying transport directly.
 		// This client shares the same cookie jar but doesn't use ssoTransport,
@@ -328,10 +239,11 @@ func (c *Client) initializeHTTPClient() error {
 		ssoClient := &http.Client{
 			Transport: rt, // Use underlying transport, NOT ssoTransport
 			Jar:       jar,
+			Timeout:   SSOTimeout,
 			// Limit redirects to prevent infinite redirect loops during SSO flow
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 10 {
-					return errors.New("stopped after 10 redirects")
+				if len(via) >= maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
 				}
 				return nil
 			},
@@ -343,8 +255,11 @@ func (c *Client) initializeHTTPClient() error {
 		// The ssoTransport detects redirects at the response level (before http.Client
 		// processes them with CheckRedirect), allowing it to handle SSO seamlessly.
 		c.httpClient.Transport = &ssoTransport{
-			rt:        rt,
-			ssoClient: ssoClient,
+			rt:             rt,
+			ssoClient:      ssoClient,
+			promptForSSO:   c.ssoPrompt,
+			persistDomain:  c.ssoPersist,
+			allowedDomains: c.ssoAllowedDomains,
 		}
 	}
 
@@ -363,10 +278,14 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 		return nil, fmt.Errorf("failed to load cookies from file: %w", err)
 	}
 
+	if len(cookies) == 0 {
+		return nil, fmt.Errorf("cookie file %q contains no valid cookies; ensure it is in Netscape/Mozilla format with unexpired cookies", c.cookieFile)
+	}
+
 	// Group cookies by domain and add them to the jar.
-	// We need to load ALL cookies (not just those matching the base URL) because
-	// the request may be redirected to an identity provider (e.g., SAML/SSO) on
-	// a different domain, and those redirects need the IdP cookies to authenticate.
+	// We load ALL cookies because the request may be redirected to an identity
+	// provider (e.g., SAML/SSO) on a different domain, and those redirects
+	// need the IdP cookies to authenticate.
 	domainCookies := make(map[string][]*http.Cookie)
 	for _, cookie := range cookies {
 		// Normalize domain - remove leading dot for URL construction
@@ -378,7 +297,7 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 	for domain, domainCookieList := range domainCookies {
 		domainURL, err := url.Parse("https://" + domain + "/")
 		if err != nil {
-			// Invalid domain format - skip this domain as it won't be usable anyway
+			dbg.Debugf("skipping %d cookies for invalid domain %q: %v", len(domainCookieList), domain, err)
 			continue
 		}
 		jar.SetCookies(domainURL, domainCookieList)
@@ -461,8 +380,43 @@ func WithCookieFile(cookieFile string) ClientOption {
 	}
 }
 
-// NewClientFromConfig initializes the global api with the config data
+// WithSSOPrompt configures a callback function to prompt for user consent before SSO redirects.
+// The function receives the IdP domain and should return (allowed, error).
+// If not set, SSO redirects will fail with an error requiring interactive mode.
+func WithSSOPrompt(fn SSOConsentFunc) ClientOption {
+	return func(c *Client) error {
+		c.ssoPrompt = fn
+		return nil
+	}
+}
+
+// WithSSOPersist configures a callback to save approved SSO domains to persistent storage.
+// This is called after the user consents to an SSO redirect.
+func WithSSOPersist(fn SSOPersistFunc) ClientOption {
+	return func(c *Client) error {
+		c.ssoPersist = fn
+		return nil
+	}
+}
+
+// WithSSOAllowedDomains configures pre-approved SSO domains (typically loaded from config).
+// Redirects to these domains will not prompt for consent.
+func WithSSOAllowedDomains(domains map[string]bool) ClientOption {
+	return func(c *Client) error {
+		c.ssoAllowedDomains = domains
+		return nil
+	}
+}
+
+// NewClientFromConfig initializes the global api with the config data.
+// Deprecated: Use NewClientFromConfigWithIO for interactive SSO consent prompts.
 func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, userAgent string) (*Client, error) {
+	return NewClientFromConfigWithIO(repoHost, cfg, isGraphQL, userAgent, nil)
+}
+
+// NewClientFromConfigWithIO initializes the api client with config data and optional iostreams.
+// If io is provided and a cookie file is configured, SSO redirects will prompt for user consent.
+func NewClientFromConfigWithIO(repoHost string, cfg config.Config, isGraphQL bool, userAgent string, io *iostreams.IOStreams) (*Client, error) {
 	apiHost, _ := cfg.Get(repoHost, "api_host")
 	if apiHost == "" {
 		apiHost = repoHost
@@ -552,6 +506,22 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 
 	if cookieFile != "" {
 		options = append(options, WithCookieFile(cookieFile))
+
+		// Load pre-approved SSO domain from config
+		ssoDomain, _ := cfg.Get(repoHost, "sso_domain")
+		if ssoDomain != "" {
+			options = append(options, WithSSOAllowedDomains(map[string]bool{ssoDomain: true}))
+		}
+
+		// Add SSO consent prompt if iostreams is available
+		if io != nil {
+			options = append(options, WithSSOPrompt(NewSSOPrompt(io)))
+
+			// Add persist callback to save approved domains to config
+			options = append(options, WithSSOPersist(func(domain string) error {
+				return cfg.Set(repoHost, "sso_domain", domain)
+			}))
+		}
 	}
 
 	return NewClient(newAuthSource, options...)
