@@ -4,9 +4,19 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
+
+	"gitlab.com/gitlab-org/cli/internal/dbg"
 )
+
+// SSOConsentFunc prompts the user for consent before redirecting to an SSO IdP.
+// It receives the IdP domain and returns (allowed, error).
+// If nil, SSO redirects to unknown domains will fail with an error.
+type SSOConsentFunc func(domain string) (bool, error)
 
 // ssoTransport is an http.RoundTripper that handles SSO authentication redirects
 // and preserves HTTP methods for mutating requests during redirects.
@@ -23,18 +33,36 @@ import (
 // This allows all HTTP requests (including those from the gitlab.Client library)
 // to automatically handle SSO authentication and method-preserving redirects
 // without requiring special handling at the caller level.
+// SSOPersistFunc saves an approved SSO domain to persistent storage (e.g., config).
+type SSOPersistFunc func(domain string) error
+
 type ssoTransport struct {
 	// rt is the underlying RoundTripper (typically http.Transport)
 	rt http.RoundTripper
 	// ssoClient is used for SSO flow and retry requests.
 	// It shares the same cookie jar but uses the underlying transport.
 	ssoClient *http.Client
+	// promptForSSO is called to get user consent before redirecting to an IdP.
+	// If nil, redirects to unknown domains will fail.
+	promptForSSO SSOConsentFunc
+	// persistDomain is called after consent is granted to save the domain.
+	// If nil, domains are only remembered for the current session.
+	persistDomain SSOPersistFunc
+	// mu protects allowedDomains from concurrent access
+	mu sync.RWMutex
+	// allowedDomains tracks domains the user has approved (from config or session).
+	allowedDomains map[string]bool
 }
 
 // maxRedirects is the maximum number of redirects to follow for same-host redirects.
 // This matches the default limit used by Go's http.Client and provides a reasonable
 // balance between following legitimate redirect chains and preventing infinite loops.
 const maxRedirects = 10
+
+// SSOTimeout is the timeout for SSO authentication requests.
+// This provides a reasonable limit for completing the SSO flow with an external IdP
+// while preventing indefinite hangs if the IdP is unresponsive.
+const SSOTimeout = 30 * time.Second
 
 // requiresMethodPreservation returns true if the status code is one that causes
 // standard HTTP clients to convert POST to GET. Per HTTP spec:
@@ -67,6 +95,16 @@ func isSSORedirect(originalHost, locationHeader string) bool {
 	}
 	// Relative URL - same host
 	return false
+}
+
+// isLocalhost returns true if the hostname is a localhost/loopback address.
+// This handles "localhost", IPv4 loopback (127.0.0.0/8), and IPv6 loopback (::1).
+func isLocalhost(hostname string) bool {
+	if hostname == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	return ip != nil && ip.IsLoopback()
 }
 
 // RoundTrip implements http.RoundTripper.
@@ -125,6 +163,36 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		return nil, fmt.Errorf("failed to parse redirect URL: %w", err)
 	}
 
+	// Enforce HTTPS for SSO redirects to prevent cookie theft via MITM.
+	// Allow HTTP only for localhost (used in tests and development).
+	if redirectURL.Scheme != "https" && !isLocalhost(redirectURL.Hostname()) {
+		return nil, fmt.Errorf("SSO redirect rejected: expected HTTPS but got %s (URL: %s)", redirectURL.Scheme, redirectURL.Host)
+	}
+
+	// Check if user has consented to redirect to this IdP domain
+	redirectHost := redirectURL.Hostname()
+	if !t.isDomainAllowed(redirectHost) {
+		if t.promptForSSO == nil {
+			return nil, fmt.Errorf("SSO redirect to %s requires consent; use interactive mode or pre-approve the domain", redirectHost)
+		}
+		allowed, err := t.promptForSSO(redirectHost)
+		if err != nil {
+			return nil, fmt.Errorf("SSO consent prompt failed: %w", err)
+		}
+		if !allowed {
+			return nil, fmt.Errorf("SSO redirect to %s was declined by user", redirectHost)
+		}
+		// Remember consent for rest of session
+		t.addAllowedDomain(redirectHost)
+
+		// Persist to config if callback is set
+		if t.persistDomain != nil {
+			if err := t.persistDomain(redirectHost); err != nil {
+				dbg.Debugf("failed to persist SSO domain %s to config: %v", redirectHost, err)
+			}
+		}
+	}
+
 	// Complete SSO flow with a GET request (which the IdP expects)
 	ctx := req.Context()
 	ssoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, redirectURL.String(), nil)
@@ -139,6 +207,11 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 	// Consume and close the response body
 	_, _ = io.Copy(io.Discard, ssoResp.Body)
 	ssoResp.Body.Close()
+
+	// Validate SSO response - if IdP returned an error, the SSO flow failed
+	if ssoResp.StatusCode >= 400 {
+		return nil, fmt.Errorf("SSO authentication failed: IdP returned status %d; cookies may be expired or invalid", ssoResp.StatusCode)
+	}
 
 	// Retry the original request with fresh cookies from the jar.
 	// CRITICAL: Do NOT copy the original Cookie header - let the cookie jar provide
@@ -231,4 +304,29 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 // These headers are either managed by the HTTP client or need to be recalculated.
 func shouldExcludeHeader(key string) bool {
 	return strings.EqualFold(key, "Cookie") || strings.EqualFold(key, "Content-Length")
+}
+
+// isMutatingMethod returns true if the HTTP method modifies data (POST, PUT, PATCH, DELETE).
+func isMutatingMethod(method string) bool {
+	return method == http.MethodPost || method == http.MethodPut ||
+		method == http.MethodPatch || method == http.MethodDelete
+}
+
+// isDomainAllowed checks if a domain has been approved for SSO redirect.
+// Thread-safe.
+func (t *ssoTransport) isDomainAllowed(domain string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.allowedDomains[domain]
+}
+
+// addAllowedDomain adds a domain to the allowed list.
+// Thread-safe.
+func (t *ssoTransport) addAllowedDomain(domain string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.allowedDomains == nil {
+		t.allowedDomains = make(map[string]bool)
+	}
+	t.allowedDomains[domain] = true
 }

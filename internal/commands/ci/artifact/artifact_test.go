@@ -6,17 +6,23 @@ import (
 	"archive/zip"
 	"bytes"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 
-	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
-
+	"gitlab.com/gitlab-org/cli/internal/api"
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/config"
+	"gitlab.com/gitlab-org/cli/internal/git"
+	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
+	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
 )
 
 func doesFileExist(fileName string) bool {
@@ -24,32 +30,88 @@ func doesFileExist(fileName string) bool {
 	return err == nil
 }
 
-func createZipBuffer(t *testing.T, filename string) *bytes.Reader {
+func createZipFile(t *testing.T, filename string) (string, string) {
 	t.Helper()
 
-	buf := new(bytes.Buffer)
-	zipWriter := zip.NewWriter(buf)
+	tempPath := t.TempDir()
+	archive, err := os.CreateTemp(tempPath, "test.*.zip")
+	require.NoError(t, err)
+	defer archive.Close()
+
+	zipWriter := zip.NewWriter(archive)
 
 	f1, err := os.Open("./testdata/file.txt")
-	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
 	defer f1.Close()
 
 	w1, err := zipWriter.Create(filename)
-	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := io.Copy(w1, f1); err != nil {
+		panic(err)
+	}
 
-	_, err = io.Copy(w1, f1)
-	require.NoError(t, err)
+	zipWriter.Close()
 
-	err = zipWriter.Close()
-	require.NoError(t, err)
-
-	return bytes.NewReader(buf.Bytes())
+	return tempPath, archive.Name()
 }
 
-func createSymlinkZipBuffer(t *testing.T, tempPath string) *bytes.Reader {
+func makeTestFactory(t *testing.T) (cmdutils.Factory, *httpmock.Mocker) {
 	t.Helper()
 
-	buf := new(bytes.Buffer)
+	fakeHTTP := &httpmock.Mocker{
+		MatchURL: httpmock.PathAndQuerystring,
+	}
+
+	io, _, _, _ := cmdtest.TestIOStreams()
+
+	client := func(token, hostname string) (*api.Client, error) { // nolint:unparam
+		return cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, token, hostname), nil
+	}
+
+	// FIXME as mentioned in ./commands/auth/status/status_test.go,
+	// httpmock seems to require a quick test run before it will work
+	_, err := client("", "gitlab.com")
+	if err != nil {
+		return nil, nil
+	}
+
+	a, err := client("xxxx", "gitlab.com")
+	if err != nil {
+		return nil, nil
+	}
+
+	factory := cmdtest.NewTestFactory(io,
+		cmdtest.WithConfig(config.NewBlankConfig()),
+		cmdtest.WithGitLabClient(a.Lab()),
+		cmdtest.WithBaseRepo("OWNER", "REPO", glinstance.DefaultHostname),
+		func(f *cmdtest.Factory) {
+			f.RemotesStub = func() (glrepo.Remotes, error) {
+				return glrepo.Remotes{
+					{
+						Remote: &git.Remote{Name: "origin"},
+						Repo:   glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+					},
+				}, nil
+			}
+		},
+		cmdtest.WithBranch("feature"),
+	)
+
+	return factory, fakeHTTP
+}
+
+func createSymlinkZip(t *testing.T) (string, string) {
+	t.Helper()
+
+	tempPath := t.TempDir()
+
+	archive, err := os.CreateTemp(tempPath, "test.*.zip")
+	require.NoError(t, err)
+	defer archive.Close()
 
 	immutableFile, err := os.CreateTemp(tempPath, "immutable_file*.txt")
 	require.NoError(t, err)
@@ -57,35 +119,38 @@ func createSymlinkZipBuffer(t *testing.T, tempPath string) *bytes.Reader {
 	immutableText := "Immutable text! GitLab is cool"
 	_, err = immutableFile.WriteString(immutableText)
 	require.NoError(t, err)
-	immutableFile.Close()
 
-	err = os.Symlink(immutableFile.Name(), filepath.Join(tempPath, "symlink_file.txt"))
+	err = os.Symlink(immutableFile.Name(), tempPath+"/symlink_file.txt")
 	require.NoError(t, err)
 
-	zipWriter := zip.NewWriter(buf)
+	zipWriter := zip.NewWriter(archive)
 
 	fixtureFile, err := os.Open("./testdata/file.txt")
-	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
 	defer fixtureFile.Close()
 
 	zipFile, err := zipWriter.Create("symlink_file.txt")
-	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := io.Copy(zipFile, fixtureFile); err != nil {
+		panic(err)
+	}
 
-	_, err = io.Copy(zipFile, fixtureFile)
-	require.NoError(t, err)
+	zipWriter.Close()
 
-	err = zipWriter.Close()
-	require.NoError(t, err)
-
-	return bytes.NewReader(buf.Bytes())
+	return tempPath, archive.Name()
 }
 
 func Test_NewCmdRun(t *testing.T) {
 	tests := []struct {
-		name     string
-		filename string
-		want     string
-		wantErr  bool
+		name       string
+		filename   string
+		want       string
+		customPath string
+		wantErr    bool
 	}{
 		{
 			name:     "A regular filename",
@@ -110,27 +175,31 @@ func Test_NewCmdRun(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// GIVEN
-			testClient := gitlabtesting.NewTestClient(t)
-			tempPath := t.TempDir()
+			factory, fakeHTTP := makeTestFactory(t)
+			tempPath, tempFileName := createZipFile(t, tt.filename)
 
-			zipBuffer := createZipBuffer(t, tt.filename)
+			fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/jobs/artifacts/main/download`,
+				httpmock.NewFileResponse(http.StatusOK, tempFileName))
 
-			testClient.MockJobs.EXPECT().
-				DownloadArtifactsFile("OWNER/REPO", "main", gomock.Any(), gomock.Any()).
-				Return(zipBuffer, nil, nil)
+			cmd := NewCmdRun(factory)
 
-			exec := cmdtest.SetupCmdForTest(
-				t,
-				NewCmdRun,
-				false,
-				cmdtest.WithGitLabClient(testClient.Client),
-			)
+			argv, err := shlex.Split("main secret_detection")
+			if err != nil {
+				t.Fatal(err)
+			}
 
-			// WHEN
-			_, err := exec("main secret_detection --path=" + tempPath)
+			cmd.SetArgs(argv)
 
-			// THEN
+			err = cmd.Flags().Set("path", tempPath)
+			if err != nil {
+				return
+			}
+
+			cmd.SetIn(&bytes.Buffer{})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+
+			_, err = cmd.ExecuteC()
 			filePathWanted := filepath.Join(tempPath, tt.want)
 
 			if tt.wantErr {
@@ -140,31 +209,40 @@ func Test_NewCmdRun(t *testing.T) {
 
 			assert.NoError(t, err, "Should not have errors")
 			assert.True(t, doesFileExist(filePathWanted), "File should exist")
+
+			if err != nil {
+				t.Fatal(err)
+			}
 		})
 	}
 
 	t.Run("symlink can't overwrite", func(t *testing.T) {
-		// GIVEN
-		testClient := gitlabtesting.NewTestClient(t)
-		tempPath := t.TempDir()
+		factory, fakeHTTP := makeTestFactory(t)
 
-		zipBuffer := createSymlinkZipBuffer(t, tempPath)
+		tempPath, tempFileName := createSymlinkZip(t)
 
-		testClient.MockJobs.EXPECT().
-			DownloadArtifactsFile("OWNER/REPO", "main", gomock.Any(), gomock.Any()).
-			Return(zipBuffer, nil, nil)
+		fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/jobs/artifacts/main/download?job=secret_detection`,
+			httpmock.NewFileResponse(http.StatusOK, tempFileName))
 
-		exec := cmdtest.SetupCmdForTest(
-			t,
-			NewCmdRun,
-			false,
-			cmdtest.WithGitLabClient(testClient.Client),
-		)
+		cmd := NewCmdRun(factory)
 
-		// WHEN
-		_, err := exec("main secret_detection --path=" + tempPath)
+		argv, err := shlex.Split("main secret_detection")
+		if err != nil {
+			t.Fatal(err)
+		}
 
-		// THEN
+		cmd.SetArgs(argv)
+
+		err = cmd.Flags().Set("path", tempPath)
+		if err != nil {
+			return
+		}
+
+		cmd.SetIn(&bytes.Buffer{})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+
+		_, err = cmd.ExecuteC()
 		assert.Error(t, err, "file in artifact would overwrite a symbolic link- cannot extract")
 	})
 }

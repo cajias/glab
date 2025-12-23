@@ -7,24 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 )
-
-func TestSSORedirectError_Error(t *testing.T) {
-	err := &SSORedirectError{
-		RedirectURL: "https://idp.example.com/oauth/authorize",
-		Method:      "POST",
-	}
-	expected := "SSO redirect detected for POST request to https://idp.example.com/oauth/authorize"
-	if err.Error() != expected {
-		t.Errorf("SSORedirectError.Error() = %q, want %q", err.Error(), expected)
-	}
-}
 
 func TestIsMutatingMethod(t *testing.T) {
 	tests := []struct {
@@ -44,122 +34,6 @@ func TestIsMutatingMethod(t *testing.T) {
 		t.Run(tt.method, func(t *testing.T) {
 			if got := isMutatingMethod(tt.method); got != tt.want {
 				t.Errorf("isMutatingMethod(%q) = %v, want %v", tt.method, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestCheckRedirect_SSODetection(t *testing.T) {
-	// Create a temporary directory for the test cookie file
-	tmpDir := t.TempDir()
-	cookieFile := filepath.Join(tmpDir, "cookies.txt")
-
-	// Use a future timestamp (now + 1 year) for cookie expiration
-	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
-
-	// Create a cookie file
-	cookieContent := fmt.Sprintf(`.gitlab.example.com	TRUE	/	TRUE	%d	session	value1
-`, futureTimestamp)
-
-	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
-
-	client := &Client{
-		baseURL:    "https://gitlab.example.com/api/v4",
-		cookieFile: cookieFile,
-	}
-
-	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
-
-	// Test that CheckRedirect is set
-	if client.httpClient.CheckRedirect == nil {
-		t.Fatal("CheckRedirect should be set when cookie file is configured")
-	}
-
-	tests := []struct {
-		name           string
-		originalMethod string
-		originalHost   string
-		redirectHost   string
-		wantSSOError   bool
-	}{
-		{
-			name:           "POST redirect to different host triggers SSO error",
-			originalMethod: http.MethodPost,
-			originalHost:   "gitlab.example.com",
-			redirectHost:   "idp.example.com",
-			wantSSOError:   true,
-		},
-		{
-			name:           "PUT redirect to different host triggers SSO error",
-			originalMethod: http.MethodPut,
-			originalHost:   "gitlab.example.com",
-			redirectHost:   "idp.example.com",
-			wantSSOError:   true,
-		},
-		{
-			name:           "PATCH redirect to different host triggers SSO error",
-			originalMethod: http.MethodPatch,
-			originalHost:   "gitlab.example.com",
-			redirectHost:   "idp.example.com",
-			wantSSOError:   true,
-		},
-		{
-			name:           "DELETE redirect to different host triggers SSO error",
-			originalMethod: http.MethodDelete,
-			originalHost:   "gitlab.example.com",
-			redirectHost:   "idp.example.com",
-			wantSSOError:   true,
-		},
-		{
-			name:           "GET redirect to different host does not trigger SSO error",
-			originalMethod: http.MethodGet,
-			originalHost:   "gitlab.example.com",
-			redirectHost:   "idp.example.com",
-			wantSSOError:   false,
-		},
-		{
-			name:           "POST redirect to same host does not trigger SSO error",
-			originalMethod: http.MethodPost,
-			originalHost:   "gitlab.example.com",
-			redirectHost:   "gitlab.example.com",
-			wantSSOError:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			originalReq, _ := http.NewRequest(tt.originalMethod, "https://"+tt.originalHost+"/api/v4/projects", nil)
-			redirectReq, _ := http.NewRequest(http.MethodGet, "https://"+tt.redirectHost+"/oauth/authorize", nil)
-
-			via := []*http.Request{originalReq}
-			err := client.httpClient.CheckRedirect(redirectReq, via)
-
-			if tt.wantSSOError {
-				if err == nil {
-					t.Error("expected SSORedirectError, got nil")
-					return
-				}
-				ssoErr, ok := err.(*SSORedirectError)
-				if !ok {
-					t.Errorf("expected *SSORedirectError, got %T", err)
-					return
-				}
-				if ssoErr.Method != tt.originalMethod {
-					t.Errorf("SSORedirectError.Method = %q, want %q", ssoErr.Method, tt.originalMethod)
-				}
-				if ssoErr.RedirectURL != redirectReq.URL.String() {
-					t.Errorf("SSORedirectError.RedirectURL = %q, want %q", ssoErr.RedirectURL, redirectReq.URL.String())
-				}
-			} else {
-				if err != nil {
-					t.Errorf("expected no error, got %v", err)
-				}
 			}
 		})
 	}
@@ -192,7 +66,7 @@ func TestCheckRedirect_TooManyRedirects(t *testing.T) {
 	}
 
 	// Create 10 requests in the via slice (simulating 10 redirects already followed)
-	via := make([]*http.Request, 10)
+	via := make([]*http.Request, maxRedirects)
 	for i := range via {
 		via[i], _ = http.NewRequest(http.MethodGet, fmt.Sprintf("https://example.com/redirect%d", i), nil)
 	}
@@ -203,203 +77,9 @@ func TestCheckRedirect_TooManyRedirects(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for too many redirects, got nil")
 	}
-	if err != nil && err.Error() != "stopped after 10 redirects" {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestDoWithSSORetry_NoRedirect(t *testing.T) {
-	// Setup test server that returns success immediately
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status": "success"}`))
-	}))
-	defer server.Close()
-
-	// Create a simple client without cookie file
-	client := &Client{
-		baseURL: server.URL,
-	}
-	err := client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
-
-	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v4/projects", bytes.NewBufferString(`{"name": "test"}`))
-	resp, err := client.DoWithSSORetry(req)
-	if err != nil {
-		t.Fatalf("DoWithSSORetry failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
-}
-
-func TestDoWithSSORetry_WithSSOFlow(t *testing.T) {
-	// Track request counts
-	var gitlabRequestCount int32
-	var idpRequestCount int32
-
-	// Create IdP server
-	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&idpRequestCount, 1)
-		// IdP should only receive GET requests
-		if r.Method != http.MethodGet {
-			t.Errorf("IdP received %s request, expected GET", r.Method)
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("SSO complete"))
-	}))
-	defer idpServer.Close()
-
-	// Create GitLab server
-	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(&gitlabRequestCount, 1)
-		if count == 1 {
-			// First request: redirect to IdP
-			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
-			return
-		}
-		// Second request: success (after SSO flow)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id": 123}`))
-	}))
-	defer gitlabServer.Close()
-
-	// Create a temporary directory for the test cookie file
-	tmpDir := t.TempDir()
-	cookieFile := filepath.Join(tmpDir, "cookies.txt")
-
-	// Use a future timestamp
-	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
-
-	// Create cookie file with cookies for both servers (simulating real IdP scenario)
-	// Note: We need to use localhost since test servers use it
-	cookieContent := fmt.Sprintf(`localhost	FALSE	/	FALSE	%d	session	value1
-`, futureTimestamp)
-
-	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
-
-	client := &Client{
-		baseURL:    gitlabServer.URL,
-		cookieFile: cookieFile,
-	}
-
-	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
-
-	// Make a POST request
-	body := `{"name": "test-project"}`
-	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.DoWithSSORetry(req)
-	if err != nil {
-		t.Fatalf("DoWithSSORetry failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Verify we got the success response
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
-	}
-
-	// Verify IdP received a GET request (SSO flow)
-	if atomic.LoadInt32(&idpRequestCount) != 1 {
-		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
-	}
-
-	// Verify GitLab received 2 requests (initial + retry)
-	if atomic.LoadInt32(&gitlabRequestCount) != 2 {
-		t.Errorf("expected 2 GitLab requests, got %d", gitlabRequestCount)
-	}
-}
-
-func TestDoWithSSORetry_PreservesRequestBody(t *testing.T) {
-	var receivedBody string
-
-	// Create test server that captures the request body
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, _ := io.ReadAll(r.Body)
-		receivedBody = string(bodyBytes)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	client := &Client{
-		baseURL: server.URL,
-	}
-
-	err := client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
-
-	// Make a POST request with a body
-	expectedBody := `{"important": "data"}`
-	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v4/projects", bytes.NewBufferString(expectedBody))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.DoWithSSORetry(req)
-	if err != nil {
-		t.Fatalf("DoWithSSORetry failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Verify the body was received correctly
-	if receivedBody != expectedBody {
-		t.Errorf("expected body %q, got %q", expectedBody, receivedBody)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
-}
-
-func TestDoWithSSORetry_HeadersPreserved(t *testing.T) {
-	var receivedHeaders http.Header
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header.Clone()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	client := &Client{
-		baseURL: server.URL,
-	}
-	err := client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
-
-	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v4/projects", nil)
-	req.Header.Set("X-Custom-Header", "custom-value")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer token123")
-
-	resp, err := client.DoWithSSORetry(req)
-	if err != nil {
-		t.Fatalf("DoWithSSORetry failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Verify custom headers were preserved
-	if receivedHeaders.Get("X-Custom-Header") != "custom-value" {
-		t.Errorf("X-Custom-Header not preserved: got %q", receivedHeaders.Get("X-Custom-Header"))
-	}
-	if receivedHeaders.Get("Content-Type") != "application/json" {
-		t.Errorf("Content-Type not preserved: got %q", receivedHeaders.Get("Content-Type"))
-	}
-	if receivedHeaders.Get("Authorization") != "Bearer token123" {
-		t.Errorf("Authorization not preserved: got %q", receivedHeaders.Get("Authorization"))
+	expectedErr := fmt.Sprintf("stopped after %d redirects", maxRedirects)
+	if err != nil && err.Error() != expectedErr {
+		t.Errorf("unexpected error: got %q, want %q", err.Error(), expectedErr)
 	}
 }
 
@@ -419,4 +99,232 @@ func TestCheckRedirect_NotSetWithoutCookieFile(t *testing.T) {
 	if client.httpClient.CheckRedirect != nil {
 		t.Error("CheckRedirect should not be set when cookie file is not configured")
 	}
+}
+
+func TestCreateCookieJar_EmptyCookieFile(t *testing.T) {
+	// Create an empty cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Write an empty file (or file with only comments)
+	err := os.WriteFile(cookieFile, []byte("# This is a comment\n"), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    "https://gitlab.example.com/api/v4",
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err == nil {
+		t.Fatal("expected error for empty cookie file, got nil")
+	}
+
+	// Verify error message is helpful
+	if !strings.Contains(err.Error(), "no valid cookies") {
+		t.Errorf("expected error to mention 'no valid cookies', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), cookieFile) {
+		t.Errorf("expected error to include cookie file path, got: %v", err)
+	}
+}
+
+func TestRequiresMethodPreservation(t *testing.T) {
+	tests := []struct {
+		statusCode int
+		want       bool
+	}{
+		{http.StatusOK, false},
+		{http.StatusMovedPermanently, true},   // 301
+		{http.StatusFound, true},              // 302
+		{http.StatusSeeOther, true},           // 303
+		{http.StatusTemporaryRedirect, false}, // 307 - already preserves method
+		{http.StatusPermanentRedirect, false}, // 308 - already preserves method
+		{http.StatusNotFound, false},
+		{http.StatusInternalServerError, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("status_%d", tt.statusCode), func(t *testing.T) {
+			if got := requiresMethodPreservation(tt.statusCode); got != tt.want {
+				t.Errorf("requiresMethodPreservation(%d) = %v, want %v", tt.statusCode, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsSSORedirect(t *testing.T) {
+	tests := []struct {
+		name           string
+		originalHost   string
+		locationHeader string
+		want           bool
+	}{
+		// Empty location
+		{"empty location", "gitlab.example.com", "", false},
+
+		// Relative URLs - same host
+		{"relative path", "gitlab.example.com", "/api/v4/projects", false},
+		{"relative path with query", "gitlab.example.com", "/oauth/callback?code=123", false},
+
+		// Absolute URLs - same host
+		{"same host https", "gitlab.example.com", "https://gitlab.example.com/callback", false},
+		{"same host http", "gitlab.example.com", "http://gitlab.example.com/callback", false},
+		{"same host with path", "gitlab.example.com", "https://gitlab.example.com/api/v4/projects", false},
+
+		// Absolute URLs - different host (SSO)
+		{"different host", "gitlab.example.com", "https://idp.example.com/saml", true},
+		{"different subdomain", "gitlab.example.com", "https://sso.example.com/auth", true},
+		{"completely different domain", "gitlab.example.com", "https://okta.com/login", true},
+
+		// Port handling
+		{"same host different port", "127.0.0.1:8080", "http://127.0.0.1:9090/callback", true},
+		{"same host same port", "127.0.0.1:8080", "http://127.0.0.1:8080/callback", false},
+		{"host with port to host without", "gitlab.example.com:443", "https://gitlab.example.com/callback", true},
+
+		// Edge cases
+		{"location with fragment", "gitlab.example.com", "https://idp.example.com/auth#state", true},
+		{"location with query and fragment", "gitlab.example.com", "https://idp.example.com/auth?a=1#state", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSSORedirect(tt.originalHost, tt.locationHeader); got != tt.want {
+				t.Errorf("isSSORedirect(%q, %q) = %v, want %v", tt.originalHost, tt.locationHeader, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsLocalhost(t *testing.T) {
+	tests := []struct {
+		hostname string
+		want     bool
+	}{
+		// Standard localhost
+		{"localhost", true},
+
+		// IPv4 loopback
+		{"127.0.0.1", true},
+		{"127.0.0.2", true}, // Any 127.x.x.x is loopback
+		{"127.255.255.255", true},
+
+		// IPv6 loopback
+		{"::1", true},
+
+		// Non-loopback addresses
+		{"192.168.1.1", false},
+		{"10.0.0.1", false},
+		{"0.0.0.0", false},
+		{"example.com", false},
+		{"gitlab.example.com", false},
+
+		// Edge cases
+		{"", false},
+		{"localhost.localdomain", false}, // Not the same as "localhost"
+		{"::2", false},                   // Not loopback
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.hostname, func(t *testing.T) {
+			if got := isLocalhost(tt.hostname); got != tt.want {
+				t.Errorf("isLocalhost(%q) = %v, want %v", tt.hostname, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSSOTransport_HTTPSEnforcement(t *testing.T) {
+	// Create a test server that will act as the "GitLab" server
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// This should not be reached in the HTTP rejection test
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer gitlabServer.Close()
+
+	jar, _ := cookiejar.New(nil)
+	ssoClient := &http.Client{Jar: jar, Timeout: SSOTimeout}
+
+	transport := &ssoTransport{
+		rt:        http.DefaultTransport,
+		ssoClient: ssoClient,
+	}
+
+	t.Run("rejects HTTP redirect to non-localhost", func(t *testing.T) {
+		// Create a request to a hypothetical GitLab endpoint
+		req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewReader([]byte("{}")))
+
+		// Simulate an HTTP redirect to a non-localhost IdP (should be rejected)
+		resp := &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://idp.example.com/saml/auth"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+
+		_, err := transport.handleSSORedirect(req, resp, "http://idp.example.com/saml/auth", []byte("{}"))
+		if err == nil {
+			t.Fatal("expected error for HTTP redirect to non-localhost, got nil")
+		}
+		if !strings.Contains(err.Error(), "SSO redirect rejected") {
+			t.Errorf("expected 'SSO redirect rejected' error, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "expected HTTPS") {
+			t.Errorf("expected 'expected HTTPS' in error, got: %v", err)
+		}
+	})
+
+	t.Run("allows HTTPS redirect", func(t *testing.T) {
+		// Create a mock HTTPS IdP server
+		idpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer idpServer.Close()
+
+		// Use the TLS client from the test server
+		transport.ssoClient = idpServer.Client()
+		transport.ssoClient.Jar = jar
+
+		req, _ := http.NewRequest(http.MethodPost, "https://gitlab.example.com/api/v4/projects", bytes.NewReader([]byte("{}")))
+
+		resp := &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{idpServer.URL + "/saml/auth"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+
+		// This will fail at the retry stage (no real GitLab server), but should NOT fail at HTTPS check
+		_, err := transport.handleSSORedirect(req, resp, idpServer.URL+"/saml/auth", []byte("{}"))
+		// We expect an error, but NOT about HTTPS rejection
+		if err != nil && strings.Contains(err.Error(), "SSO redirect rejected") {
+			t.Errorf("HTTPS redirect should not be rejected: %v", err)
+		}
+	})
+
+	t.Run("allows HTTP redirect to localhost", func(t *testing.T) {
+		// Create a local test server (will be on 127.0.0.1)
+		localServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer localServer.Close()
+
+		transport.ssoClient = &http.Client{Jar: jar, Timeout: SSOTimeout}
+
+		req, _ := http.NewRequest(http.MethodPost, "https://gitlab.example.com/api/v4/projects", bytes.NewReader([]byte("{}")))
+
+		resp := &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{localServer.URL + "/callback"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+
+		// This will fail at the retry stage (no real GitLab server), but should NOT fail at HTTPS check
+		_, err := transport.handleSSORedirect(req, resp, localServer.URL+"/callback", []byte("{}"))
+		// We expect an error, but NOT about HTTPS rejection
+		if err != nil && strings.Contains(err.Error(), "SSO redirect rejected") {
+			t.Errorf("localhost HTTP redirect should not be rejected: %v", err)
+		}
+	})
 }
