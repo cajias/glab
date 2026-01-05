@@ -95,7 +95,7 @@ func TestIssueList_tty(t *testing.T) {
 	assert.Equal(t, heredoc.Doc(`
 		Showing 3 open issues in OWNER/REPO that match your search. (Page 1)
 
-		ID	Title    	Labels     	Created at       
+		ID	Title    	Labels     	Created at        
 		#6	Issue one	(foo, bar) 	about X years ago
 		#7	Issue two	(fooz, baz)	about X years ago
 		#8	Incident 	(foo, baz) 	about X years ago
@@ -228,7 +228,7 @@ func TestIssueList_tty_withIssueType(t *testing.T) {
 	assert.Equal(t, heredoc.Doc(`
 		Showing 1 open incident in OWNER/REPO that match your search. (Page 1)
 
-		ID	Title   	Labels    	Created at       
+		ID	Title   	Labels    	Created at        
 		#8	Incident	(foo, baz)	about X years ago
 
 	`), out)
