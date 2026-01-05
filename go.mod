@@ -47,7 +47,7 @@ require (
 	github.com/survivorbat/huhtest v0.0.2
 	github.com/tidwall/pretty v1.2.1
 	github.com/zalando/go-keyring v0.2.6
-	gitlab.com/gitlab-org/api/client-go v1.10.0
+	gitlab.com/gitlab-org/api/client-go v1.11.0
 	go.uber.org/goleak v1.3.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/crypto v0.46.0
@@ -116,9 +116,9 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
-	github.com/godbus/dbus/v5 v5.2.1 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
-	github.com/google/go-querystring v1.1.0 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/pprof v0.0.0-20250403155104-27863c87afa6 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
