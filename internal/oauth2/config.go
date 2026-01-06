@@ -25,7 +25,7 @@ func oauthClientID(cfg config.Config, hostname string) (string, error) {
 		}
 
 		if clientID == "" {
-			return "", fmt.Errorf("set 'client_id' first with `glab config set client_id <client_id> -g -h %s`", hostname)
+			return "", fmt.Errorf("set 'client_id' first with `glab config set client_id <client_id> -g --host %s`", hostname)
 		}
 		return clientID, nil
 	}
