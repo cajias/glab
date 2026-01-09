@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -43,9 +44,41 @@ func NewCmdMirror(f cmdutils.Factory) *cobra.Command {
 
 	projectMirrorCmd := &cobra.Command{
 		Use:   "mirror [ID | URL | PATH] [flags]",
-		Short: "Mirror a project or repository to the specified location, using pull or push methods.",
-		Long:  ``,
-		Args:  cobra.MaximumNArgs(1),
+		Short: "Configure mirroring on an existing project to sync with a remote repository.",
+		Long: heredoc.Docf(`
+			Configure repository mirroring for an existing GitLab project.
+
+			The GitLab project must already exist. This command configures mirroring
+			on existing projects but does not create new projects.
+
+			Mirror types:
+
+			- Pull mirror: Syncs changes from an external repository to your GitLab project. The external repository is the source of truth. Use pull mirrors to sync from GitHub, Bitbucket, or other GitLab instances.
+			- Push mirror: Syncs changes from your GitLab project to an external repository. Your GitLab project is the source of truth. Use push mirrors to sync to GitHub, Bitbucket, or other GitLab instances.
+
+			Authentication:
+
+			- For pull mirrors from private repositories, embed credentials in the URL: %[1]shttps://username:token@gitlab.example.com/org/repo%[1]s
+			- For push mirrors to private repositories, configure credentials in the GitLab UI or use SSH URLs with deploy keys.
+		`, "`"),
+		Example: heredoc.Docf(`
+			# Create a project, then configure pull mirroring
+			$ glab repo create mygroup/myproject --public
+			$ glab repo mirror mygroup/myproject --direction=pull --url=%[1]shttps://gitlab.example.com/org/repo%[1]s
+
+			# Configure pull mirroring from a private repository
+			$ glab repo mirror mygroup/myproject --direction=pull --url=%[1]shttps://username:token@gitlab.example.com/org/private-repo%[1]s
+
+			# Configure pull mirroring for protected branches only
+			$ glab repo mirror mygroup/myproject --direction=pull --url=%[1]shttps://gitlab.example.com/org/repo%[1]s --protected-branches-only
+
+			# Configure push mirroring to another GitLab instance
+			$ glab repo mirror mygroup/myproject --direction=push --url=%[1]shttps://gitlab-backup.example.com/backup/myproject%[1]s
+
+			# Configure push mirroring and allow divergent refs
+			$ glab repo mirror mygroup/myproject --direction=push --url=%[1]shttps://gitlab-backup.example.com/backup/repo%[1]s --allow-divergence
+		`, `"`),
+		Args: cobra.MaximumNArgs(1),
 		Annotations: map[string]string{
 			mcpannotations.Destructive: "true",
 		},
@@ -110,7 +143,10 @@ func (o *options) complete(args []string) error {
 
 	project, err := o.baseRepo.Project(o.client)
 	if err != nil {
-		return err
+		return cmdutils.WrapError(
+			err,
+			"Failed to find project. The project must exist before you can configure mirroring. Create it with 'glab repo create'.",
+		)
 	}
 	o.projectID = project.ID
 
@@ -151,7 +187,7 @@ func (o *options) createPushMirror() error {
 		KeepDivergentRefs:     gitlab.Ptr(o.allowDivergence),
 	})
 	if err != nil {
-		return cmdutils.WrapError(err, "Failed to create push mirror.")
+		return cmdutils.WrapError(err, "Failed to create push mirror. Check if the project exists and ensure you have the necessary permissions.")
 	}
 	greenCheck := o.io.Color().Green("✓")
 	fmt.Fprintf(
@@ -169,7 +205,7 @@ func (o *options) createPullMirror() error {
 		OnlyMirrorProtectedBranches: gitlab.Ptr(o.protectedBranchesOnly),
 	})
 	if err != nil {
-		return cmdutils.WrapError(err, "Failed to create pull mirror.")
+		return cmdutils.WrapError(err, "Failed to create pull mirror. Check if the project exists and ensure you have the necessary permissions.")
 	}
 	greenCheck := o.io.Color().Green("✓")
 	fmt.Fprintf(
