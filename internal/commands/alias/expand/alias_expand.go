@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -12,7 +13,6 @@ import (
 	"github.com/google/shlex"
 
 	"gitlab.com/gitlab-org/cli/internal/config"
-	"gitlab.com/gitlab-org/cli/internal/execext"
 )
 
 // ExpandAlias processes argv to see if it should be rewritten according to a user's aliases. The
@@ -79,7 +79,7 @@ func ExpandAlias(cfg config.Config, args []string, findShFunc func() (string, er
 }
 
 func findSh() (string, error) {
-	shPath, err := execext.LookPath("sh")
+	shPath, err := exec.LookPath("sh")
 	if err == nil {
 		return shPath, nil
 	}
@@ -87,7 +87,7 @@ func findSh() (string, error) {
 	if runtime.GOOS == "windows" {
 		winNotFoundErr := errors.New("unable to locate sh to execute the shell alias with. The sh.exe interpreter is typically distributed with Git for Windows")
 		// We can try and find a sh executable in a Git for Windows install
-		gitPath, err := execext.LookPath("git")
+		gitPath, err := exec.LookPath("git")
 		if err != nil {
 			return "", winNotFoundErr
 		}
