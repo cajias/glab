@@ -18,7 +18,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 	cmdutils.EnableRepoOverride(cmd, f)
 
-	cmd.AddCommand(initCmd.NewCmd(f, initCmd.RunCommand))
+	cmd.AddCommand(initCmd.NewCmd(f))
 	cmd.AddCommand(stateCmd.NewCmd(f))
 	return cmd
 }
