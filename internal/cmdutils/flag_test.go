@@ -64,6 +64,8 @@ func (f *dummyFactory) DefaultHostname() string { return "" }
 
 func (f *dummyFactory) BuildInfo() api.BuildInfo { return api.BuildInfo{} }
 
+func (f *dummyFactory) Executor() Executor { return nil }
+
 func NewDummyCmd(f Factory, runE func(opts *options) error) *cobra.Command {
 	opts := &options{
 		baseRepo: f.BaseRepo,

@@ -51,6 +51,7 @@ linters:
             files:
               - "**/*.go"
               - "!**/cmd/glab/*.go"
+              - "!**/cmd/gen-docs/*.go"
               - "!**/internal/testing/cmdtest/*.go"
               - "!**/internal/cmdutils/*_test.go"
               - "!**/internal/commands/*.go"

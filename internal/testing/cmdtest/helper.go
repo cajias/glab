@@ -177,6 +177,7 @@ type Factory struct {
 	BranchStub       func() (string, error)
 	IOStub           *iostreams.IOStreams
 	BuildInfoStub    api.BuildInfo
+	ExecutorStub     cmdutils.Executor
 
 	repoOverride string
 
@@ -233,6 +234,10 @@ func (f *Factory) DefaultHostname() string {
 
 func (f *Factory) BuildInfo() api.BuildInfo {
 	return f.BuildInfoStub
+}
+
+func (f *Factory) Executor() cmdutils.Executor {
+	return f.ExecutorStub
 }
 
 type CmdExecFunc func(cli string) (*test.CmdOut, error)
@@ -329,6 +334,12 @@ func WithBuildInfo(buildInfo api.BuildInfo) FactoryOption {
 func WithStdin(stdin string) FactoryOption {
 	return func(f *Factory) {
 		f.IOStub.In = io.NopCloser(bytes.NewBufferString(stdin))
+	}
+}
+
+func WithExecutor(exec cmdutils.Executor) FactoryOption {
+	return func(f *Factory) {
+		f.ExecutorStub = exec
 	}
 }
 

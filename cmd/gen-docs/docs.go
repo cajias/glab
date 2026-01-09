@@ -17,6 +17,7 @@ import (
 
 	"gitlab.com/gitlab-org/cli/cmd/gen-docs/urlwrapper"
 	"gitlab.com/gitlab-org/cli/internal/api"
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
@@ -481,4 +482,8 @@ func (f *factory) DefaultHostname() string {
 
 func (f *factory) BuildInfo() api.BuildInfo {
 	return api.BuildInfo{}
+}
+
+func (f *factory) Executor() cmdutils.Executor {
+	return nil
 }

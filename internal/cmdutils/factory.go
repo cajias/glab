@@ -33,6 +33,7 @@ type Factory interface {
 	IO() *iostreams.IOStreams
 	DefaultHostname() string
 	BuildInfo() api.BuildInfo
+	Executor() Executor
 }
 
 type DefaultFactory struct {
@@ -217,4 +218,10 @@ func (f *DefaultFactory) IO() *iostreams.IOStreams {
 
 func (f *DefaultFactory) BuildInfo() api.BuildInfo {
 	return f.buildInfo
+}
+
+func (f *DefaultFactory) Executor() Executor {
+	return &factoryExecutor{
+		io: f.io,
+	}
 }
