@@ -415,6 +415,11 @@ func (s *IOStreams) Multiline(ctx context.Context, result *string, title, placeh
 }
 
 func (s *IOStreams) Editor(ctx context.Context, result *string, title, description, defaultContent, editorCmd string) error {
+	// Set the default content if provided - MUST be done before Value(result)
+	if defaultContent != "" {
+		*result = defaultContent
+	}
+
 	text := huh.NewText().
 		Title(title).
 		Value(result).
@@ -426,17 +431,78 @@ func (s *IOStreams) Editor(ctx context.Context, result *string, title, descripti
 		text = text.Description(description)
 	}
 
-	// Set the default content if provided
-	if defaultContent != "" {
-		*result = defaultContent
-	}
-
 	// Set the editor command if provided
 	if editorCmd != "" {
 		text = text.Editor(editorCmd)
 	}
 
 	return s.Run(ctx, text)
+}
+
+// DirectEditor opens an external editor with the given content in a temporary file,
+// waits for the editor to close, and returns the edited content. This is useful when
+// the user explicitly requests to use an external editor (e.g., via -d- flag).
+func (s *IOStreams) DirectEditor(ctx context.Context, result *string, defaultContent, editorCmd string) error {
+	// Create a temporary file with the default content
+	tmpFile, err := os.CreateTemp(os.TempDir(), "*.md")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	// Write the default content to the temp file
+	if defaultContent != "" {
+		if _, err := tmpFile.Write([]byte(defaultContent)); err != nil {
+			_ = tmpFile.Close() // Best effort cleanup
+			return fmt.Errorf("failed to write to temp file: %w", err)
+		}
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Determine which editor to use
+	editor := editorCmd
+	if editor == "" {
+		// Fall back to environment variables in order of preference
+		switch {
+		case os.Getenv("VISUAL") != "":
+			editor = os.Getenv("VISUAL")
+		case os.Getenv("EDITOR") != "":
+			editor = os.Getenv("EDITOR")
+		default:
+			editor = "nano"
+		}
+	}
+
+	// Parse editor command and args using shlex to handle quoted arguments
+	editorParts, err := shlex.Split(editor)
+	if err != nil || len(editorParts) == 0 {
+		return fmt.Errorf("failed to parse editor command: %w", err)
+	}
+
+	// Build command with editor args and temp file path
+	cmd := exec.CommandContext(ctx, editorParts[0], append(editorParts[1:], tmpPath)...)
+
+	// Connect the editor to the terminal
+	cmd.Stdin = s.In
+	cmd.Stdout = s.StdOut
+	cmd.Stderr = s.StdErr
+
+	// Run the editor
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to run editor: %w", err)
+	}
+
+	// Read the edited content back
+	editedContent, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to read edited content: %w", err)
+	}
+
+	*result = string(editedContent)
+	return nil
 }
 
 func (s *IOStreams) Run(ctx context.Context, field huh.Field) error {
