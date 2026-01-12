@@ -540,6 +540,10 @@ snapcraft_release_edge:
     - snapcraft whoami
     - snapcraft upload *.snap --release=latest/edge
     - snapcraft logout
+  # NOTE: this is allowed to fail because of manual snap package reviews.
+  # See https://gitlab.com/gitlab-org/cli/-/work_items/8116.
+  # It should be removed once we no longer require manual reviews.
+  allow_failure: true
 
 secret_detection:
   dependencies: [] # Don't download artifacts, especially `./public/`
