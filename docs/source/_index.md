@@ -76,6 +76,7 @@ in the main README.
 
 - [`glab alias`](alias/_index.md)
 - [`glab api`](api/_index.md)
+- [`glab attestation`](attestation/_index.md)
 - [`glab auth`](auth/_index.md)
 - [`glab changelog`](changelog/_index.md)
 - [`glab check-update`](check-update/_index.md)

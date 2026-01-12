@@ -10,6 +10,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	aliasCmd "gitlab.com/gitlab-org/cli/internal/commands/alias"
 	apiCmd "gitlab.com/gitlab-org/cli/internal/commands/api"
+	attestationCmd "gitlab.com/gitlab-org/cli/internal/commands/attestation"
 	authCmd "gitlab.com/gitlab-org/cli/internal/commands/auth"
 	changelogCmd "gitlab.com/gitlab-org/cli/internal/commands/changelog"
 	pipelineCmd "gitlab.com/gitlab-org/cli/internal/commands/ci"
@@ -159,6 +160,7 @@ func NewCmdRoot(f cmdutils.Factory) *cobra.Command {
 	rootCmd.AddCommand(milestoneCmd.NewCmdMilestone(f))
 	rootCmd.AddCommand(mrCmd.NewCmdMR(f))
 	rootCmd.AddCommand(opentofuCmd.NewCmd(f))
+	rootCmd.AddCommand(attestationCmd.NewCmdAttestation(f))
 	rootCmd.AddCommand(pipelineCmd.NewCmdCI(f))
 	rootCmd.AddCommand(projectCmd.NewCmdRepo(f))
 	rootCmd.AddCommand(releaseCmd.NewCmdRelease(f))
