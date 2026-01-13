@@ -4,41 +4,36 @@ package lint
 
 import (
 	"fmt"
-	"net/http"
 	"path"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
 func Test_lintRun(t *testing.T) {
 	t.Parallel()
 
-	type httpMock struct {
-		method string
-		path   string
-		status int
-		body   string
-	}
-
-	tests := []struct {
+	type testCase struct {
 		name             string
 		testFile         string
 		cliArgs          string
 		StdOut           string
 		wantErr          bool
 		errMsg           string
-		httpMocks        []httpMock
 		showHaveBaseRepo bool
-	}{
+		setupMock        func(tc *gitlabtesting.TestClient)
+	}
+
+	tests := []testCase{
 		{
 			name:             "with invalid path specified",
 			testFile:         "WRONG_PATH",
@@ -46,16 +41,12 @@ func Test_lintRun(t *testing.T) {
 			wantErr:          true,
 			errMsg:           "WRONG_PATH: no such file or directory",
 			showHaveBaseRepo: true,
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO",
-					http.StatusOK,
-					`{
-						"id": 123,
-						"iid": 123
-					}`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					GetProject("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Project{
+						ID: 123,
+					}, nil, nil)
 			},
 		},
 		{
@@ -65,7 +56,9 @@ func Test_lintRun(t *testing.T) {
 			wantErr:          true,
 			errMsg:           "You must be in a GitLab project repository for this action.\nError: no base repo present",
 			showHaveBaseRepo: false,
-			httpMocks:        []httpMock{},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				// No mock needed - fails before API call
+			},
 		},
 		{
 			name:             "when a valid path is specified and yaml is valid",
@@ -74,24 +67,17 @@ func Test_lintRun(t *testing.T) {
 			wantErr:          false,
 			errMsg:           "",
 			showHaveBaseRepo: true,
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO",
-					http.StatusOK,
-					`{
-						"id": 123,
-						"iid": 123
-					}`,
-				},
-				{
-					http.MethodPost,
-					"/api/v4/projects/123/ci/lint",
-					http.StatusOK,
-					`{
-						"valid": true
-					}`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					GetProject("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Project{
+						ID: 123,
+					}, nil, nil)
+				tc.MockValidate.EXPECT().
+					ProjectNamespaceLint(int64(123), gomock.Any()).
+					Return(&gitlab.ProjectLintResult{
+						Valid: true,
+					}, nil, nil)
 			},
 		},
 		{
@@ -102,24 +88,17 @@ func Test_lintRun(t *testing.T) {
 			wantErr:          false,
 			errMsg:           "",
 			showHaveBaseRepo: true,
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO",
-					http.StatusOK,
-					`{
-						"id": 123,
-						"iid": 123
-					}`,
-				},
-				{
-					http.MethodPost,
-					"/api/v4/projects/123/ci/lint",
-					http.StatusOK,
-					`{
-						"valid": true
-					}`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					GetProject("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Project{
+						ID: 123,
+					}, nil, nil)
+				tc.MockValidate.EXPECT().
+					ProjectNamespaceLint(int64(123), gomock.Any()).
+					Return(&gitlab.ProjectLintResult{
+						Valid: true,
+					}, nil, nil)
 			},
 		},
 		{
@@ -130,24 +109,17 @@ func Test_lintRun(t *testing.T) {
 			wantErr:          false,
 			errMsg:           "",
 			showHaveBaseRepo: true,
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO",
-					http.StatusOK,
-					`{
-						"id": 123,
-						"iid": 123
-					}`,
-				},
-				{
-					http.MethodPost,
-					"/api/v4/projects/123/ci/lint",
-					http.StatusOK,
-					`{
-						"valid": true
-					}`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					GetProject("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Project{
+						ID: 123,
+					}, nil, nil)
+				tc.MockValidate.EXPECT().
+					ProjectNamespaceLint(int64(123), gomock.Any()).
+					Return(&gitlab.ProjectLintResult{
+						Valid: true,
+					}, nil, nil)
 			},
 		},
 	}
@@ -155,12 +127,9 @@ func Test_lintRun(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fakeHTTP := httpmock.New()
-			defer fakeHTTP.Verify(t)
-
-			for _, mock := range tt.httpMocks {
-				fakeHTTP.RegisterResponder(mock.method, mock.path, httpmock.NewStringResponse(mock.status, mock.body))
-			}
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tt.setupMock(testClient)
 
 			_, filename, _, _ := runtime.Caller(0)
 			args := path.Join(path.Dir(filename), "testdata", tt.testFile)
@@ -168,8 +137,25 @@ func Test_lintRun(t *testing.T) {
 				args += " " + tt.cliArgs
 			}
 
-			result, err := runCommand(t, fakeHTTP, args, tt.showHaveBaseRepo)
+			ios, _, stdout, stderr := cmdtest.TestIOStreams()
+			factory := cmdtest.NewTestFactory(ios,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
+
+			if !tt.showHaveBaseRepo {
+				factory.BaseRepoStub = func() (glrepo.Interface, error) {
+					return nil, fmt.Errorf("no base repo present")
+				}
+			}
+
+			cmd := NewCmdLint(factory)
+
+			// WHEN
+			result, err := cmdtest.ExecuteCommand(cmd, args, stdout, stderr)
+
+			// THEN
 			if tt.wantErr {
+				require.Error(t, err)
 				require.Contains(t, err.Error(), tt.errMsg)
 				return
 			}
@@ -178,22 +164,4 @@ func Test_lintRun(t *testing.T) {
 			assert.Equal(t, tt.StdOut, result.String())
 		})
 	}
-}
-
-func runCommand(t *testing.T, rt http.RoundTripper, cli string, showHaveBaseRepo bool) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-
-	if !showHaveBaseRepo {
-		factory.BaseRepoStub = func() (glrepo.Interface, error) {
-			return nil, fmt.Errorf("no base repo present")
-		}
-	}
-
-	cmd := NewCmdLint(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
 }

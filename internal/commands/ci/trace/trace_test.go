@@ -3,209 +3,187 @@
 package trace
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, args string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-
-	cmd := NewCmdTrace(factory)
-
-	return cmdtest.ExecuteCommand(cmd, args, stdout, stderr)
-}
-
 func TestCiTrace(t *testing.T) {
-	type httpMock struct {
-		method string
-		path   string
-		status int
-		body   string
+	t.Parallel()
+
+	// Response indicating last page
+	lastPageResponse := &gitlab.Response{
+		Response: &http.Response{StatusCode: http.StatusOK},
+		NextPage: 0,
 	}
 
-	tests := []struct {
+	type testCase struct {
 		name          string
 		args          string
-		httpMocks     []httpMock
 		expectedOut   string
 		expectedError string
-	}{
+		setupMock     func(tc *gitlabtesting.TestClient)
+	}
+
+	tests := []testCase{
 		{
 			name:        "when trace for job-id is requested",
 			args:        "1122",
 			expectedOut: "\nGetting job trace...\nShowing logs for lint job #1122.\nLorem ipsum",
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122/trace",
-					http.StatusOK,
-					`Lorem ipsum`,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122",
-					http.StatusOK,
-					`{
-						"id": 1122,
-						"name": "lint",
-						"status": "success"
-					}`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockJobs.EXPECT().
+					GetJob("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(&gitlab.Job{
+						ID:     1122,
+						Name:   "lint",
+						Status: "success",
+					}, nil, nil)
+
+				tc.MockJobs.EXPECT().
+					GetTraceFile("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(bytes.NewReader([]byte("Lorem ipsum")), nil, nil)
 			},
 		},
 		{
 			name:          "when trace for job-id is requested and getTrace throws error",
 			args:          "1122",
-			expectedError: "failed to find job: GET https://gitlab.com/api/v4/projects/OWNER%2FREPO/jobs/1122/trace: 403",
+			expectedError: "failed to find job",
 			expectedOut:   "\nGetting job trace...\nShowing logs for lint job #1122.\n",
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122",
-					http.StatusOK,
-					`{
-						"id": 1122,
-						"name": "lint",
-						"status": "success"
-					}`,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122/trace",
-					http.StatusForbidden,
-					`{}`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockJobs.EXPECT().
+					GetJob("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(&gitlab.Job{
+						ID:     1122,
+						Name:   "lint",
+						Status: "success",
+					}, nil, nil)
+
+				forbiddenResponse := &gitlab.Response{Response: &http.Response{StatusCode: http.StatusForbidden}}
+				tc.MockJobs.EXPECT().
+					GetTraceFile("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(nil, forbiddenResponse, fmt.Errorf("GET https://gitlab.com/api/v4/projects/OWNER%%2FREPO/jobs/1122/trace: 403"))
 			},
 		},
 		{
 			name:          "when trace for job-id is requested and getJob throws error",
 			args:          "1122",
-			expectedError: "failed to find job: GET https://gitlab.com/api/v4/projects/OWNER%2FREPO/jobs/1122: 403",
+			expectedError: "failed to find job",
 			expectedOut:   "\nGetting job trace...\n",
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122",
-					http.StatusForbidden,
-					`{}`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				forbiddenResponse := &gitlab.Response{Response: &http.Response{StatusCode: http.StatusForbidden}}
+				tc.MockJobs.EXPECT().
+					GetJob("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(nil, forbiddenResponse, fmt.Errorf("GET https://gitlab.com/api/v4/projects/OWNER%%2FREPO/jobs/1122: 403"))
 			},
 		},
 		{
 			name:        "when trace for job-name is requested",
 			args:        "lint -b main -p 123",
 			expectedOut: "\nGetting job trace...\nShowing logs for lint job #1122.\nLorem ipsum",
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122/trace",
-					http.StatusOK,
-					`Lorem ipsum`,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122",
-					http.StatusOK,
-					`{
-						"id": 1122,
-						"name": "lint",
-						"status": "success"
-					}`,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/pipelines/123/jobs?page=1&per_page=20",
-					http.StatusOK,
-					`[{
-							"id": 1122,
-							"name": "lint",
-							"status": "failed"
-						}, {
-							"id": 1124,
-							"name": "publish",
-							"status": "failed"
-						}]`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockJobs.EXPECT().
+					ListPipelineJobs("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+					Return([]*gitlab.Job{
+						{
+							ID:     1122,
+							Name:   "lint",
+							Status: "failed",
+						},
+						{
+							ID:     1124,
+							Name:   "publish",
+							Status: "failed",
+						},
+					}, lastPageResponse, nil)
+
+				tc.MockJobs.EXPECT().
+					GetJob("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(&gitlab.Job{
+						ID:     1122,
+						Name:   "lint",
+						Status: "success",
+					}, nil, nil)
+
+				tc.MockJobs.EXPECT().
+					GetTraceFile("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(bytes.NewReader([]byte("Lorem ipsum")), nil, nil)
 			},
 		},
 		{
 			name:        "when trace for job-name and last pipeline is requested",
 			args:        "lint -b main",
 			expectedOut: "\nGetting job trace...\nShowing logs for lint job #1122.\nLorem ipsum",
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122/trace",
-					http.StatusOK,
-					`Lorem ipsum`,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/jobs/1122",
-					http.StatusOK,
-					`{
-						"id": 1122,
-						"name": "lint",
-						"status": "success"
-					}`,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER%2FREPO/pipelines/latest?ref=main",
-					http.StatusOK,
-					`{
-						"id": 123
-					}`,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/pipelines/123/jobs?page=1&per_page=20",
-					http.StatusOK,
-					`[{
-							"id": 1122,
-							"name": "lint",
-							"status": "failed"
-						}, {
-							"id": 1124,
-							"name": "publish",
-							"status": "failed"
-						}]`,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockPipelines.EXPECT().
+					GetLatestPipeline("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Pipeline{
+						ID: 123,
+					}, nil, nil)
+
+				tc.MockJobs.EXPECT().
+					ListPipelineJobs("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+					Return([]*gitlab.Job{
+						{
+							ID:     1122,
+							Name:   "lint",
+							Status: "failed",
+						},
+						{
+							ID:     1124,
+							Name:   "publish",
+							Status: "failed",
+						},
+					}, lastPageResponse, nil)
+
+				tc.MockJobs.EXPECT().
+					GetJob("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(&gitlab.Job{
+						ID:     1122,
+						Name:   "lint",
+						Status: "success",
+					}, nil, nil)
+
+				tc.MockJobs.EXPECT().
+					GetTraceFile("OWNER/REPO", int64(1122), gomock.Any()).
+					Return(bytes.NewReader([]byte("Lorem ipsum")), nil, nil)
 			},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
+			t.Parallel()
 
-			for _, mock := range tc.httpMocks {
-				fakeHTTP.RegisterResponder(mock.method, mock.path, httpmock.NewStringResponse(mock.status, mock.body))
-			}
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
 
-			output, err := runCommand(t, fakeHTTP, tc.args)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdTrace,
+				false,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
 
+			// WHEN
+			output, err := exec(tc.args)
+
+			// THEN
 			if tc.expectedError == "" {
-				require.Nil(t, err)
+				require.NoError(t, err)
 			} else {
-				require.NotNil(t, err)
-				require.Equal(t, tc.expectedError, err.Error())
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.expectedError)
 			}
 
 			assert.Equal(t, tc.expectedOut, output.String())

@@ -3,121 +3,180 @@
 package run_trig
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-type ResponseJSON struct {
-	Token string `json:"token"`
-	Ref   string `json:"ref"`
-}
+func TestCIRunTrig(t *testing.T) {
+	// Cannot use t.Parallel() because subtests use t.Setenv()
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-
-	factory.BranchStub = func() (string, error) {
-		return "custom-branch-123", nil
-	}
-
-	cmd := NewCmdRunTrig(factory)
-
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
-
-func TestCIRun(t *testing.T) {
 	tests := []struct {
-		name             string
-		cli              string
-		ciJobToken       string
-		expectedPOSTBody string
-		expectedOut      string
+		name        string
+		cli         string
+		ciJobToken  string
+		expectedRef string
+		expectedOut string
 	}{
 		{
-			name:             "when running `ci run-trig` without branch parameter, defaults to current branch",
-			cli:              "-t foobar",
-			ciJobToken:       "",
-			expectedPOSTBody: `"ref":"custom-branch-123"`,
-			expectedOut:      "Created pipeline (ID: 123), status: created, ref: custom-branch-123, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run-trig` without branch parameter, defaults to current branch",
+			cli:         "-t foobar",
+			ciJobToken:  "",
+			expectedRef: "custom-branch-123",
+			expectedOut: "Created pipeline (ID: 123), status: created, ref: custom-branch-123, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
 		},
 		{
-			name:             "when running `ci run-trig` with branch parameter, run CI at branch",
-			cli:              "-t foobar -b ci-cd-improvement-399",
-			ciJobToken:       "",
-			expectedPOSTBody: `"ref":"ci-cd-improvement-399"`,
-			expectedOut:      "Created pipeline (ID: 123), status: created, ref: ci-cd-improvement-399, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run-trig` with branch parameter, run CI at branch",
+			cli:         "-t foobar -b ci-cd-improvement-399",
+			ciJobToken:  "",
+			expectedRef: "ci-cd-improvement-399",
+			expectedOut: "Created pipeline (ID: 123), status: created, ref: ci-cd-improvement-399, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
 		},
 		{
-			name:             "when running `ci run-trig` without any parameter, takes trigger token from env variable",
-			cli:              "",
-			ciJobToken:       "foobar",
-			expectedPOSTBody: `"ref":"custom-branch-123"`,
-			expectedOut:      "Created pipeline (ID: 123), status: created, ref: custom-branch-123, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
-		},
-		{
-			name:             "when running `ci run-trig` with input parameter, run CI with untyped input",
-			cli:              "-t foobar -i key1:val1 --input key2:val2",
-			expectedPOSTBody: `"ref":"custom-branch-123","token":"foobar","inputs":{"key1":"val1","key2":"val2"}`,
-			expectedOut:      "Created pipeline (ID: 123), status: created, ref: custom-branch-123, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run-trig` without any parameter, takes trigger token from env variable",
+			cli:         "",
+			ciJobToken:  "foobar",
+			expectedRef: "custom-branch-123",
+			expectedOut: "Created pipeline (ID: 123), status: created, ref: custom-branch-123, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
-
 			t.Setenv("CI_JOB_TOKEN", tc.ciJobToken)
 
-			fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/projects/OWNER/REPO/trigger/pipeline",
-				func(req *http.Request) (*http.Response, error) {
-					rb, _ := io.ReadAll(req.Body)
+			testClient := gitlabtesting.NewTestClient(t)
 
-					var response ResponseJSON
-					err := json.Unmarshal(rb, &response)
-					if err != nil {
-						fmt.Printf("Error when parsing response body %s\n", rb)
-					}
+			testClient.MockPipelineTriggers.EXPECT().
+				RunPipelineTrigger("OWNER/REPO", gomock.Any()).
+				DoAndReturn(func(pid any, opts *gitlab.RunPipelineTriggerOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+					// Verify the token is passed correctly
+					assert.Equal(t, "foobar", *opts.Token)
+					// Verify the ref matches expected
+					assert.Equal(t, tc.expectedRef, *opts.Ref)
 
-					if response.Token != "foobar" {
-						fmt.Printf("Invalid token %s\n", rb)
-					}
+					return &gitlab.Pipeline{
+						ID:     123,
+						IID:    123,
+						Status: "created",
+						Ref:    *opts.Ref,
+						WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+					}, nil, nil
+				})
 
-					// ensure CLI runs CI on correct branch
-					assert.Contains(t, string(rb), tc.expectedPOSTBody)
-					resp, _ := httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`{
- 						"id": 123,
- 						"iid": 123,
- 						"project_id": 3,
- 						"status": "created",
- 						"ref": "%s",
-						"web_url": "https://gitlab.com/OWNER/REPO/-/pipelines/123"}`, response.Ref))(req)
-					return resp, nil
-				},
+			exec := cmdtest.SetupCmdForTest(t, NewCmdRunTrig, false,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+				cmdtest.WithBranch("custom-branch-123"),
 			)
 
-			output, _ := runCommand(t, fakeHTTP, tc.cli)
+			output, err := exec(tc.cli)
+			require.NoError(t, err)
 
-			out := output.String()
-
-			assert.Equal(t, tc.expectedOut, out)
+			assert.Equal(t, tc.expectedOut, output.String())
 			assert.Empty(t, output.Stderr())
 		})
 	}
+}
+
+func TestCIRunTrigWithInputs(t *testing.T) {
+	// NOTE: This test cannot run in parallel because NewCmdRunTrig modifies global pflag state.
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	testClient.MockPipelineTriggers.EXPECT().
+		RunPipelineTrigger("OWNER/REPO", gomock.Any()).
+		DoAndReturn(func(pid any, opts *gitlab.RunPipelineTriggerOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+			// Verify the token
+			assert.Equal(t, "foobar", *opts.Token)
+			// Verify the ref
+			assert.Equal(t, "custom-branch-123", *opts.Ref)
+			// Verify inputs are passed (check keys and values exist)
+			assert.Len(t, opts.Inputs, 2)
+			assert.Contains(t, opts.Inputs, "key1")
+			assert.Contains(t, opts.Inputs, "key2")
+
+			return &gitlab.Pipeline{
+				ID:     123,
+				IID:    123,
+				Status: "created",
+				Ref:    *opts.Ref,
+				WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+			}, nil, nil
+		})
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdRunTrig, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		cmdtest.WithBranch("custom-branch-123"),
+	)
+
+	output, err := exec("-t foobar -i key1:val1 --input key2:val2")
+	require.NoError(t, err)
+
+	assert.Equal(t, "Created pipeline (ID: 123), status: created, ref: custom-branch-123, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n", output.String())
+	assert.Empty(t, output.Stderr())
+}
+
+func TestCIRunTrigWithVariables(t *testing.T) {
+	// NOTE: This test cannot run in parallel because NewCmdRunTrig modifies global pflag state.
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	testClient.MockPipelineTriggers.EXPECT().
+		RunPipelineTrigger("OWNER/REPO", gomock.Any()).
+		DoAndReturn(func(pid any, opts *gitlab.RunPipelineTriggerOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+			// Verify the token
+			assert.Equal(t, "foobar", *opts.Token)
+			// Verify variables are passed
+			assert.Equal(t, map[string]string{"VAR1": "value1", "VAR2": "value2"}, opts.Variables)
+
+			return &gitlab.Pipeline{
+				ID:     123,
+				IID:    123,
+				Status: "created",
+				Ref:    *opts.Ref,
+				WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+			}, nil, nil
+		})
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdRunTrig, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		cmdtest.WithBranch("main"),
+	)
+
+	output, err := exec("-t foobar --variables VAR1:value1,VAR2:value2")
+	require.NoError(t, err)
+
+	assert.Equal(t, "Created pipeline (ID: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n", output.String())
+	assert.Empty(t, output.Stderr())
+}
+
+func TestCIRunTrigMissingToken(t *testing.T) {
+	// Cannot use t.Parallel() because test uses t.Setenv()
+
+	// Ensure CI_JOB_TOKEN is not set
+	t.Setenv("CI_JOB_TOKEN", "")
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	// No mock expectation since the command should fail before making API call
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdRunTrig, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		cmdtest.WithBranch("main"),
+	)
+
+	_, err := exec("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "`--token` parameter can be omitted only if `CI_JOB_TOKEN` environment variable is set")
 }
