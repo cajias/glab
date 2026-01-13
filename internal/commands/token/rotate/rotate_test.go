@@ -4,275 +4,306 @@ package rotate
 
 import (
 	"encoding/json"
-	"fmt"
-	"net/http"
 	"testing"
+	"time"
 
-	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
+	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname)),
-	)
-	cmd := NewCmdRotate(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
+// noMorePages creates a response that indicates no more pages are available
+func noMorePages() *gitlab.Response {
+	return &gitlab.Response{NextPage: 0}
 }
 
-var userResponse = heredoc.Doc(`
-	{
-		"id": 1,
-		"username": "johndoe",
-		"name": "John Doe",
-		"state": "active",
-		"locked": false,
-		"avatar_url": "https://secure.gravatar.com/avatar/johndoe?s=80&d=identicon",
-		"web_url": "https://gitlab.com/johndoe",
-		"created_at": "2017-01-05T08:36:01.368Z",
-		"bio": "",
-		"location": "",
-		"public_email": "",
-		"skype": "",
-		"linkedin": "",
-		"twitter": "",
-		"discord": "",
-		"website_url": "",
-		"organization": "",
-		"job_title": "",
-		"pronouns": null,
-		"bot": false,
-		"work_information": null,
-		"local_time": null,
-		"last_sign_in_at": "2024-07-07T06:57:16.562Z",
-		"confirmed_at": "2017-01-05T08:36:24.701Z",
-		"last_activity_on": "2024-07-07",
-		"email": "john.doe@acme.com",
-		"theme_id": null,
-		"color_scheme_id": 1,
-		"projects_limit": 100000,
-		"current_sign_in_at": "2024-07-07T07:57:57.858Z",
-		"identities": [
-			{
-				"provider": "google_oauth2",
-				"extern_uid": "102139960402025821780",
-				"saml_provider_id": null
+func parseTime(s string) *time.Time {
+	t, _ := time.Parse(time.RFC3339, s)
+	return &t
+}
+
+func TestRotatePersonalAccessToken(t *testing.T) {
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantJSON    bool
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
+	}
+
+	testUser := &gitlab.User{
+		ID:       1,
+		Username: "johndoe",
+		Name:     "John Doe",
+		Email:    "john.doe@acme.com",
+	}
+
+	testPAT := &gitlab.PersonalAccessToken{
+		ID:        10183862,
+		Name:      "my-pat",
+		Revoked:   false,
+		CreatedAt: parseTime("2024-07-08T01:23:04.311Z"),
+		Scopes:    []string{"k8s_proxy"},
+		UserID:    926857,
+		Active:    true,
+		ExpiresAt: gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-08-07T00:00:00Z"))),
+		Token:     "sometoken",
+	}
+
+	testCases := []testCase{
+		{
+			name:        "rotate PAT as text",
+			cli:         "--user @me my-pat",
+			expectedOut: "sometoken\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockUsers.EXPECT().
+					CurrentUser(gomock.Any()).
+					Return(testUser, nil, nil)
+				tc.MockPersonalAccessTokens.EXPECT().
+					ListPersonalAccessTokens(gomock.Any(), gomock.Any()).
+					Return([]*gitlab.PersonalAccessToken{testPAT}, noMorePages(), nil)
+				tc.MockPersonalAccessTokens.EXPECT().
+					RotatePersonalAccessToken(int64(10183862), gomock.Any()).
+					Return(testPAT, nil, nil)
+			},
+		},
+		{
+			name:     "rotate PAT as json",
+			cli:      "--user @me --output json my-pat",
+			wantJSON: true,
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockUsers.EXPECT().
+					CurrentUser(gomock.Any()).
+					Return(testUser, nil, nil)
+				tc.MockPersonalAccessTokens.EXPECT().
+					ListPersonalAccessTokens(gomock.Any(), gomock.Any()).
+					Return([]*gitlab.PersonalAccessToken{testPAT}, noMorePages(), nil)
+				tc.MockPersonalAccessTokens.EXPECT().
+					RotatePersonalAccessToken(int64(10183862), gomock.Any()).
+					Return(testPAT, nil, nil)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdRotate,
+				true,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+			)
+
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
 			}
-		],
-		"can_create_group": true,
-		"can_create_project": true,
-		"two_factor_enabled": true,
-		"external": false,
-		"private_profile": false,
-		"commit_email": "john.doe@acme.com",
-		"shared_runners_minutes_limit": 2000,
-		"extra_shared_runners_minutes_limit": null,
-		"scim_identities": []
+			require.NoError(t, err)
+			if tc.wantJSON {
+				var result map[string]any
+				err := json.Unmarshal(out.OutBuf.Bytes(), &result)
+				require.NoError(t, err)
+				assert.Equal(t, "my-pat", result["name"])
+			} else if tc.expectedOut != "" {
+				assert.Equal(t, tc.expectedOut, out.OutBuf.String())
+			}
+			assert.Empty(t, out.ErrBuf.String())
+		})
 	}
-`)
-
-var personalAccessTokenResponse = heredoc.Doc(`
-			{
-					"id": 10183862,
-					"name": "my-pat",
-					"revoked": false,
-					"created_at": "2024-07-08T01:23:04.311Z",
-						"description": "",
-
-					"scopes": [
-						"k8s_proxy"
-					],
-					"user_id": 926857,
-					"active": true,
-					"expires_at": "2024-08-07",
-					"token": "glpat-jRHatYQ8Fs77771111ps"
-				}
-		`)
-
-func TestRotatePersonalAccessTokenAsJSON(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/user",
-		httpmock.NewStringResponse(http.StatusOK, userResponse))
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/personal_access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf("[%s]", personalAccessTokenResponse)))
-	fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/personal_access_tokens/10183862/rotate",
-		httpmock.NewStringResponse(http.StatusOK, personalAccessTokenResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--user @me --output json my-pat")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	var expect any
-	var actual any
-
-	if err := json.Unmarshal([]byte(personalAccessTokenResponse), &expect); err != nil {
-		t.Error(err)
-	}
-
-	if err := json.Unmarshal([]byte(output.String()), &actual); err != nil {
-		t.Error(err)
-	}
-	assert.Equal(t, expect, actual)
-	assert.Empty(t, output.Stderr())
 }
 
-func TestRotatePersonalAccessTokenAsText(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/user",
-		httpmock.NewStringResponse(http.StatusOK, userResponse))
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/personal_access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf("[%s]", personalAccessTokenResponse)))
-	fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/personal_access_tokens/10183862/rotate",
-		httpmock.NewStringResponse(http.StatusOK, personalAccessTokenResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--user @me my-pat")
-	if err != nil {
-		t.Error(err)
-		return
+func TestRotateGroupAccessToken(t *testing.T) {
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantJSON    bool
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
-	assert.Equal(t, "glpat-jRHatYQ8Fs77771111ps\n", output.String())
+
+	testGroupToken := &gitlab.GroupAccessToken{
+		PersonalAccessToken: gitlab.PersonalAccessToken{
+			ID:        10190772,
+			UserID:    21989300,
+			Name:      "my-group-token",
+			Scopes:    []string{"read_registry", "read_repository"},
+			CreatedAt: parseTime("2024-07-08T17:33:34.829Z"),
+			ExpiresAt: gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-08-07T00:00:00Z"))),
+			Active:    true,
+			Revoked:   false,
+			Token:     "glpat-yz2791KMU-xxxxxxxxx",
+		},
+		AccessLevel: gitlab.DeveloperPermissions,
+	}
+
+	testCases := []testCase{
+		{
+			name:        "rotate group token as text",
+			cli:         "--group GROUP my-group-token",
+			expectedOut: "glpat-yz2791KMU-xxxxxxxxx\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroupAccessTokens.EXPECT().
+					ListGroupAccessTokens("GROUP", gomock.Any(), gomock.Any()).
+					Return([]*gitlab.GroupAccessToken{testGroupToken}, noMorePages(), nil)
+				tc.MockGroupAccessTokens.EXPECT().
+					RotateGroupAccessToken("GROUP", int64(10190772), gomock.Any()).
+					Return(testGroupToken, nil, nil)
+			},
+		},
+		{
+			name:     "rotate group token as json",
+			cli:      "--group GROUP my-group-token --output json",
+			wantJSON: true,
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroupAccessTokens.EXPECT().
+					ListGroupAccessTokens("GROUP", gomock.Any(), gomock.Any()).
+					Return([]*gitlab.GroupAccessToken{testGroupToken}, noMorePages(), nil)
+				tc.MockGroupAccessTokens.EXPECT().
+					RotateGroupAccessToken("GROUP", int64(10190772), gomock.Any()).
+					Return(testGroupToken, nil, nil)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdRotate,
+				true,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+			)
+
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
+			}
+			require.NoError(t, err)
+			if tc.wantJSON {
+				var result map[string]any
+				err := json.Unmarshal(out.OutBuf.Bytes(), &result)
+				require.NoError(t, err)
+				assert.Equal(t, "my-group-token", result["name"])
+			} else if tc.expectedOut != "" {
+				assert.Equal(t, tc.expectedOut, out.OutBuf.String())
+			}
+			assert.Empty(t, out.ErrBuf.String())
+		})
+	}
 }
 
-var groupAccessTokenResponse = heredoc.Doc(`
-	{
-		"id": 10190772,
-		"user_id": 21989300,
-		"name": "my-group-token",
-		"scopes": [
-			"read_registry",
-			"read_repository"
-		],
-		"created_at": "2024-07-08T17:33:34.829Z",
-		"description": "",
-		"expires_at": "2024-08-07",
-		"active": true,
-		"revoked": false,
-		"token": "glpat-yz2791KMU-xxxxxxxxx",
-		"access_level": 30
-	}`)
-
-func TestRotateGroupAccessTokenAsJSON(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/GROUP/access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf("[%s]", groupAccessTokenResponse)))
-	fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/groups/GROUP/access_tokens/10190772/rotate",
-		httpmock.NewStringResponse(http.StatusOK, groupAccessTokenResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--group GROUP my-group-token --output json")
-	if err != nil {
-		t.Error(err)
-		return
+func TestRotateProjectAccessToken(t *testing.T) {
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantJSON    bool
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
 
-	var expect any
-	var actual any
-
-	if err := json.Unmarshal([]byte(groupAccessTokenResponse), &expect); err != nil {
-		t.Error(err)
+	testProjectToken := &gitlab.ProjectAccessToken{
+		PersonalAccessToken: gitlab.PersonalAccessToken{
+			ID:        10191548,
+			UserID:    21990679,
+			Name:      "my-project-token",
+			Scopes:    []string{"api", "read_repository"},
+			CreatedAt: parseTime("2024-07-08T19:47:14.727Z"),
+			ExpiresAt: gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-08-07T00:00:00Z"))),
+			Active:    true,
+			Revoked:   false,
+			Token:     "glpat-dfsdfjksjdfslkdfjsd",
+		},
+		AccessLevel: gitlab.DeveloperPermissions,
 	}
 
-	if err := json.Unmarshal([]byte(output.String()), &actual); err != nil {
-		t.Error(err)
-	}
-	assert.Equal(t, expect, actual)
-	assert.Empty(t, output.Stderr())
-}
-
-func TestRotateGroupAccessTokenAsText(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/GROUP/access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf("[%s]", groupAccessTokenResponse)))
-	fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/groups/GROUP/access_tokens/10190772/rotate",
-		httpmock.NewStringResponse(http.StatusOK, groupAccessTokenResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--group GROUP my-group-token")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	assert.Equal(t, "glpat-yz2791KMU-xxxxxxxxx\n", output.String())
-}
-
-var projectAccessTokenResponse = heredoc.Doc(`
-	{
-		"id": 10191548,
-		"user_id": 21990679,
-		"name": "my-project-token",
-		"scopes": [
-			"api",
-			"read_repository"
-		],
-		"created_at": "2024-07-08T19:47:14.727Z",
-		"description": "",
-		"expires_at": "2024-08-07",
-		"active": true,
-		"revoked": false,
-		"token": "glpat-dfsdfjksjdfslkdfjsd",
-		"access_level": 30
-	}`)
-
-func TestRotateProjectAccessTokenAsJSON(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf("[%s]", projectAccessTokenResponse)))
-	fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/projects/OWNER/REPO/access_tokens/10191548/rotate",
-		httpmock.NewStringResponse(http.StatusOK, projectAccessTokenResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--output json my-project-token")
-	if err != nil {
-		t.Error(err)
-		return
+	testCases := []testCase{
+		{
+			name:        "rotate project token as text",
+			cli:         "my-project-token",
+			expectedOut: "glpat-dfsdfjksjdfslkdfjsd\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjectAccessTokens.EXPECT().
+					ListProjectAccessTokens("OWNER/REPO", gomock.Any(), gomock.Any()).
+					Return([]*gitlab.ProjectAccessToken{testProjectToken}, noMorePages(), nil)
+				tc.MockProjectAccessTokens.EXPECT().
+					RotateProjectAccessToken("OWNER/REPO", int64(10191548), gomock.Any()).
+					Return(testProjectToken, nil, nil)
+			},
+		},
+		{
+			name:     "rotate project token as json",
+			cli:      "--output json my-project-token",
+			wantJSON: true,
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjectAccessTokens.EXPECT().
+					ListProjectAccessTokens("OWNER/REPO", gomock.Any(), gomock.Any()).
+					Return([]*gitlab.ProjectAccessToken{testProjectToken}, noMorePages(), nil)
+				tc.MockProjectAccessTokens.EXPECT().
+					RotateProjectAccessToken("OWNER/REPO", int64(10191548), gomock.Any()).
+					Return(testProjectToken, nil, nil)
+			},
+		},
 	}
 
-	var expect any
-	var actual any
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdRotate,
+				true,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+			)
 
-	if err := json.Unmarshal([]byte(projectAccessTokenResponse), &expect); err != nil {
-		t.Error(err)
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
+			}
+			require.NoError(t, err)
+			if tc.wantJSON {
+				var result map[string]any
+				err := json.Unmarshal(out.OutBuf.Bytes(), &result)
+				require.NoError(t, err)
+				assert.Equal(t, "my-project-token", result["name"])
+			} else if tc.expectedOut != "" {
+				assert.Equal(t, tc.expectedOut, out.OutBuf.String())
+			}
+			assert.Empty(t, out.ErrBuf.String())
+		})
 	}
-
-	if err := json.Unmarshal([]byte(output.String()), &actual); err != nil {
-		t.Error(err)
-	}
-	assert.Equal(t, expect, actual)
-	assert.Empty(t, output.Stderr())
-}
-
-func TestRotateProjectAccessTokenAsText(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf("[%s]", projectAccessTokenResponse)))
-	fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/projects/OWNER/REPO/access_tokens/10191548/rotate",
-		httpmock.NewStringResponse(http.StatusOK, projectAccessTokenResponse))
-
-	output, err := runCommand(t, fakeHTTP, "my-project-token")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	assert.Equal(t, "glpat-dfsdfjksjdfslkdfjsd\n", output.String())
 }

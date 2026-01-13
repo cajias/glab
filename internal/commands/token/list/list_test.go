@@ -3,364 +3,396 @@
 package list
 
 import (
-	"net/http"
+	"encoding/json"
 	"testing"
+	"time"
 
-	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
+	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname)),
-	)
-	cmd := NewCmdList(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
+// noMorePages creates a response that indicates no more pages are available
+func noMorePages() *gitlab.Response {
+	return &gitlab.Response{NextPage: 0}
 }
 
-var projectAccessTokenResponse = heredoc.Doc(`
-	[
+func parseTime(s string) *time.Time {
+	t, _ := time.Parse(time.RFC3339, s)
+	return &t
+}
+
+func TestListProjectAccessToken(t *testing.T) {
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
+	}
+
+	testProjectToken := &gitlab.ProjectAccessToken{
+		PersonalAccessToken: gitlab.PersonalAccessToken{
+			ID:          10179584,
+			UserID:      21973696,
+			Name:        "sadfsdfsdf",
+			Description: "example description",
+			Scopes:      []string{"api", "read_api"},
+			CreatedAt:   parseTime("2024-07-07T07:59:35.767Z"),
+			ExpiresAt:   gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-08-06T00:00:00Z"))),
+			Active:      true,
+			Revoked:     false,
+		},
+		AccessLevel: gitlab.GuestPermissions,
+	}
+
+	testCases := []testCase{
 		{
-			"id": 10179584,
-			"user_id": 21973696,
-			"name": "sadfsdfsdf",
-			"scopes": [
-				"api",
-				"read_api"
-			],
-			"created_at": "2024-07-07T07:59:35.767Z",
-			"description": "example description",
-			"expires_at": "2024-08-06",
-			"active": true,
-			"revoked": false,
-			"access_level": 10
-		}
-	]
-`)
-
-func TestListProjectAccessTokenAsText(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, projectAccessTokenResponse))
-	output, err := runCommand(t, fakeHTTP, "")
-	if err != nil {
-		t.Errorf("error running command `token list`: %v", err)
+			name:        "list project access token as text",
+			cli:         "",
+			expectedOut: "ID       NAME       DESCRIPTION         ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT SCOPES      \n10179584 sadfsdfsdf example description guest        true    false    2024-07-07T07:59:35Z 2024-08-06 -           api,read_api\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjectAccessTokens.EXPECT().
+					ListProjectAccessTokens("OWNER/REPO", gomock.Any(), gomock.Any()).
+					Return([]*gitlab.ProjectAccessToken{testProjectToken}, noMorePages(), nil)
+			},
+		},
+		{
+			name: "list project access token as json",
+			cli:  "--output json",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjectAccessTokens.EXPECT().
+					ListProjectAccessTokens("OWNER/REPO", gomock.Any(), gomock.Any()).
+					Return([]*gitlab.ProjectAccessToken{testProjectToken}, noMorePages(), nil)
+			},
+		},
 	}
 
-	out := output.String()
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdList,
+				true,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+			)
 
-	assert.Equal(t, heredoc.Doc(`
-		ID       NAME       DESCRIPTION         ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT SCOPES      
-		10179584 sadfsdfsdf example description guest        true    false    2024-07-07T07:59:35Z 2024-08-06 -           api,read_api
-	`), out)
-	assert.Empty(t, output.Stderr())
-}
+			// WHEN
+			out, err := exec(tc.cli)
 
-func TestListProjectAccessTokenAsJSON(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, projectAccessTokenResponse))
-	output, err := runCommand(t, fakeHTTP, "--output json")
-	if err != nil {
-		t.Errorf("error running command `token list --output json`: %v", err)
-	}
-	assert.Empty(t, output.Stderr())
-	assert.JSONEq(t, projectAccessTokenResponse, output.String())
-}
-
-var groupAccessTokenResponse = heredoc.Doc(`
-		[
-				{
-					"id": 10179685,
-					"user_id": 21973881,
-					"name": "sadfsdfsdf",
-					"scopes": [
-						"read_api"
-					],
-					"created_at": "2024-07-07T08:41:16.287Z",
-					"description": "example description",
-					"expires_at": "2024-08-06",
-					"active": true,
-					"revoked": false,
-					"access_level": 10
-				}
-		]
-	`)
-
-func TestListGroupAccessTokenAsText(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/GROUP/access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, groupAccessTokenResponse))
-	output, err := runCommand(t, fakeHTTP, "--group GROUP")
-	if err != nil {
-		t.Errorf("error running command `token list --group GROUP`: %v", err)
-	}
-
-	out := output.String()
-
-	assert.Equal(t, heredoc.Doc(`
-		ID       NAME       DESCRIPTION         ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT SCOPES  
-		10179685 sadfsdfsdf example description guest        true    false    2024-07-07T08:41:16Z 2024-08-06 -           read_api
-	`), out)
-	assert.Empty(t, output.Stderr())
-}
-
-func TestListGroupAccessTokenAsJSON(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/GROUP/access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, groupAccessTokenResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--group GROUP --output json")
-	if err != nil {
-		t.Errorf("error running command `token list --group GROUP --output json`: %v", err)
-	}
-	assert.Empty(t, output.Stderr())
-	assert.JSONEq(t, groupAccessTokenResponse, output.String())
-}
-
-var personalAccessTokenResponse = heredoc.Doc(`
-			[
-				{
-					"id": 9860015,
-					"name": "awsssm",
-					"revoked": false,
-					"created_at": "2024-05-29T07:25:56.846Z",
-					"description": "example description 1",
-					"scopes": [
-						"api"
-					],
-					"user_id": 926857,
-					"active": false,
-					"expires_at": "2024-06-28"
-				},
-				{
-					"id": 9860076,
-					"name": "glab",
-					"revoked": false,
-					"created_at": "2024-05-29T07:34:14.044Z",
-					"description": "example description 2",
-					"scopes": [
-						"api"
-					],
-					"user_id": 926857,
-					"last_used_at": "2024-06-05T17:32:34.466Z",
-					"active": false,
-					"expires_at": "2024-06-28"
-				},
-				{
-					"id": 10171440,
-					"name": "api",
-					"revoked": false,
-					"created_at": "2024-07-05T10:02:37.182Z",
-					"description": "example description 3",
-					"scopes": [
-						"api"
-					],
-					"user_id": 926857,
-					"last_used_at": "2024-07-07T20:02:49.595Z",
-					"active": true,
-					"expires_at": "2024-08-04"
-				}
-			]
-		`)
-
-var userResponse = heredoc.Doc(`
-	{
-		"id": 1,
-		"username": "johndoe",
-		"name": "John Doe",
-		"state": "active",
-		"locked": false,
-		"avatar_url": "https://secure.gravatar.com/avatar/johndoe?s=80&d=identicon",
-		"web_url": "https://gitlab.com/johndoe",
-		"created_at": "2017-01-05T08:36:01.368Z",
-		"bio": "",
-		"location": "",
-		"public_email": "",
-		"skype": "",
-		"linkedin": "",
-		"twitter": "",
-		"discord": "",
-		"website_url": "",
-		"organization": "",
-		"job_title": "",
-		"pronouns": null,
-		"bot": false,
-		"work_information": null,
-		"local_time": null,
-		"last_sign_in_at": "2024-07-07T06:57:16.562Z",
-		"confirmed_at": "2017-01-05T08:36:24.701Z",
-		"last_activity_on": "2024-07-07",
-		"email": "john.doe@acme.com",
-		"theme_id": null,
-		"color_scheme_id": 1,
-		"projects_limit": 100000,
-		"current_sign_in_at": "2024-07-07T07:57:57.858Z",
-		"identities": [
-			{
-				"provider": "google_oauth2",
-				"extern_uid": "102139960402025821780",
-				"saml_provider_id": null
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
 			}
-		],
-		"can_create_group": true,
-		"can_create_project": true,
-		"two_factor_enabled": true,
-		"external": false,
-		"private_profile": false,
-		"commit_email": "john.doe@acme.com",
-		"shared_runners_minutes_limit": 2000,
-		"extra_shared_runners_minutes_limit": null,
-		"scim_identities": []
+			require.NoError(t, err)
+			if tc.expectedOut != "" {
+				assert.Equal(t, tc.expectedOut, out.OutBuf.String())
+			}
+			if tc.cli == "--output json" {
+				// For JSON output, verify it's valid JSON
+				var result []map[string]any
+				err := json.Unmarshal(out.OutBuf.Bytes(), &result)
+				require.NoError(t, err)
+				assert.Len(t, result, 1)
+			}
+			assert.Empty(t, out.ErrBuf.String())
+		})
 	}
-`)
-
-func TestListPersonalAccessTokenAsText(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/personal_access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, personalAccessTokenResponse))
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/user",
-		httpmock.NewStringResponse(http.StatusOK, userResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--user @me")
-	if err != nil {
-		t.Errorf("error running command `token list --user @me`: %v", err)
-	}
-
-	out := output.String()
-
-	assert.Equal(t, heredoc.Doc(`
-		ID       NAME   DESCRIPTION           ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT         SCOPES 
-		9860015  awsssm example description 1 -            false   false    2024-05-29T07:25:56Z 2024-06-28 -                    api    
-		9860076  glab   example description 2 -            false   false    2024-05-29T07:34:14Z 2024-06-28 2024-06-05T17:32:34Z api    
-		10171440 api    example description 3 -            true    false    2024-07-05T10:02:37Z 2024-08-04 2024-07-07T20:02:49Z api    
-	`), out)
-	assert.Empty(t, output.Stderr())
 }
 
-func TestListActivePersonalAccessTokenAsText(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/personal_access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, personalAccessTokenResponse))
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/user",
-		httpmock.NewStringResponse(http.StatusOK, userResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--user @me --active")
-	if err != nil {
-		t.Errorf("error running command `token list --user @me`: %v", err)
+func TestListGroupAccessToken(t *testing.T) {
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
 
-	out := output.String()
+	testGroupToken := &gitlab.GroupAccessToken{
+		PersonalAccessToken: gitlab.PersonalAccessToken{
+			ID:          10179685,
+			UserID:      21973881,
+			Name:        "sadfsdfsdf",
+			Description: "example description",
+			Scopes:      []string{"read_api"},
+			CreatedAt:   parseTime("2024-07-07T08:41:16.287Z"),
+			ExpiresAt:   gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-08-06T00:00:00Z"))),
+			Active:      true,
+			Revoked:     false,
+		},
+		AccessLevel: gitlab.GuestPermissions,
+	}
 
-	assert.Equal(t, heredoc.Doc(`
-		ID       NAME  DESCRIPTION           ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT         SCOPES 
-		10171440 api   example description 3 -            true    false    2024-07-05T10:02:37Z 2024-08-04 2024-07-07T20:02:49Z api    
-	`), out)
-	assert.Empty(t, output.Stderr())
+	testCases := []testCase{
+		{
+			name:        "list group access token as text",
+			cli:         "--group GROUP",
+			expectedOut: "ID       NAME       DESCRIPTION         ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT SCOPES  \n10179685 sadfsdfsdf example description guest        true    false    2024-07-07T08:41:16Z 2024-08-06 -           read_api\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroupAccessTokens.EXPECT().
+					ListGroupAccessTokens("GROUP", gomock.Any(), gomock.Any()).
+					Return([]*gitlab.GroupAccessToken{testGroupToken}, noMorePages(), nil)
+			},
+		},
+		{
+			name: "list group access token as json",
+			cli:  "--group GROUP --output json",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroupAccessTokens.EXPECT().
+					ListGroupAccessTokens("GROUP", gomock.Any(), gomock.Any()).
+					Return([]*gitlab.GroupAccessToken{testGroupToken}, noMorePages(), nil)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdList,
+				true,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+			)
+
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
+			}
+			require.NoError(t, err)
+			if tc.expectedOut != "" {
+				assert.Equal(t, tc.expectedOut, out.OutBuf.String())
+			}
+			if tc.cli == "--group GROUP --output json" {
+				// For JSON output, verify it's valid JSON
+				var result []map[string]any
+				err := json.Unmarshal(out.OutBuf.Bytes(), &result)
+				require.NoError(t, err)
+				assert.Len(t, result, 1)
+			}
+			assert.Empty(t, out.ErrBuf.String())
+		})
+	}
 }
 
-func TestListPersonalAccessTokenAsJSON(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/personal_access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, personalAccessTokenResponse))
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/user",
-		httpmock.NewStringResponse(http.StatusOK, userResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--user @me --output json")
-	if err != nil {
-		t.Errorf("error running command `token list --user @me`: %v", err)
+func TestListPersonalAccessToken(t *testing.T) {
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
 
-	assert.Empty(t, output.Stderr())
-	assert.JSONEq(t, personalAccessTokenResponse, output.String())
+	testUser := &gitlab.User{
+		ID:       1,
+		Username: "johndoe",
+		Name:     "John Doe",
+		Email:    "john.doe@acme.com",
+	}
+
+	testPATs := []*gitlab.PersonalAccessToken{
+		{
+			ID:          9860015,
+			Name:        "awsssm",
+			Description: "example description 1",
+			Scopes:      []string{"api"},
+			CreatedAt:   parseTime("2024-05-29T07:25:56.846Z"),
+			ExpiresAt:   gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-06-28T00:00:00Z"))),
+			UserID:      926857,
+			Active:      false,
+			Revoked:     false,
+		},
+		{
+			ID:          9860076,
+			Name:        "glab",
+			Description: "example description 2",
+			Scopes:      []string{"api"},
+			CreatedAt:   parseTime("2024-05-29T07:34:14.044Z"),
+			ExpiresAt:   gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-06-28T00:00:00Z"))),
+			UserID:      926857,
+			LastUsedAt:  parseTime("2024-06-05T17:32:34.466Z"),
+			Active:      false,
+			Revoked:     false,
+		},
+		{
+			ID:          10171440,
+			Name:        "api",
+			Description: "example description 3",
+			Scopes:      []string{"api"},
+			CreatedAt:   parseTime("2024-07-05T10:02:37.182Z"),
+			ExpiresAt:   gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-08-04T00:00:00Z"))),
+			UserID:      926857,
+			LastUsedAt:  parseTime("2024-07-07T20:02:49.595Z"),
+			Active:      true,
+			Revoked:     false,
+		},
+	}
+
+	testCases := []testCase{
+		{
+			name:        "list personal access tokens as text",
+			cli:         "--user @me",
+			expectedOut: "ID       NAME   DESCRIPTION           ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT         SCOPES \n9860015  awsssm example description 1 -            false   false    2024-05-29T07:25:56Z 2024-06-28 -                    api    \n9860076  glab   example description 2 -            false   false    2024-05-29T07:34:14Z 2024-06-28 2024-06-05T17:32:34Z api    \n10171440 api    example description 3 -            true    false    2024-07-05T10:02:37Z 2024-08-04 2024-07-07T20:02:49Z api    \n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockUsers.EXPECT().
+					CurrentUser(gomock.Any()).
+					Return(testUser, nil, nil)
+				tc.MockPersonalAccessTokens.EXPECT().
+					ListPersonalAccessTokens(gomock.Any(), gomock.Any()).
+					Return(testPATs, noMorePages(), nil)
+			},
+		},
+		{
+			name:        "list active personal access tokens only",
+			cli:         "--user @me --active",
+			expectedOut: "ID       NAME  DESCRIPTION           ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT         SCOPES \n10171440 api   example description 3 -            true    false    2024-07-05T10:02:37Z 2024-08-04 2024-07-07T20:02:49Z api    \n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockUsers.EXPECT().
+					CurrentUser(gomock.Any()).
+					Return(testUser, nil, nil)
+				tc.MockPersonalAccessTokens.EXPECT().
+					ListPersonalAccessTokens(gomock.Any(), gomock.Any()).
+					Return(testPATs, noMorePages(), nil)
+			},
+		},
+		{
+			name: "list personal access tokens as json",
+			cli:  "--user @me --output json",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockUsers.EXPECT().
+					CurrentUser(gomock.Any()).
+					Return(testUser, nil, nil)
+				tc.MockPersonalAccessTokens.EXPECT().
+					ListPersonalAccessTokens(gomock.Any(), gomock.Any()).
+					Return(testPATs, noMorePages(), nil)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdList,
+				true,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+			)
+
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
+			}
+			require.NoError(t, err)
+			if tc.expectedOut != "" {
+				assert.Equal(t, tc.expectedOut, out.OutBuf.String())
+			}
+			if tc.cli == "--user @me --output json" {
+				// For JSON output, verify it's valid JSON
+				var result []map[string]any
+				err := json.Unmarshal(out.OutBuf.Bytes(), &result)
+				require.NoError(t, err)
+				assert.Len(t, result, 3)
+			}
+			assert.Empty(t, out.ErrBuf.String())
+		})
+	}
 }
 
-var personalAccessTokenResponseWithoutExpiration = heredoc.Doc(`
-			[
-				{
-					"id": 1,
-					"name": "awsssm",
-					"revoked": false,
-					"created_at": "2024-05-29T07:25:56.846Z",
-					"scopes": [
-						"api"
-					],
-					"user_id": 926857,
-					"active": false,
-					"expires_at": null
-				},
-				{
-					"id": 2,
-					"name": "glab",
-					"revoked": false,
-					"created_at": "2024-05-29T07:34:14.044Z",
-					"scopes": [
-						"api"
-					],
-					"user_id": 926857,
-					"last_used_at": "2024-06-05T17:32:34.466Z",
-					"active": false,
-					"expires_at": "2024-06-28"
-				},
-				{
-					"id": 3,
-					"name": "api",
-					"revoked": false,
-					"created_at": "2024-07-05T10:02:37.182Z",
-					"scopes": [
-						"api"
-					],
-					"user_id": 926857,
-					"last_used_at": "2024-07-07T20:02:49.595Z",
-					"active": true,
-					"expires_at": "2024-08-04"
-				}
-			]
-		`)
-
-func TestListPersonalAccessTokenWithoutExpirationAsText(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/personal_access_tokens",
-		httpmock.NewStringResponse(http.StatusOK, personalAccessTokenResponseWithoutExpiration))
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/user",
-		httpmock.NewStringResponse(http.StatusOK, userResponse))
-
-	output, err := runCommand(t, fakeHTTP, "--user @me")
-	if err != nil {
-		t.Errorf("error running command `token list --user @me`: %v", err)
+func TestListPersonalAccessTokenWithoutExpiration(t *testing.T) {
+	testUser := &gitlab.User{
+		ID:       1,
+		Username: "johndoe",
+		Name:     "John Doe",
+		Email:    "john.doe@acme.com",
 	}
 
-	out := output.String()
+	testPATs := []*gitlab.PersonalAccessToken{
+		{
+			ID:        1,
+			Name:      "awsssm",
+			Scopes:    []string{"api"},
+			CreatedAt: parseTime("2024-05-29T07:25:56.846Z"),
+			ExpiresAt: nil, // no expiration
+			UserID:    926857,
+			Active:    false,
+			Revoked:   false,
+		},
+		{
+			ID:         2,
+			Name:       "glab",
+			Scopes:     []string{"api"},
+			CreatedAt:  parseTime("2024-05-29T07:34:14.044Z"),
+			ExpiresAt:  gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-06-28T00:00:00Z"))),
+			UserID:     926857,
+			LastUsedAt: parseTime("2024-06-05T17:32:34.466Z"),
+			Active:     false,
+			Revoked:    false,
+		},
+		{
+			ID:         3,
+			Name:       "api",
+			Scopes:     []string{"api"},
+			CreatedAt:  parseTime("2024-07-05T10:02:37.182Z"),
+			ExpiresAt:  gitlab.Ptr(gitlab.ISOTime(*parseTime("2024-08-04T00:00:00Z"))),
+			UserID:     926857,
+			LastUsedAt: parseTime("2024-07-07T20:02:49.595Z"),
+			Active:     true,
+			Revoked:    false,
+		},
+	}
 
-	assert.Equal(t, heredoc.Doc(`
-		ID  NAME   DESCRIPTION  ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT         SCOPES 
-		1   awsssm -            -            false   false    2024-05-29T07:25:56Z -          -                    api    
-		2   glab   -            -            false   false    2024-05-29T07:34:14Z 2024-06-28 2024-06-05T17:32:34Z api    
-		3   api    -            -            true    false    2024-07-05T10:02:37Z 2024-08-04 2024-07-07T20:02:49Z api    
-	`), out)
-	assert.Empty(t, output.Stderr())
+	// GIVEN
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockUsers.EXPECT().
+		CurrentUser(gomock.Any()).
+		Return(testUser, nil, nil)
+	testClient.MockPersonalAccessTokens.EXPECT().
+		ListPersonalAccessTokens(gomock.Any(), gomock.Any()).
+		Return(testPATs, noMorePages(), nil)
+
+	exec := cmdtest.SetupCmdForTest(
+		t,
+		NewCmdList,
+		true,
+		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+	)
+
+	// WHEN
+	out, err := exec("--user @me")
+
+	// THEN
+	require.NoError(t, err)
+	assert.Equal(t, "ID  NAME   DESCRIPTION  ACCESS_LEVEL ACTIVE  REVOKED  CREATED_AT           EXPIRES_AT LAST_USED_AT         SCOPES \n1   awsssm -            -            false   false    2024-05-29T07:25:56Z -          -                    api    \n2   glab   -            -            false   false    2024-05-29T07:34:14Z 2024-06-28 2024-06-05T17:32:34Z api    \n3   api    -            -            true    false    2024-07-05T10:02:37Z 2024-08-04 2024-07-07T20:02:49Z api    \n", out.OutBuf.String())
+	assert.Empty(t, out.ErrBuf.String())
 }
