@@ -294,7 +294,7 @@ func (o *options) run() error {
 
 	headRepoRemote, err := repoRemote(o, headRepo, o.SourceProject, "glab-head")
 	if err != nil {
-		return nil
+		return err
 	}
 
 	var baseRepoRemote *glrepo.Remote
@@ -305,7 +305,7 @@ func (o *options) run() error {
 	} else {
 		baseRepoRemote, err = repoRemote(o, baseRepo, o.TargetProject, "glab-base")
 		if err != nil {
-			return nil
+			return err
 		}
 	}
 

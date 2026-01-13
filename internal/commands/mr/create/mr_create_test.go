@@ -17,6 +17,7 @@ import (
 	"github.com/survivorbat/huhtest"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
@@ -688,4 +689,40 @@ func Test_MRCreate_With_Recover_Integration(t *testing.T) {
 	assert.Contains(t, newOutput.String(), "!12 myMRtitle (feat-new-mr)")
 	assert.Contains(t, newOutput.Stderr(), "\nCreating merge request for feat-new-mr into master in OWNER/REPO\n\n")
 	assert.Contains(t, newOutput.String(), "https://gitlab.com/OWNER/REPO/-/merge_requests/12")
+}
+
+func TestMRCreate_RemotesError_PropagatesError(t *testing.T) {
+	t.Parallel()
+
+	// Test that errors from Remotes() are properly propagated (not swallowed)
+	// This ensures the bug from issue #8112 doesn't regress
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	// Setup command using cmdtest.SetupCmdForTest
+	exec := cmdtest.SetupCmdForTest(t,
+		func(f cmdutils.Factory) *cobra.Command {
+			tf := f.(*cmdtest.Factory)
+
+			// Simulate being outside a git repository - Remotes() fails
+			remotesErr := errors.New("fatal: not a git repository (or any of the parent directories): .git")
+			tf.RemotesStub = func() (glrepo.Remotes, error) {
+				return nil, remotesErr
+			}
+			tf.BranchStub = func() (string, error) {
+				return "test-branch", nil
+			}
+
+			return NewCmdCreate(f)
+		},
+		false,
+		cmdtest.WithGitLabClient(testClient.Client),
+	)
+
+	cli := "--source-branch test-branch --target-branch main --title Test --description TestDesc --no-editor --yes"
+	output, err := exec(cli)
+
+	require.Error(t, err, "expected error when Remotes() fails")
+	assert.Contains(t, err.Error(), "not a git repository", "error should mention git repository")
+	assert.NotContains(t, output.String(), "!12", "should not have created a merge request")
 }
