@@ -35,7 +35,7 @@ type options struct {
 	filename string
 }
 
-func NewCmdVerify(f cmdutils.Factory) *cobra.Command {
+func NewCmd(f cmdutils.Factory) *cobra.Command {
 	opts := &options{
 		gitlabClient:    f.GitLabClient,
 		defaultHostname: glinstance.DefaultHostname,

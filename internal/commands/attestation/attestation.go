@@ -29,7 +29,7 @@ func NewCmdAttestation(f cmdutils.Factory) *cobra.Command {
 		},
 	}
 
-	attestationCmd.AddCommand(attestationVerifyCmd.NewCmdVerify(f))
+	attestationCmd.AddCommand(attestationVerifyCmd.NewCmd(f))
 
 	return attestationCmd
 }

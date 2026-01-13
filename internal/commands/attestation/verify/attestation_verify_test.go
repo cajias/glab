@@ -73,7 +73,7 @@ func Test_AttestationVerify(t *testing.T) {
 
 	tc := gitlab_testing.NewTestClient(t)
 	opts := []cmdtest.FactoryOption{cmdtest.WithGitLabClient(tc.Client)}
-	exec := cmdtest.SetupCmdForTest(t, NewCmdVerify, false, opts...)
+	exec := cmdtest.SetupCmdForTest(t, NewCmd, false, opts...)
 
 	mocks(t, tc)
 
@@ -111,7 +111,7 @@ func Test_AttestationVerify_Failure(t *testing.T) {
 
 	tc := gitlab_testing.NewTestClient(t)
 	opts := []cmdtest.FactoryOption{cmdtest.WithGitLabClient(tc.Client)}
-	exec := cmdtest.SetupCmdForTest(t, NewCmdVerify, false, opts...)
+	exec := cmdtest.SetupCmdForTest(t, NewCmd, false, opts...)
 
 	mocks(t, tc)
 
