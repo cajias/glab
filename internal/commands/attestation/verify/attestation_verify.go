@@ -1,12 +1,12 @@
 package verify
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
@@ -30,6 +30,7 @@ type options struct {
 	gitlabClient    func() (*gitlab.Client, error)
 	defaultHostname string
 	io              *iostreams.IOStreams
+	exec            cmdutils.Executor
 
 	project  string
 	filename string
@@ -40,6 +41,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		gitlabClient:    f.GitLabClient,
 		defaultHostname: glinstance.DefaultHostname,
 		io:              f.IO(),
+		exec:            f.Executor(),
 	}
 
 	attestationVerifyCmd := &cobra.Command{
@@ -70,14 +72,14 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			opts.project = args[0]
 			opts.filename = args[1]
 
-			return opts.run()
+			return opts.run(cmd.Context())
 		},
 	}
 
 	return attestationVerifyCmd
 }
 
-func (o *options) run() error {
+func (o *options) run(ctx context.Context) error {
 	client, err := o.gitlabClient()
 	if err != nil {
 		return err
@@ -103,7 +105,7 @@ func (o *options) run() error {
 		return err
 	}
 
-	err = o.verify(o.filename, project.PathWithNamespace, bundle)
+	err = o.verify(ctx, o.filename, project.PathWithNamespace, bundle)
 	if err != nil {
 		return err
 	}
@@ -174,20 +176,8 @@ func (o *options) bundleTempFile(bundleBytes []byte) (filename string, err error
 	return
 }
 
-type commandExecutor interface {
-	CombinedOutput() ([]byte, error)
-}
-
-var execCommand = func(name string, arg ...string) commandExecutor {
-	return exec.Command(name, arg...)
-}
-
-var lookPath = func(path string) (string, error) {
-	return exec.LookPath(path)
-}
-
-func (o *options) verify(filename string, repoPath string, bundleBytes []byte) (err error) {
-	cosignPath, err := lookPath(cosign)
+func (o *options) verify(ctx context.Context, filename string, repoPath string, bundleBytes []byte) (err error) {
+	cosignPath, err := o.exec.LookPath(cosign)
 	if err != nil {
 		return fmt.Errorf("Unable to locate the `%s` binary. Please install following these instructions: %s", cosign, installationUrl)
 	}
@@ -220,11 +210,9 @@ func (o *options) verify(filename string, repoPath string, bundleBytes []byte) (
 		expectedIssuer,
 	}
 
-	cmd := execCommand(cosignPath, args...)
-
-	stdoutStderr, err := cmd.CombinedOutput()
+	out, err := o.exec.ExecWithCombinedOutput(ctx, cosignPath, args, nil)
 	if err != nil {
-		return fmt.Errorf("%w: %s\n", err, stdoutStderr)
+		return fmt.Errorf("%w: %s\n", err, out)
 	}
 
 	return

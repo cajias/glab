@@ -17,19 +17,6 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
 
-type MockCommandExecutor struct {
-	output string
-	err    bool
-}
-
-func (m *MockCommandExecutor) CombinedOutput() ([]byte, error) {
-	if !m.err {
-		return []byte(m.output), nil
-	} else {
-		return []byte("Stdout,Stderr"), errors.New("Exit code 1")
-	}
-}
-
 func mocks(t *testing.T, tc *gitlab_testing.TestClient) {
 	t.Helper()
 	tc.MockProjects.EXPECT().
@@ -71,68 +58,60 @@ func mocks(t *testing.T, tc *gitlab_testing.TestClient) {
 func Test_AttestationVerify(t *testing.T) {
 	t.Setenv("NO_COLOR", "true")
 
-	tc := gitlab_testing.NewTestClient(t)
-	opts := []cmdtest.FactoryOption{cmdtest.WithGitLabClient(tc.Client)}
-	exec := cmdtest.SetupCmdForTest(t, NewCmd, false, opts...)
+	ctrl := gomock.NewController(t)
+	tc := gitlab_testing.NewTestClientWithCtrl(ctrl)
+	mockExec := cmdtest.NewMockExecutor(ctrl)
+
+	exec := cmdtest.SetupCmdForTest(t,
+		NewCmd,
+		false,
+		cmdtest.WithGitLabClient(tc.Client),
+		cmdtest.WithExecutor(mockExec),
+	)
 
 	mocks(t, tc)
 
-	origLookPath := lookPath
-	defer func() { lookPath = origLookPath }()
-	lookPath = func(path string) (string, error) {
-		return "/usr/bin/cosign", nil
-	}
-
-	origShellCommandFunc := execCommand
-	defer func() { execCommand = origShellCommandFunc }()
-
-	shellCommandCalled := false
-	execCommand = func(name string, args ...string) commandExecutor {
-		shellCommandCalled = true
-		assert.Contains(t, name, "cosign")
-		assert.Equal(t, args[0], "verify-blob-attestation")
-
-		assert.Contains(t, args, "./testdata/example_artifact.txt")
-		assert.Contains(t, args, "^https://gitlab.com/OWNER/REPO/")
-		assert.Contains(t, args, "https://gitlab.com")
-
-		return &MockCommandExecutor{output: "Output not used."}
-	}
+	mockExec.EXPECT().LookPath(gomock.Any()).Return("/usr/bin/cosign", nil)
+	mockExec.EXPECT().ExecWithCombinedOutput(gomock.Any(), "/usr/bin/cosign", cmdtest.SliceMatch[string](
+		"verify-blob-attestation",
+		"--new-bundle-format",
+		"--bundle",
+		gomock.Any(),
+		"--type",
+		"slsaprovenance1",
+		"./testdata/example_artifact.txt",
+		"--certificate-identity-regexp",
+		"^https://gitlab.com/OWNER/REPO/",
+		"--certificate-oidc-issuer",
+		"https://gitlab.com",
+	), nil)
 
 	output, err := exec("OWNER/REPO ./testdata/example_artifact.txt")
 
 	assert.Nil(t, err)
 	assert.Contains(t, output.String(), "Artifact provenance successfully verified")
-	assert.True(t, shellCommandCalled, "shell command called")
 }
 
 func Test_AttestationVerify_Failure(t *testing.T) {
 	t.Setenv("NO_COLOR", "true")
 
-	tc := gitlab_testing.NewTestClient(t)
-	opts := []cmdtest.FactoryOption{cmdtest.WithGitLabClient(tc.Client)}
-	exec := cmdtest.SetupCmdForTest(t, NewCmd, false, opts...)
+	ctrl := gomock.NewController(t)
+	tc := gitlab_testing.NewTestClientWithCtrl(ctrl)
+	mockExec := cmdtest.NewMockExecutor(ctrl)
+
+	exec := cmdtest.SetupCmdForTest(t,
+		NewCmd,
+		false,
+		cmdtest.WithGitLabClient(tc.Client),
+		cmdtest.WithExecutor(mockExec),
+	)
 
 	mocks(t, tc)
 
-	origLookPath := lookPath
-	defer func() { lookPath = origLookPath }()
-	lookPath = func(path string) (string, error) {
-		return "/usr/bin/cosign", nil
-	}
-
-	origShellCommandFunc := execCommand
-	defer func() { execCommand = origShellCommandFunc }()
-
-	shellCommandCalled := false
-	execCommand = func(name string, args ...string) commandExecutor {
-		shellCommandCalled = true
-
-		return &MockCommandExecutor{err: true}
-	}
+	mockExec.EXPECT().LookPath(gomock.Any()).Return("/usr/bin/cosign", nil)
+	mockExec.EXPECT().ExecWithCombinedOutput(gomock.Any(), "/usr/bin/cosign", gomock.Any(), nil).Return(nil, errors.New("some error"))
 
 	_, err := exec("OWNER/REPO ./testdata/example_artifact.txt")
 
-	assert.EqualError(t, err, "Exit code 1: Stdout,Stderr\n")
-	assert.True(t, shellCommandCalled, "shell command called")
+	assert.EqualError(t, err, "some error: \n")
 }
