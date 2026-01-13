@@ -23,7 +23,6 @@ const (
 	installationUrl = "https://docs.sigstore.dev/cosign/system_config/installation/"
 	cosign          = "cosign"
 	tempFilePrefix  = "glabattestationverify"
-	oidcIssuer      = "https://gitlab.com"
 )
 
 type options struct {
