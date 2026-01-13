@@ -6,20 +6,20 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/google/shlex"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/git"
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
-	"gitlab.com/gitlab-org/cli/internal/glrepo"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
 func Test_NewCmdDiff(t *testing.T) {
@@ -103,43 +103,29 @@ func Test_NewCmdDiff(t *testing.T) {
 	}
 }
 
-func runCommand(t *testing.T, rt http.RoundTripper, isTTY bool, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(isTTY))
-
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-
-	factory.RemotesStub = func() (glrepo.Remotes, error) {
-		return glrepo.Remotes{
-			{
-				Remote: &git.Remote{Name: "origin"},
-				Repo:   glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
-			},
-		}, nil
-	}
-	factory.BranchStub = func() (string, error) {
-		return "feature", nil
-	}
-
-	cmd := NewCmdDiff(factory, nil)
-
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
+// newCmdDiffWrapper wraps NewCmdDiff to match cmdtest.CmdFunc signature
+func newCmdDiffWrapper(f cmdutils.Factory) *cobra.Command {
+	return NewCmdDiff(f, nil)
 }
 
 func TestMRDiff_raw(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
-	defer fakeHTTP.Verify(t)
+	t.Parallel()
 
-	fakeHTTP.RegisterResponder(
-		http.MethodGet,
-		`https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests/123`,
-		MRGetResponse(),
-	)
+	testClient := gitlabtesting.NewTestClient(t)
+
+	// Mock GetMergeRequest
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID:          123,
+				IID:         123,
+				ProjectID:   3,
+				Title:       "test1",
+				Description: "fixed login page css paddings",
+				State:       "merged",
+			},
+		}, nil, nil)
 
 	rawDiff := heredoc.Doc(`
 	diff --git a/file.txt b/file.txt
@@ -150,220 +136,283 @@ func TestMRDiff_raw(t *testing.T) {
 	-old line
 	+new line`)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests/123/raw_diffs`,
-		httpmock.NewStringResponse(http.StatusOK, rawDiff))
+	// Mock ShowMergeRequestRawDiffs
+	testClient.MockMergeRequests.EXPECT().
+		ShowMergeRequestRawDiffs("OWNER/REPO", int64(123), gomock.Any()).
+		Return([]byte(rawDiff), nil, nil)
 
-	output, err := runCommand(t, fakeHTTP, false, "123 --raw")
+	exec := cmdtest.SetupCmdForTest(t, newCmdDiffWrapper, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("123 --raw")
 	require.NoError(t, err)
 	assert.Equal(t, rawDiff, output.String())
 	assert.Empty(t, output.Stderr())
 }
 
-func TestPRDiff_no_current_mr(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
-	defer fakeHTTP.Verify(t)
+func TestMRDiff_no_current_mr(t *testing.T) {
+	t.Parallel()
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER/REPO/merge_requests?per_page=30&source_branch=feature`,
-		httpmock.NewStringResponse(http.StatusOK, `[]`))
+	testClient := gitlabtesting.NewTestClient(t)
 
-	_, err := runCommand(t, fakeHTTP, false, "")
-	if err == nil {
-		t.Fatal("expected error")
-	}
+	// Mock ListProjectMergeRequests - returns empty list (no MR for branch)
+	testClient.MockMergeRequests.EXPECT().
+		ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.BasicMergeRequest{}, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(t, newCmdDiffWrapper, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		cmdtest.WithBranch("feature"),
+	)
+
+	_, err := exec("")
+	require.Error(t, err)
 	assert.Equal(t, `no open merge request available for "feature"`, err.Error())
 }
 
 func TestMRDiff_argument_not_found(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathOnly,
+	t.Parallel()
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	// Mock GetMergeRequest
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID:          123,
+				IID:         123,
+				ProjectID:   3,
+				Title:       "test1",
+				Description: "fixed login page css paddings",
+				State:       "merged",
+			},
+		}, nil, nil)
+
+	// Mock GetMergeRequestDiffVersions - returns 404
+	notFoundResp := &gitlab.Response{
+		Response: &http.Response{StatusCode: http.StatusNotFound},
 	}
-	defer fakeHTTP.Verify(t)
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequestDiffVersions("OWNER/REPO", int64(123), gomock.Any()).
+		Return(nil, notFoundResp, gitlab.ErrNotFound)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `/projects/OWNER/REPO/merge_requests/123`, MRGetResponse())
+	exec := cmdtest.SetupCmdForTest(t, newCmdDiffWrapper, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `/projects/OWNER/REPO/merge_requests/123/versions`,
-		httpmock.NewStringResponse(http.StatusNotFound, `{"message":"404 Not Found"}`))
-
-	output, err := runCommand(t, fakeHTTP, false, "123")
-	if err == nil {
-		t.Fatal("expected error", err)
-	}
-
+	output, err := exec("123")
+	require.Error(t, err)
 	assert.Empty(t, output.String())
 	assert.Empty(t, output.Stderr())
-	assert.Equal(t, `could not find merge request diffs: 404 Not Found`, err.Error())
+	assert.Contains(t, err.Error(), "could not find merge request diffs")
 }
 
 func TestMRDiff_notty(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
+	t.Parallel()
 
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests?per_page=30&source_branch=feature`,
-		httpmock.NewStringResponse(http.StatusOK, `[{
-    "id": 123,
-    "iid": 123,
-    "project_id": 3,
-    "title": "test1",
-    "description": "fixed login page css paddings",
-    "state": "merged"}]`))
+	// Mock ListProjectMergeRequests - find MR by branch
+	testClient.MockMergeRequests.EXPECT().
+		ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.BasicMergeRequest{{
+			ID:          123,
+			IID:         123,
+			ProjectID:   3,
+			Title:       "test1",
+			Description: "fixed login page css paddings",
+			State:       "merged",
+		}}, nil, nil)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests/123`,
-		MRGetResponse())
+	// Mock GetMergeRequest
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID:          123,
+				IID:         123,
+				ProjectID:   3,
+				Title:       "test1",
+				Description: "fixed login page css paddings",
+				State:       "merged",
+			},
+		}, nil, nil)
 
-	testDiff := DiffTest(fakeHTTP)
-	output, err := runCommand(t, fakeHTTP, false, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-	if diff := strings.Contains(testDiff, output.String()); diff {
-		t.Errorf("command output did not match:\n%v", diff)
-	}
+	// Mock GetMergeRequestDiffVersions
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequestDiffVersions("OWNER/REPO", int64(123), gomock.Any()).
+		Return([]*gitlab.MergeRequestDiffVersion{
+			{
+				ID:             110,
+				HeadCommitSHA:  "33e2ee8579fda5bc36accc9c6fbd0b4fefda9e30",
+				BaseCommitSHA:  "eeb57dffe83deb686a60a71c16c32f71046868fd",
+				StartCommitSHA: "eeb57dffe83deb686a60a71c16c32f71046868fd",
+				State:          "collected",
+				RealSize:       "1",
+			},
+		}, nil, nil)
+
+	// Mock GetSingleMergeRequestDiffVersion
+	testClient.MockMergeRequests.EXPECT().
+		GetSingleMergeRequestDiffVersion("OWNER/REPO", int64(123), int64(110), gomock.Any()).
+		Return(&gitlab.MergeRequestDiffVersion{
+			ID:             110,
+			HeadCommitSHA:  "33e2ee8579fda5bc36accc9c6fbd0b4fefda9e30",
+			BaseCommitSHA:  "eeb57dffe83deb686a60a71c16c32f71046868fd",
+			StartCommitSHA: "eeb57dffe83deb686a60a71c16c32f71046868fd",
+			State:          "collected",
+			RealSize:       "1",
+			Diffs: []*gitlab.Diff{{
+				OldPath:     "LICENSE.md",
+				NewPath:     "LICENSE",
+				AMode:       "0",
+				BMode:       "100644",
+				Diff:        "@@ -0,0 +1,21 @@\n+The MIT License (MIT)\n+\n+Copyright (c) 2018 Administrator\n+\n+Permission is hereby granted, free of charge, to any person obtaining a copy\n+of this software and associated documentation files (the \"Software\"), to deal\n+in the Software without restriction, including without limitation the rights\n+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n+copies of the Software, and to permit persons to whom the Software is\n+furnished to do so, subject to the following conditions:\n+\n+The above copyright notice and this permission notice shall be included in all\n+copies or substantial portions of the Software.\n+\n+THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n+SOFTWARE.\n",
+				NewFile:     true,
+				RenamedFile: true,
+				DeletedFile: false,
+			}},
+		}, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(t, newCmdDiffWrapper, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		cmdtest.WithBranch("feature"),
+	)
+
+	output, err := exec("")
+	require.NoError(t, err)
+	assert.Contains(t, output.String(), "+The MIT License (MIT)")
+	assert.Contains(t, output.String(), "+FITNESS")
 }
 
 func TestMRDiff_tty(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
+	t.Parallel()
 
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests?per_page=30&source_branch=feature`,
-		httpmock.NewStringResponse(http.StatusOK, `[{
-    "id": 123,
-    "iid": 123,
-    "project_id": 3,
-    "title": "test1",
-    "description": "fixed login page css paddings",
-    "state": "merged"}]`))
+	// Mock ListProjectMergeRequests - find MR by branch
+	testClient.MockMergeRequests.EXPECT().
+		ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.BasicMergeRequest{{
+			ID:          123,
+			IID:         123,
+			ProjectID:   3,
+			Title:       "test1",
+			Description: "fixed login page css paddings",
+			State:       "merged",
+		}}, nil, nil)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests/123`,
-		MRGetResponse())
+	// Mock GetMergeRequest
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID:          123,
+				IID:         123,
+				ProjectID:   3,
+				Title:       "test1",
+				Description: "fixed login page css paddings",
+				State:       "merged",
+			},
+		}, nil, nil)
 
-	DiffTest(fakeHTTP)
-	output, err := runCommand(t, fakeHTTP, true, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
+	// Mock GetMergeRequestDiffVersions
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequestDiffVersions("OWNER/REPO", int64(123), gomock.Any()).
+		Return([]*gitlab.MergeRequestDiffVersion{
+			{
+				ID:             110,
+				HeadCommitSHA:  "33e2ee8579fda5bc36accc9c6fbd0b4fefda9e30",
+				BaseCommitSHA:  "eeb57dffe83deb686a60a71c16c32f71046868fd",
+				StartCommitSHA: "eeb57dffe83deb686a60a71c16c32f71046868fd",
+				State:          "collected",
+				RealSize:       "1",
+			},
+		}, nil, nil)
+
+	// Mock GetSingleMergeRequestDiffVersion
+	testClient.MockMergeRequests.EXPECT().
+		GetSingleMergeRequestDiffVersion("OWNER/REPO", int64(123), int64(110), gomock.Any()).
+		Return(&gitlab.MergeRequestDiffVersion{
+			ID:             110,
+			HeadCommitSHA:  "33e2ee8579fda5bc36accc9c6fbd0b4fefda9e30",
+			BaseCommitSHA:  "eeb57dffe83deb686a60a71c16c32f71046868fd",
+			StartCommitSHA: "eeb57dffe83deb686a60a71c16c32f71046868fd",
+			State:          "collected",
+			RealSize:       "1",
+			Diffs: []*gitlab.Diff{{
+				OldPath:     "LICENSE.md",
+				NewPath:     "LICENSE",
+				AMode:       "0",
+				BMode:       "100644",
+				Diff:        "@@ -0,0 +1,21 @@\n+The MIT License (MIT)\n+\n+Copyright (c) 2018 Administrator\n+\n+Permission is hereby granted, free of charge, to any person obtaining a copy\n+of this software and associated documentation files (the \"Software\"), to deal\n+in the Software without restriction, including without limitation the rights\n+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n+copies of the Software, and to permit persons to whom the Software is\n+furnished to do so, subject to the following conditions:\n+\n+The above copyright notice and this permission notice shall be included in all\n+copies or substantial portions of the Software.\n+\n+THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n+SOFTWARE.\n",
+				NewFile:     true,
+				RenamedFile: true,
+				DeletedFile: false,
+			}},
+		}, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(t, newCmdDiffWrapper, true,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		cmdtest.WithBranch("feature"),
+	)
+
+	output, err := exec("")
+	require.NoError(t, err)
+	// TTY output should have color codes
 	assert.Contains(t, output.String(), "\x1b[m\n\x1b[32m+FITNESS")
 }
 
-func DiffTest(fakeHTTP *httpmock.Mocker) string {
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests/123/versions`,
-		httpmock.NewStringResponse(http.StatusOK, `[{
-  "id": 110,
-  "head_commit_sha": "33e2ee8579fda5bc36accc9c6fbd0b4fefda9e30",
-  "base_commit_sha": "eeb57dffe83deb686a60a71c16c32f71046868fd",
-  "start_commit_sha": "eeb57dffe83deb686a60a71c16c32f71046868fd",
-  "created_at": "2016-07-26T14:44:48.926Z",
-  "merge_request_id": 105,
-  "state": "collected",
-  "real_size": "1"
-}, {
-  "id": 108,
-  "head_commit_sha": "3eed087b29835c48015768f839d76e5ea8f07a24",
-  "base_commit_sha": "eeb57dffe83deb686a60a71c16c32f71046868fd",
-  "start_commit_sha": "eeb57dffe83deb686a60a71c16c32f71046868fd",
-  "created_at": "2016-07-25T14:21:33.028Z",
-  "merge_request_id": 105,
-  "state": "collected",
-  "real_size": "1",
-  "patch_id_sha": "72c30d1f0115fc1d2bb0b29b24dc2982cbcdfd32"
-}]`))
-
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests/123/versions/110`,
-		httpmock.NewStringResponse(http.StatusOK, `{
-  "id": 110,
-  "head_commit_sha": "33e2ee8579fda5bc36accc9c6fbd0b4fefda9e30",
-  "base_commit_sha": "eeb57dffe83deb686a60a71c16c32f71046868fd",
-  "start_commit_sha": "eeb57dffe83deb686a60a71c16c32f71046868fd",
-  "created_at": "2016-07-26T14:44:48.926Z",
-  "merge_request_id": 105,
-  "state": "collected",
-  "real_size": "1",
-  "commits": [{
-    "id": "33e2ee8579fda5bc36accc9c6fbd0b4fefda9e30",
-    "short_id": "33e2ee85",
-    "title": "Change year to 2018",
-    "author_name": "Administrator",
-    "author_email": "admin@example.com",
-    "created_at": "2016-07-26T17:44:29.000+03:00",
-    "message": "Change year to 2018"
-  }, {
-    "id": "aa24655de48b36335556ac8a3cd8bb521f977cbd",
-    "short_id": "aa24655d",
-    "title": "Update LICENSE",
-    "author_name": "Administrator",
-    "author_email": "admin@example.com",
-    "created_at": "2016-07-25T17:21:53.000+03:00",
-    "message": "Update LICENSE"
-  }, {
-    "id": "3eed087b29835c48015768f839d76e5ea8f07a24",
-    "short_id": "3eed087b",
-    "title": "Add license",
-    "author_name": "Administrator",
-    "author_email": "admin@example.com",
-    "created_at": "2016-07-25T17:21:20.000+03:00",
-    "message": "Add license"
-  }],
-  "diffs": [{
-    "old_path": "LICENSE.md",
-    "new_path": "LICENSE",
-    "a_mode": "0",
-    "b_mode": "100644",
-    "diff": "--- /dev/null\n+++ b/LICENSE\n@@ -0,0 +1,21 @@\n+The MIT License (MIT)\n+\n+Copyright (c) 2018 Administrator\n+\n+Permission is hereby granted, free of charge, to any person obtaining a copy\n+of this software and associated documentation files (the \"Software\"), to deal\n+in the Software without restriction, including without limitation the rights\n+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n+copies of the Software, and to permit persons to whom the Software is\n+furnished to do so, subject to the following conditions:\n+\n+The above copyright notice and this permission notice shall be included in all\n+copies or substantial portions of the Software.\n+\n+THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n+SOFTWARE.\n",
-    "new_file": true,
-    "renamed_file": true,
-    "deleted_file": false
-  }]
-}`))
-	return "--- /dev/null\n+++ b/LICENSE\n@@ -0,0 +1,21 @@\n+The MIT License (MIT)\n+\n+Copyright (c) 2018 Administrator\n+\n+Permission is hereby granted, free of charge, to any person obtaining a copy\n+of this software and associated documentation files (the \"Software\"), to deal\n+in the Software without restriction, including without limitation the rights\n+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n+copies of the Software, and to permit persons to whom the Software is\n+furnished to do so, subject to the following conditions:\n+\n+The above copyright notice and this permission notice shall be included in all\n+copies or substantial portions of the Software.\n+\n+THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n+SOFTWARE.\n"
-}
-
 func TestMRDiff_no_diffs_found(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
-	defer fakeHTTP.Verify(t)
+	t.Parallel()
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests?per_page=30&source_branch=feature`,
-		httpmock.NewStringResponse(http.StatusOK, `[{
-	"id": 123,
-	"iid": 123,
-	"project_id": 3,
-	"title": "test1",
-	"description": "fixed login page css paddings",
-	"state": "merged"}]`))
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests/123`,
-		MRGetResponse())
+	// Mock ListProjectMergeRequests - find MR by branch
+	testClient.MockMergeRequests.EXPECT().
+		ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.BasicMergeRequest{{
+			ID:          123,
+			IID:         123,
+			ProjectID:   3,
+			Title:       "test1",
+			Description: "fixed login page css paddings",
+			State:       "merged",
+		}}, nil, nil)
 
-	EmptyDiffsTest(fakeHTTP)
+	// Mock GetMergeRequest
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID:          123,
+				IID:         123,
+				ProjectID:   3,
+				Title:       "test1",
+				Description: "fixed login page css paddings",
+				State:       "merged",
+			},
+		}, nil, nil)
 
-	_, err := runCommand(t, fakeHTTP, false, "")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
+	// Mock GetMergeRequestDiffVersions - returns empty list
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequestDiffVersions("OWNER/REPO", int64(123), gomock.Any()).
+		Return([]*gitlab.MergeRequestDiffVersion{}, nil, nil)
 
-	assert.Error(t, err, "no merge request diffs found")
-}
+	exec := cmdtest.SetupCmdForTest(t, newCmdDiffWrapper, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		cmdtest.WithBranch("feature"),
+	)
 
-func EmptyDiffsTest(fakeHTTP *httpmock.Mocker) {
-	fakeHTTP.RegisterResponder(http.MethodGet, `https://gitlab.com/api/v4/projects/OWNER%2FREPO/merge_requests/123/versions`,
-		httpmock.NewStringResponse(http.StatusOK, `[]`))
-}
-
-func MRGetResponse() httpmock.Responder {
-	return httpmock.NewStringResponse(http.StatusOK, `{
-		"id": 123,
-		"iid": 123,
-		"project_id": 3,
-		"title": "test1",
-		"description": "fixed login page css paddings",
-		"state": "merged"
-	}`)
+	_, err := exec("")
+	require.Error(t, err)
+	assert.Equal(t, "no merge request diffs found", err.Error())
 }

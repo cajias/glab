@@ -4,8 +4,6 @@ package create
 
 import (
 	"errors"
-	"io"
-	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -15,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/survivorbat/huhtest"
+	"go.uber.org/mock/gomock"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
@@ -25,111 +24,64 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
 	"gitlab.com/gitlab-org/cli/test"
 )
-
-func runCommand(t *testing.T, rt http.RoundTripper, branch string, isTTY bool, cli string, letItFail bool) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(isTTY))
-	pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
-
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-	factory.RemotesStub = func() (glrepo.Remotes, error) {
-		return glrepo.Remotes{
-			{
-				Remote: &git.Remote{
-					Name:     "upstream",
-					Resolved: "head",
-					PushURL:  pu,
-				},
-				Repo: glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
-			},
-			{
-				Remote: &git.Remote{
-					Name:     "origin",
-					Resolved: "base",
-					PushURL:  pu,
-				},
-				Repo: glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
-			},
-		}, nil
-	}
-	factory.BranchStub = func() (string, error) {
-		return branch, nil
-	}
-
-	if letItFail {
-		factory.GitLabClientStub = func() (*gitlab.Client, error) {
-			return nil, errors.New("fail on purpose")
-		}
-	}
-
-	cmd := NewCmdCreate(factory)
-	cmd.PersistentFlags().StringP("repo", "R", "", "")
-
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
 
 func TestNewCmdCreate_tty(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/projects/OWNER/REPO/merge_requests",
-		httpmock.NewStringResponse(http.StatusCreated, `
+	// Mock GetProject
+	testClient.MockProjects.EXPECT().
+		GetProject("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.Project{
+			ID:                   1,
+			DefaultBranch:        "master",
+			WebURL:               "http://gitlab.com/OWNER/REPO",
+			Name:                 "OWNER",
+			Path:                 "REPO",
+			MergeRequestsEnabled: true,
+			PathWithNamespace:    "OWNER/REPO",
+		}, nil, nil)
+
+	// Mock ListMilestones
+	testClient.MockMilestones.EXPECT().
+		ListMilestones("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.Milestone{
 			{
- 				"id": 1,
- 				"iid": 12,
- 				"project_id": 3,
- 				"title": "myMRtitle",
- 				"description": "myMRbody",
- 				"state": "opened",
- 				"target_branch": "master",
- 				"source_branch": "feat-new-mr",
-				"web_url": "https://gitlab.com/OWNER/REPO/-/merge_requests/12"
-			}
-		`),
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO?license=true&with_custom_attributes=true",
-		httpmock.NewStringResponse(http.StatusOK, `
+				ID:          1,
+				IID:         3,
+				Description: "foo",
+			},
+		}, nil, nil)
+
+	// Mock ListUsers
+	testClient.MockUsers.EXPECT().
+		ListUsers(gomock.Any()).
+		Return([]*gitlab.User{
 			{
- 				"id": 1,
-				"description": null,
-				"default_branch": "master",
-				"web_url": "http://gitlab.com/OWNER/REPO",
-				"name": "OWNER",
-				"path": "REPO",
-				"merge_requests_enabled": true,
-				"path_with_namespace": "OWNER/REPO"
-			}
-		`),
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/milestones?include_parent_milestones=true&per_page=30&title=foo",
-		httpmock.NewStringResponse(http.StatusOK, `
-			[
-			  {
-				"id": 1,
-				"iid": 3,
-				"description": "foo"
-			  }
-			]
-		`),
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/users?per_page=30&username=testuser",
-		httpmock.NewStringResponse(http.StatusOK, `
-			[{
- 				"username": "testuser"
-			}]
-		`),
-	)
+				Username: "testuser",
+			},
+		}, nil, nil)
+
+	// Mock CreateMergeRequest
+	testClient.MockMergeRequests.EXPECT().
+		CreateMergeRequest("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID:           1,
+				IID:          12,
+				ProjectID:    3,
+				Title:        "myMRtitle",
+				Description:  "myMRbody",
+				State:        "opened",
+				TargetBranch: "master",
+				SourceBranch: "feat-new-mr",
+				WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/12",
+			},
+		}, nil, nil)
 
 	cs, csTeardown := test.InitCmdStubber()
 	defer csTeardown()
@@ -139,6 +91,37 @@ func TestNewCmdCreate_tty(t *testing.T) {
 		deadb00f refs/remotes/upstream/feat-new-mr
 		deadbeef refs/remotes/origin/feat-new-mr
 	`))
+
+	pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, true,
+		cmdtest.WithGitLabClient(testClient.Client),
+		func(f *cmdtest.Factory) {
+			f.RemotesStub = func() (glrepo.Remotes, error) {
+				return glrepo.Remotes{
+					{
+						Remote: &git.Remote{
+							Name:     "upstream",
+							Resolved: "head",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+					},
+					{
+						Remote: &git.Remote{
+							Name:     "origin",
+							Resolved: "base",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
+					},
+				}, nil
+			}
+			f.BranchStub = func() (string, error) {
+				return "feat-new-mr", nil
+			}
+		},
+	)
 
 	cliStr := []string{
 		"-t", "myMRtitle",
@@ -150,7 +133,7 @@ func TestNewCmdCreate_tty(t *testing.T) {
 
 	cli := strings.Join(cliStr, " ")
 
-	output, err := runCommand(t, fakeHTTP, "feat-new-mr", true, cli, false)
+	output, err := exec(cli)
 	if err != nil {
 		if errors.Is(err, cmdutils.SilentError) {
 			t.Errorf("Unexpected error: %q", output.Stderr())
@@ -169,55 +152,52 @@ func TestNewCmdCreate_RelatedIssue(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests",
-		func(req *http.Request) (*http.Response, error) {
-			rb, _ := io.ReadAll(req.Body)
-			assert.Contains(t, string(rb), "\"title\":\"Draft: Resolve \\\"this is a issue title\\\"")
-			assert.Contains(t, string(rb), "\"description\":\"\\n\\nCloses #1\"")
-			resp, _ := httpmock.NewStringResponse(http.StatusCreated, `
-				{
-	 				"id": 1,
-	 				"iid": 12,
-	 				"project_id": 3,
-	 				"title": "Draft: Resolve \"this is a issue title\"",
-	 				"description": "\n\nCloses #1",
-	 				"state": "opened",
-	 				"target_branch": "master",
-	 				"source_branch": "feat-new-mr",
-					"web_url": "https://gitlab.com/OWNER/REPO/-/merge_requests/12"
-				}
-			`)(req)
-			return resp, nil
-		},
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO",
-		httpmock.NewStringResponse(http.StatusOK, `
-			{
- 				"id": 1,
-				"description": null,
-				"default_branch": "master",
-				"web_url": "http://gitlab.com/OWNER/REPO",
-				"name": "OWNER",
-				"path": "REPO",
-				"merge_requests_enabled": true,
-				"path_with_namespace": "OWNER/REPO"
-			}
-		`),
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/1",
-		httpmock.NewStringResponse(http.StatusOK, `
-			{
-				"id":1,
-				"iid":1,
-				"project_id":1,
-				"title":"this is a issue title",
-				"description":"issue description"
-			}
-		`),
-	)
+	// Mock GetProject
+	testClient.MockProjects.EXPECT().
+		GetProject("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.Project{
+			ID:                   1,
+			DefaultBranch:        "master",
+			WebURL:               "http://gitlab.com/OWNER/REPO",
+			Name:                 "OWNER",
+			Path:                 "REPO",
+			MergeRequestsEnabled: true,
+			PathWithNamespace:    "OWNER/REPO",
+		}, nil, nil)
+
+	// Mock GetIssue
+	testClient.MockIssues.EXPECT().
+		GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+		Return(&gitlab.Issue{
+			ID:          1,
+			IID:         1,
+			ProjectID:   1,
+			Title:       "this is a issue title",
+			Description: "issue description",
+		}, nil, nil)
+
+	// Mock CreateMergeRequest and verify the title and description
+	testClient.MockMergeRequests.EXPECT().
+		CreateMergeRequest("OWNER/REPO", gomock.Any()).
+		DoAndReturn(func(pid any, opts *gitlab.CreateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			assert.Contains(t, *opts.Title, `Draft: Resolve "this is a issue title"`)
+			assert.Contains(t, *opts.Description, "\n\nCloses #1")
+			return &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					ID:           1,
+					IID:          12,
+					ProjectID:    3,
+					Title:        `Draft: Resolve "this is a issue title"`,
+					Description:  "\n\nCloses #1",
+					State:        "opened",
+					TargetBranch: "master",
+					SourceBranch: "feat-new-mr",
+					WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/12",
+				},
+			}, nil, nil
+		})
 
 	cs, csTeardown := test.InitCmdStubber()
 	defer csTeardown()
@@ -227,6 +207,37 @@ func TestNewCmdCreate_RelatedIssue(t *testing.T) {
 			deadb00f refs/remotes/upstream/feat-new-mr
 			deadbeef refs/remotes/origin/feat-new-mr
 		`))
+
+	pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, true,
+		cmdtest.WithGitLabClient(testClient.Client),
+		func(f *cmdtest.Factory) {
+			f.RemotesStub = func() (glrepo.Remotes, error) {
+				return glrepo.Remotes{
+					{
+						Remote: &git.Remote{
+							Name:     "upstream",
+							Resolved: "head",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+					},
+					{
+						Remote: &git.Remote{
+							Name:     "origin",
+							Resolved: "base",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
+					},
+				}, nil
+			}
+			f.BranchStub = func() (string, error) {
+				return "feat-new-mr", nil
+			}
+		},
+	)
 
 	cliStr := []string{
 		"--related-issue", "1",
@@ -238,7 +249,7 @@ func TestNewCmdCreate_RelatedIssue(t *testing.T) {
 
 	t.Log(cli)
 
-	output, err := runCommand(t, fakeHTTP, "feat-new-mr", true, cli, false)
+	output, err := exec(cli)
 	if err != nil {
 		if errors.Is(err, cmdutils.SilentError) {
 			t.Errorf("Unexpected error: %q", output.Stderr())
@@ -253,44 +264,41 @@ func TestNewCmdCreate_RelatedIssue(t *testing.T) {
 }
 
 func TestNewCmdCreate_TemplateFromCommitMessages(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests",
-		func(req *http.Request) (*http.Response, error) {
-			rb, _ := io.ReadAll(req.Body)
-			assert.Contains(t, string(rb), "- commit msg 1  \\n\\n")
-			assert.Contains(t, string(rb), "- commit msg 2  \\ncommit body")
-			resp, _ := httpmock.NewStringResponse(http.StatusCreated, `
-				{
-	 				"id": 1,
-	 				"iid": 12,
-	 				"project_id": 3,
-	 				"title": "...",
-	 				"description": "...",
-	 				"state": "opened",
-	 				"target_branch": "master",
-	 				"source_branch": "feat-new-mr",
-					"web_url": "https://gitlab.com/OWNER/REPO/-/merge_requests/12"
-				}
-			`)(req)
-			return resp, nil
-		},
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO",
-		httpmock.NewStringResponse(http.StatusOK, `
-			{
-				"id": 1,
-				"description": null,
-				"default_branch": "master",
-				"web_url": "http://gitlab.com/OWNER/REPO",
-				"name": "OWNER",
-				"path": "REPO",
-				"merge_requests_enabled": true,
-				"path_with_namespace": "OWNER/REPO"
-			}
-		`),
-	)
+	// Mock GetProject
+	testClient.MockProjects.EXPECT().
+		GetProject("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.Project{
+			ID:                   1,
+			DefaultBranch:        "master",
+			WebURL:               "http://gitlab.com/OWNER/REPO",
+			Name:                 "OWNER",
+			Path:                 "REPO",
+			MergeRequestsEnabled: true,
+			PathWithNamespace:    "OWNER/REPO",
+		}, nil, nil)
+
+	// Mock CreateMergeRequest and verify the description contains commit messages
+	testClient.MockMergeRequests.EXPECT().
+		CreateMergeRequest("OWNER/REPO", gomock.Any()).
+		DoAndReturn(func(pid any, opts *gitlab.CreateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			assert.Contains(t, *opts.Description, "- commit msg 1  \n\n")
+			assert.Contains(t, *opts.Description, "- commit msg 2  \ncommit body")
+			return &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					ID:           1,
+					IID:          12,
+					ProjectID:    3,
+					Title:        "...",
+					Description:  "...",
+					State:        "opened",
+					TargetBranch: "master",
+					SourceBranch: "feat-new-mr",
+					WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/12",
+				},
+			}, nil, nil
+		})
 
 	cs, csTeardown := test.InitCmdStubber()
 	defer csTeardown()
@@ -356,7 +364,7 @@ func TestNewCmdCreate_TemplateFromCommitMessages(t *testing.T) {
 
 		return NewCmdCreate(f)
 	}, true,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, "", glinstance.DefaultHostname).Lab()),
+		cmdtest.WithGitLabClient(testClient.Client),
 		cmdtest.WithConfig(config.NewFromString("editor: vi")),
 		cmdtest.WithResponder(t, responder),
 	)
@@ -375,55 +383,52 @@ func TestNewCmdCreate_RelatedIssueWithTitleAndDescription(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests",
-		func(req *http.Request) (*http.Response, error) {
-			rb, _ := io.ReadAll(req.Body)
-			assert.Contains(t, string(rb), "\"title\":\"Draft: my custom MR title\"")
-			assert.Contains(t, string(rb), "\"description\":\"my custom MR description\\n\\nCloses #1\"")
-			resp, _ := httpmock.NewStringResponse(http.StatusCreated, `
-				{
-	 				"id": 1,
-	 				"iid": 12,
-	 				"project_id": 3,
-	 				"title": "my custom MR title",
-	 				"description": "myMRbody",
-	 				"state": "opened",
-	 				"target_branch": "master",
-	 				"source_branch": "feat-new-mr",
-					"web_url": "https://gitlab.com/OWNER/REPO/-/merge_requests/12"
-				}
-			`)(req)
-			return resp, nil
-		},
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO",
-		httpmock.NewStringResponse(http.StatusOK, `
-			{
- 				"id": 1,
-				"description": null,
-				"default_branch": "master",
-				"web_url": "http://gitlab.com/OWNER/REPO",
-				"name": "OWNER",
-				"path": "REPO",
-				"merge_requests_enabled": true,
-				"path_with_namespace": "OWNER/REPO"
-			}
-		`),
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/1",
-		httpmock.NewStringResponse(http.StatusOK, `
-			{
-				"id":1,
-				"iid":1,
-				"project_id":1,
-				"title":"this is a issue title",
-				"description":"issue description"
-			}
-		`),
-	)
+	// Mock GetProject
+	testClient.MockProjects.EXPECT().
+		GetProject("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.Project{
+			ID:                   1,
+			DefaultBranch:        "master",
+			WebURL:               "http://gitlab.com/OWNER/REPO",
+			Name:                 "OWNER",
+			Path:                 "REPO",
+			MergeRequestsEnabled: true,
+			PathWithNamespace:    "OWNER/REPO",
+		}, nil, nil)
+
+	// Mock GetIssue
+	testClient.MockIssues.EXPECT().
+		GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+		Return(&gitlab.Issue{
+			ID:          1,
+			IID:         1,
+			ProjectID:   1,
+			Title:       "this is a issue title",
+			Description: "issue description",
+		}, nil, nil)
+
+	// Mock CreateMergeRequest and verify the title and description
+	testClient.MockMergeRequests.EXPECT().
+		CreateMergeRequest("OWNER/REPO", gomock.Any()).
+		DoAndReturn(func(pid any, opts *gitlab.CreateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			assert.Equal(t, "Draft: my custom MR title", *opts.Title)
+			assert.Contains(t, *opts.Description, "my custom MR description\n\nCloses #1")
+			return &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					ID:           1,
+					IID:          12,
+					ProjectID:    3,
+					Title:        "my custom MR title",
+					Description:  "myMRbody",
+					State:        "opened",
+					TargetBranch: "master",
+					SourceBranch: "feat-new-mr",
+					WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/12",
+				},
+			}, nil, nil
+		})
 
 	cs, csTeardown := test.InitCmdStubber()
 	defer csTeardown()
@@ -434,9 +439,40 @@ func TestNewCmdCreate_RelatedIssueWithTitleAndDescription(t *testing.T) {
 			deadbeef refs/remotes/origin/feat-new-mr
 		`))
 
+	pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, true,
+		cmdtest.WithGitLabClient(testClient.Client),
+		func(f *cmdtest.Factory) {
+			f.RemotesStub = func() (glrepo.Remotes, error) {
+				return glrepo.Remotes{
+					{
+						Remote: &git.Remote{
+							Name:     "upstream",
+							Resolved: "head",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+					},
+					{
+						Remote: &git.Remote{
+							Name:     "origin",
+							Resolved: "base",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
+					},
+				}, nil
+			}
+			f.BranchStub = func() (string, error) {
+				return "feat-new-mr", nil
+			}
+		},
+	)
+
 	cliStr := []string{
-		"--title", "\"my custom MR title\"",
-		"--description", "\"my custom MR description\"",
+		"--title", `"my custom MR title"`,
+		"--description", `"my custom MR description"`,
 		"--related-issue", "1",
 		"--source-branch", "feat-new-mr",
 	}
@@ -445,7 +481,7 @@ func TestNewCmdCreate_RelatedIssueWithTitleAndDescription(t *testing.T) {
 
 	t.Log(cli)
 
-	output, err := runCommand(t, fakeHTTP, "feat-new-mr", true, cli, false)
+	output, err := exec(cli)
 	if err != nil {
 		if errors.Is(err, cmdutils.SilentError) {
 			t.Errorf("Unexpected error: %q", output.Stderr())
@@ -461,14 +497,43 @@ func TestNewCmdCreate_RelatedIssueWithTitleAndDescription(t *testing.T) {
 }
 
 func TestMRCreate_nontty_insufficient_flags(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	t.Parallel()
 
-	_, err := runCommand(t, fakeHTTP, "test-br", false, "", false)
-	if err == nil {
-		t.Fatal("expected error")
-	}
+	testClient := gitlabtesting.NewTestClient(t)
 
+	pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		func(f *cmdtest.Factory) {
+			f.RemotesStub = func() (glrepo.Remotes, error) {
+				return glrepo.Remotes{
+					{
+						Remote: &git.Remote{
+							Name:     "upstream",
+							Resolved: "head",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+					},
+					{
+						Remote: &git.Remote{
+							Name:     "origin",
+							Resolved: "base",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
+					},
+				}, nil
+			}
+			f.BranchStub = func() (string, error) {
+				return "test-br", nil
+			}
+		},
+	)
+
+	_, err := exec("")
+	require.Error(t, err)
 	assert.Equal(t, "--title or --fill required for non-interactive mode.", err.Error())
 }
 
@@ -559,16 +624,8 @@ resolves #1
 		}
 
 		assert.Equal(t, "mr autofill test br", opts.Title)
-		assert.Equal(t, `- docs: more changes to more things  
-Here, I am adding some commit body.
-Little longer  
-Resolves #1
-
-- chore: some tidying  
-another body for another commit
-closes 1234
-
-`, opts.Description)
+		// Note: trailing spaces (markdown line breaks) are added to certain lines
+		assert.Equal(t, "- docs: more changes to more things  \nHere, I am adding some commit body.\nLittle longer  \nResolves #1\n\n- chore: some tidying  \nanother body for another commit\ncloses 1234\n\n", opts.Description)
 	})
 }
 
@@ -603,45 +660,49 @@ func Test_MRCreate_With_Recover_Integration(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/merge_requests",
-		httpmock.NewStringResponse(http.StatusCreated, `
+	// For the first run: GitLabClientStub returns error to trigger recovery file creation
+	// For the second run: Normal API mocks
+
+	// Mock GetProject (only called on recovery run - first run fails before API call)
+	testClient.MockProjects.EXPECT().
+		GetProject("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.Project{
+			ID:                   1,
+			DefaultBranch:        "master",
+			WebURL:               "http://gitlab.com/OWNER/REPO",
+			Name:                 "OWNER",
+			Path:                 "REPO",
+			MergeRequestsEnabled: true,
+			PathWithNamespace:    "OWNER/REPO",
+		}, nil, nil)
+
+	// Mock ListUsers (called on recovery)
+	testClient.MockUsers.EXPECT().
+		ListUsers(gomock.Any()).
+		Return([]*gitlab.User{
 			{
- 				"id": 1,
- 				"iid": 12,
- 				"project_id": 3,
- 				"title": "myMRtitle",
- 				"description": "myMRbody",
- 				"state": "opened",
- 				"target_branch": "master",
- 				"source_branch": "feat-new-mr",
-				"web_url": "https://gitlab.com/OWNER/REPO/-/merge_requests/12"
-			}
-		`),
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO",
-		httpmock.NewStringResponse(http.StatusOK, `
-			{
- 				"id": 1,
-				"description": null,
-				"default_branch": "master",
-				"web_url": "http://gitlab.com/OWNER/REPO",
-				"name": "OWNER",
-				"path": "REPO",
-				"merge_requests_enabled": true,
-				"path_with_namespace": "OWNER/REPO"
-			}
-		`),
-	)
-	fakeHTTP.RegisterResponder(http.MethodGet, "/users",
-		httpmock.NewStringResponse(http.StatusOK, `
-			[{
- 				"username": "testuser"
-			}]
-		`),
-	)
+				Username: "testuser",
+			},
+		}, nil, nil)
+
+	// Mock CreateMergeRequest (called on recovery)
+	testClient.MockMergeRequests.EXPECT().
+		CreateMergeRequest("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID:           1,
+				IID:          12,
+				ProjectID:    3,
+				Title:        "myMRtitle",
+				Description:  "myMRbody",
+				State:        "opened",
+				TargetBranch: "master",
+				SourceBranch: "feat-new-mr",
+				WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/12",
+			},
+		}, nil, nil)
 
 	cs, csTeardown := test.InitCmdStubber()
 	defer csTeardown()
@@ -651,6 +712,15 @@ func Test_MRCreate_With_Recover_Integration(t *testing.T) {
 		deadb00f refs/remotes/upstream/feat-new-mr
 		deadbeef refs/remotes/origin/feat-new-mr
 	`))
+	// For recovery run
+	cs.Stub("HEAD branch: master\n")
+	cs.Stub(heredoc.Doc(`
+		deadbeef HEAD
+		deadb00f refs/remotes/upstream/feat-new-mr
+		deadbeef refs/remotes/origin/feat-new-mr
+	`))
+
+	pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
 
 	cliStr := []string{
 		"-t", "myMRtitle",
@@ -662,7 +732,41 @@ func Test_MRCreate_With_Recover_Integration(t *testing.T) {
 
 	cli := strings.Join(cliStr, " ")
 
-	output, err := runCommand(t, fakeHTTP, "feat-new-mr", true, cli, true)
+	// First run - let it fail to create recovery file
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, true,
+		cmdtest.WithGitLabClient(testClient.Client),
+		func(f *cmdtest.Factory) {
+			f.RemotesStub = func() (glrepo.Remotes, error) {
+				return glrepo.Remotes{
+					{
+						Remote: &git.Remote{
+							Name:     "upstream",
+							Resolved: "head",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+					},
+					{
+						Remote: &git.Remote{
+							Name:     "origin",
+							Resolved: "base",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
+					},
+				}, nil
+			}
+			f.BranchStub = func() (string, error) {
+				return "feat-new-mr", nil
+			}
+			// Return error to trigger recovery file creation
+			f.GitLabClientStub = func() (*gitlab.Client, error) {
+				return nil, errors.New("fail on purpose")
+			}
+		},
+	)
+
+	output, err := exec(cli)
 
 	outErr := output.Stderr()
 
@@ -674,7 +778,37 @@ func Test_MRCreate_With_Recover_Integration(t *testing.T) {
 
 	newCli := strings.Join(newCliStr, " ")
 
-	newOutput, newErr := runCommand(t, fakeHTTP, "feat-new-mr", true, newCli, false)
+	// Second run - recover from file
+	exec2 := cmdtest.SetupCmdForTest(t, NewCmdCreate, true,
+		cmdtest.WithGitLabClient(testClient.Client),
+		func(f *cmdtest.Factory) {
+			f.RemotesStub = func() (glrepo.Remotes, error) {
+				return glrepo.Remotes{
+					{
+						Remote: &git.Remote{
+							Name:     "upstream",
+							Resolved: "head",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+					},
+					{
+						Remote: &git.Remote{
+							Name:     "origin",
+							Resolved: "base",
+							PushURL:  pu,
+						},
+						Repo: glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
+					},
+				}, nil
+			}
+			f.BranchStub = func() (string, error) {
+				return "feat-new-mr", nil
+			}
+		},
+	)
+
+	newOutput, newErr := exec2(newCli)
 	if newErr != nil {
 		if errors.Is(err, cmdutils.SilentError) {
 			t.Errorf("Unexpected error: %q", newOutput.Stderr())
