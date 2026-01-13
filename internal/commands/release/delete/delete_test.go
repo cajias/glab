@@ -3,153 +3,106 @@
 package delete
 
 import (
-	"net/http"
 	"testing"
+	"time"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-
-	cmd := NewCmdDelete(factory)
-
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
-
-func TestReleaseDelete(t *testing.T) {
-	type httpMock struct {
-		method string
-		path   string
-		status int
-		body   string
+func Test_ReleaseDelete(t *testing.T) {
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
 
-	tests := []struct {
-		name      string
-		cli       string
-		httpMocks []httpMock
+	createdAt, _ := time.Parse(time.RFC3339, "2020-01-23T07:13:17.721Z")
+	releasedAt, _ := time.Parse(time.RFC3339, "2020-01-23T07:13:17.721Z")
 
-		expectedOut string
-	}{
+	testRelease := &gitlab.Release{
+		Name:            "test_release",
+		TagName:         "0.0.1",
+		Description:     "",
+		CreatedAt:       &createdAt,
+		ReleasedAt:      &releasedAt,
+		UpcomingRelease: false,
+	}
+
+	testCases := []testCase{
 		{
 			name: "delete a release",
 			cli:  "0.0.1 --yes",
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/releases/0.0.1",
-					http.StatusOK,
-					`{
-							  "name": "test_release",
-							  "tag_name": "0.0.1",
-							  "description": null,
-							  "created_at": "2020-01-23T07:13:17.721Z",
-							  "released_at": "2020-01-23T07:13:17.721Z",
-							  "upcoming_release": false
-							}`,
-				},
-				{
-					http.MethodDelete,
-					"/api/v4/projects/OWNER/REPO/releases/0.0.1",
-					http.StatusOK,
-					`{
-							  "name": "test_release",
-							  "tag_name": "0.0.1",
-							  "description": null,
-							  "created_at": "2020-01-23T07:13:17.721Z",
-							  "released_at": "2020-01-23T07:13:17.721Z",
-							  "upcoming_release": false
-							}`,
-				},
-			},
-
 			expectedOut: heredoc.Doc(`• Validating tag repo=OWNER/REPO tag=0.0.1
-												• Deleting release repo=OWNER/REPO tag=0.0.1
-												✓ Release "test_release" deleted.
-											`),
+				• Deleting release repo=OWNER/REPO tag=0.0.1
+				✓ Release "test_release" deleted.
+			`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockReleases.EXPECT().
+					GetRelease("OWNER/REPO", "0.0.1", gomock.Any()).
+					Return(testRelease, nil, nil)
+				tc.MockReleases.EXPECT().
+					DeleteRelease("OWNER/REPO", "0.0.1").
+					Return(testRelease, nil, nil)
+			},
 		},
 		{
 			name: "delete a release and associated tag",
 			cli:  "0.0.1 --yes --with-tag",
-			httpMocks: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects/OWNER/REPO/releases/0.0.1",
-					http.StatusOK,
-					`{
-							  "name": "test_release",
-							  "tag_name": "0.0.1",
-							  "description": null,
-							  "created_at": "2020-01-23T07:13:17.721Z",
-							  "released_at": "2020-01-23T07:13:17.721Z",
-							  "upcoming_release": false
-							}`,
-				},
-				{
-					http.MethodDelete,
-					"/api/v4/projects/OWNER/REPO/releases/0.0.1",
-					http.StatusOK,
-					`{
-							  "name": "test_release",
-							  "tag_name": "0.0.1",
-							  "description": null,
-							  "created_at": "2020-01-23T07:13:17.721Z",
-							  "released_at": "2020-01-23T07:13:17.721Z",
-							  "upcoming_release": false
-							}`,
-				},
-				{
-					http.MethodDelete,
-					"/api/v4/projects/OWNER/REPO/repository/tags/0.0.1",
-					http.StatusOK,
-					`{
-							  "name": "test_release",
-							  "tag_name": "0.0.1",
-							  "description": null,
-							  "created_at": "2020-01-23T07:13:17.721Z",
-							  "released_at": "2020-01-23T07:13:17.721Z",
-							  "upcoming_release": false
-							}`,
-				},
-			},
-
 			expectedOut: heredoc.Doc(`• Validating tag repo=OWNER/REPO tag=0.0.1
-												• Deleting release repo=OWNER/REPO tag=0.0.1
-												✓ Release "test_release" deleted.
-												• Deleting associated tag "0.0.1".
-												✓ Tag "test_release" deleted.
-											`),
+				• Deleting release repo=OWNER/REPO tag=0.0.1
+				✓ Release "test_release" deleted.
+				• Deleting associated tag "0.0.1".
+				✓ Tag "test_release" deleted.
+			`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockReleases.EXPECT().
+					GetRelease("OWNER/REPO", "0.0.1", gomock.Any()).
+					Return(testRelease, nil, nil)
+				tc.MockReleases.EXPECT().
+					DeleteRelease("OWNER/REPO", "0.0.1").
+					Return(testRelease, nil, nil)
+				tc.MockTags.EXPECT().
+					DeleteTag("OWNER/REPO", "0.0.1").
+					Return(nil, nil)
+			},
 		},
 	}
 
-	for _, tc := range tests {
+	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeHTTP := httpmock.New()
-			defer fakeHTTP.Verify(t)
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdDelete,
+				false,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
 
-			for _, mock := range tc.httpMocks {
-				fakeHTTP.RegisterResponder(mock.method, mock.path, httpmock.NewStringResponse(mock.status, mock.body))
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantStderr, err.Error())
+				return
 			}
-
-			output, err := runCommand(t, fakeHTTP, tc.cli)
-
-			if assert.NoErrorf(t, err, "error running command `delete %s`: %v", tc.cli, err) {
-				assert.Equal(t, tc.expectedOut, output.String())
-				assert.Empty(t, output.Stderr())
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedOut, out.String())
+			assert.Empty(t, out.Stderr())
 		})
 	}
 }

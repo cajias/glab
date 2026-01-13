@@ -4,16 +4,20 @@ package download
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/api"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/commands/release/releaseutils/upload"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
 )
 
 func doesFileExist(fileName string) bool {
@@ -21,15 +25,123 @@ func doesFileExist(fileName string) bool {
 	return err == nil
 }
 
-func Test_downloadAssets(t *testing.T) {
-	assetUrl := "https://gitlab.com/gitlab-org/cli/-/archive/"
+func TestDownloadCommand_WithTag_NoAssets(t *testing.T) {
+	t.Parallel()
 
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.HostAndPath,
+	testClient := gitlabtesting.NewTestClient(t)
+
+	testClient.MockReleases.EXPECT().
+		GetRelease("OWNER/REPO", "v1.0.0", gomock.Any()).
+		Return(&gitlab.Release{
+			TagName: "v1.0.0",
+			Name:    "Release v1.0.0",
+			Assets: gitlab.ReleaseAssets{
+				Links:   []*gitlab.ReleaseLink{},
+				Sources: []gitlab.ReleaseAssetsSource{},
+			},
+		}, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdDownload, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("v1.0.0")
+	require.NoError(t, err)
+
+	// No assets to download, so it should succeed with a warning
+	assert.Contains(t, output.String(), "no release assets found")
+}
+
+func TestDownloadCommand_LatestRelease(t *testing.T) {
+	t.Parallel()
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	testClient.MockReleases.EXPECT().
+		ListReleases("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.Release{
+			{
+				TagName: "v2.0.0",
+				Name:    "Release v2.0.0",
+				Assets: gitlab.ReleaseAssets{
+					Links:   []*gitlab.ReleaseLink{},
+					Sources: []gitlab.ReleaseAssetsSource{},
+				},
+			},
+		}, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdDownload, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("")
+	require.NoError(t, err)
+
+	// No assets to download, so it should succeed with a warning
+	assert.Contains(t, output.String(), "no release assets found")
+}
+
+func TestDownloadCommand_NoReleases(t *testing.T) {
+	t.Parallel()
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	testClient.MockReleases.EXPECT().
+		ListReleases("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.Release{}, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdDownload, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	_, err := exec("")
+	require.Error(t, err)
+	// The WrapError returns the underlying error message ("not found")
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestDownloadCommand_ReleaseNotFound(t *testing.T) {
+	t.Parallel()
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	notFoundResp := &gitlab.Response{
+		Response: &http.Response{StatusCode: http.StatusNotFound},
 	}
+	testClient.MockReleases.EXPECT().
+		GetRelease("OWNER/REPO", "v999.0.0", gomock.Any()).
+		Return(nil, notFoundResp, gitlab.ErrNotFound)
 
-	apiClient := cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, "", "", api.WithBaseURL("https://gitlab.com"))
-	client := apiClient.Lab()
+	exec := cmdtest.SetupCmdForTest(t, NewCmdDownload, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	_, err := exec("v999.0.0")
+	require.Error(t, err)
+	// The WrapError returns the underlying error message
+	assert.Error(t, err)
+}
+
+// Test_downloadAssets tests the internal downloadAssets function for path sanitization
+// and file download behavior. Uses httptest.NewServer for HTTP mocking since
+// this tests raw HTTP download functionality, not GitLab API calls.
+func Test_downloadAssets(t *testing.T) {
+	// Cannot use t.Parallel() because subtests share the test server
+
+	// Create a test HTTP server that serves file content
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("test_data"))
+	}))
+	defer testServer.Close()
+
+	// Create a GitLab client with the test server's URL
+	gitlabClient, err := gitlab.NewClient("test-token", gitlab.WithBaseURL(testServer.URL))
+	require.NoError(t, err)
 
 	tests := []struct {
 		name     string
@@ -55,14 +167,15 @@ func Test_downloadAssets(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fullUrl := assetUrl + tt.filename
-			fakeHTTP.RegisterResponder(http.MethodGet, fullUrl, httpmock.NewStringResponse(http.StatusOK, `test_data`))
+			// Do not use t.Parallel() here - test server must stay alive
+
+			fullURL := testServer.URL + "/" + tt.filename
 
 			io, _, _, _ := cmdtest.TestIOStreams()
 
 			release := &upload.ReleaseAsset{
 				Name: &tt.filename,
-				URL:  &fullUrl,
+				URL:  &fullURL,
 			}
 
 			releases := []*upload.ReleaseAsset{release}
@@ -71,7 +184,7 @@ func Test_downloadAssets(t *testing.T) {
 
 			filePathWanted := filepath.Join(tempPath, tt.want)
 
-			err := downloadAssets(t.Context(), client, io, releases, tempPath)
+			err := downloadAssets(t.Context(), gitlabClient, io, releases, tempPath)
 
 			if tt.wantErr {
 				assert.Error(t, err, "Should error out if a path doesn't exist")
