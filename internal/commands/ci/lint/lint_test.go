@@ -32,6 +32,7 @@ func Test_lintRun(t *testing.T) {
 	tests := []struct {
 		name             string
 		testFile         string
+		cliArgs          string
 		StdOut           string
 		wantErr          bool
 		errMsg           string
@@ -93,6 +94,62 @@ func Test_lintRun(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:             "when --dry-run is used without --ref",
+			testFile:         ".gitlab-ci.yaml",
+			cliArgs:          "--dry-run",
+			StdOut:           "Validating...\n✓ CI/CD YAML is valid!\n",
+			wantErr:          false,
+			errMsg:           "",
+			showHaveBaseRepo: true,
+			httpMocks: []httpMock{
+				{
+					http.MethodGet,
+					"/api/v4/projects/OWNER/REPO",
+					http.StatusOK,
+					`{
+						"id": 123,
+						"iid": 123
+					}`,
+				},
+				{
+					http.MethodPost,
+					"/api/v4/projects/123/ci/lint",
+					http.StatusOK,
+					`{
+						"valid": true
+					}`,
+				},
+			},
+		},
+		{
+			name:             "when --dry-run is used with --ref",
+			testFile:         ".gitlab-ci.yaml",
+			cliArgs:          "--dry-run --ref=main",
+			StdOut:           "Validating...\n✓ CI/CD YAML is valid!\n",
+			wantErr:          false,
+			errMsg:           "",
+			showHaveBaseRepo: true,
+			httpMocks: []httpMock{
+				{
+					http.MethodGet,
+					"/api/v4/projects/OWNER/REPO",
+					http.StatusOK,
+					`{
+						"id": 123,
+						"iid": 123
+					}`,
+				},
+				{
+					http.MethodPost,
+					"/api/v4/projects/123/ci/lint",
+					http.StatusOK,
+					`{
+						"valid": true
+					}`,
+				},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -107,6 +164,9 @@ func Test_lintRun(t *testing.T) {
 
 			_, filename, _, _ := runtime.Caller(0)
 			args := path.Join(path.Dir(filename), "testdata", tt.testFile)
+			if tt.cliArgs != "" {
+				args += " " + tt.cliArgs
+			}
 
 			result, err := runCommand(t, fakeHTTP, args, tt.showHaveBaseRepo)
 			if tt.wantErr {

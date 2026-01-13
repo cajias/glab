@@ -117,14 +117,19 @@ func (o *options) run() error {
 
 	fmt.Fprintln(o.io.StdOut, "Validating...")
 
+	lintOpts := &gitlab.ProjectNamespaceLintOptions{
+		Content:     gitlab.Ptr(string(content)),
+		DryRun:      gitlab.Ptr(o.dryRun),
+		IncludeJobs: gitlab.Ptr(o.includeJobs),
+	}
+	// Only include Ref if it was explicitly set by the user
+	if o.ref != "" {
+		lintOpts.Ref = gitlab.Ptr(o.ref)
+	}
+
 	lint, _, err := client.Validate.ProjectNamespaceLint(
 		projectID,
-		&gitlab.ProjectNamespaceLintOptions{
-			Content:     gitlab.Ptr(string(content)),
-			DryRun:      gitlab.Ptr(o.dryRun),
-			Ref:         gitlab.Ptr(o.ref),
-			IncludeJobs: gitlab.Ptr(o.includeJobs),
-		},
+		lintOpts,
 	)
 	if err != nil {
 		return err
