@@ -3,97 +3,77 @@
 package delete
 
 import (
-	"net/http"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
 func Test_LabelDelete(t *testing.T) {
-	type httpMock struct {
-		method string
-		path   string
-		status int
-		body   string
-	}
-
-	testCases := []struct {
-		Name        string
-		ExpectedMsg []string
-		wantErr     bool
+	type testCase struct {
+		name        string
 		cli         string
+		expectedMsg []string
+		wantErr     bool
 		wantStderr  string
-		httpMocks   []httpMock
-	}{
+		setupMock   func(tc *gitlabtesting.TestClient)
+	}
+
+	testCases := []testCase{
 		{
-			Name:        "Label delete",
-			ExpectedMsg: []string{"Label deleted"},
+			name:        "Label delete",
 			cli:         "foo",
-			httpMocks: []httpMock{
-				{
-					http.MethodDelete,
-					"/api/v4/projects/OWNER/REPO/labels/foo",
-					http.StatusNoContent,
-					"",
-				},
+			expectedMsg: []string{"Label deleted"},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockLabels.EXPECT().
+					DeleteLabel("OWNER/REPO", "foo", gomock.Any()).
+					Return(nil, nil)
 			},
 		},
 		{
-			Name:       "Label delete error",
-			wantErr:    true,
+			name:       "Label delete error",
 			cli:        "nonexistent",
+			wantErr:    true,
 			wantStderr: "404 Not Found",
-			httpMocks: []httpMock{
-				{
-					http.MethodDelete,
-					"/api/v4/projects/OWNER/REPO/labels/nonexistent",
-					http.StatusNotFound,
-					"",
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockLabels.EXPECT().
+					DeleteLabel("OWNER/REPO", "nonexistent", gomock.Any()).
+					Return(nil, errors.New("404 Not Found"))
 			},
 		},
 	}
+
 	for _, tc := range testCases {
-		t.Run(tc.Name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdDelete,
+				false,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
 
-			for _, mock := range tc.httpMocks {
-				fakeHTTP.RegisterResponder(mock.method, mock.path, httpmock.NewStringResponse(mock.status, mock.body))
-			}
+			// WHEN
+			out, err := exec(tc.cli)
 
-			out, err := runCommand(t, fakeHTTP, tc.cli)
-
-			for _, msg := range tc.ExpectedMsg {
-				require.Contains(t, out.String(), msg)
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
 			}
-			if err != nil {
-				if tc.wantErr == true {
-					if assert.Error(t, err) {
-						require.Equal(t, tc.wantStderr, err.Error())
-					}
-					return
-				}
+			require.NoError(t, err)
+			for _, msg := range tc.expectedMsg {
+				assert.Contains(t, out.OutBuf.String(), msg)
 			}
 		})
 	}
-}
-
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-	cmd := NewCmdDelete(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
 }
