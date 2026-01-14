@@ -17,6 +17,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestNewCmdClone(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		name        string
 		args        string
@@ -64,7 +66,8 @@ func TestNewCmdClone(t *testing.T) {
 			name: "group clone arguments",
 			args: "-g NAMESPACE/REPO -- --depth 1 --recurse-submodules",
 			wantOpts: options{
-				gitFlags: []string{"--depth", "1", "--recurse-submodules"},
+				gitFlags:  []string{"--depth", "1", "--recurse-submodules"},
+				groupName: "NAMESPACE/REPO",
 			},
 			wantCtxOpts: ContextOpts{
 				Repo: "",
@@ -75,9 +78,50 @@ func TestNewCmdClone(t *testing.T) {
 			args:    "NAMESPACE/REPO --depth 1",
 			wantErr: "unknown flag: --depth\nSeparate Git clone flags with '--'.",
 		},
+		{
+			name: "group clone with active=true",
+			args: "-g mygroup --active=true",
+			wantOpts: options{
+				gitFlags:  []string{},
+				groupName: "mygroup",
+				active:    true,
+				activeSet: true,
+			},
+			wantCtxOpts: ContextOpts{
+				Repo: "",
+			},
+		},
+		{
+			name: "group clone with active=false",
+			args: "-g mygroup --active=false",
+			wantOpts: options{
+				gitFlags:  []string{},
+				groupName: "mygroup",
+				active:    false,
+				activeSet: true,
+			},
+			wantCtxOpts: ContextOpts{
+				Repo: "",
+			},
+		},
+		{
+			name: "group clone without active flag",
+			args: "-g mygroup",
+			wantOpts: options{
+				gitFlags:  []string{},
+				groupName: "mygroup",
+				active:    false,
+				activeSet: false,
+			},
+			wantCtxOpts: ContextOpts{
+				Repo: "",
+			},
+		},
 	}
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			io, stdin, stdout, stderr := cmdtest.TestIOStreams()
 			fac := cmdtest.NewTestFactory(io)
 
@@ -98,18 +142,21 @@ func TestNewCmdClone(t *testing.T) {
 			cmd.SetErr(stderr)
 
 			_, err = cmd.ExecuteC()
-			if err != nil {
+			if tt.wantErr != "" {
+				require.Error(t, err)
 				assert.Equal(t, tt.wantErr, err.Error())
 				return
-			} else if tt.wantErr != "" {
-				t.Errorf("expected error %q, got nil", tt.wantErr)
 			}
 
+			require.NoError(t, err)
 			assert.Equal(t, "", stdout.String())
 			assert.Equal(t, "", stderr.String())
 
 			assert.Equal(t, tt.wantCtxOpts.Repo, ctxOpts.Repo)
 			assert.Equal(t, tt.wantOpts.gitFlags, opts.gitFlags)
+			assert.Equal(t, tt.wantOpts.groupName, opts.groupName)
+			assert.Equal(t, tt.wantOpts.active, opts.active)
+			assert.Equal(t, tt.wantOpts.activeSet, opts.activeSet)
 		})
 	}
 }

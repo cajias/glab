@@ -30,6 +30,8 @@ type options struct {
 	withShared        bool
 	archived          bool
 	archivedSet       bool
+	active            bool
+	activeSet         bool
 	visibility        string
 	owned             bool
 	gitFlags          []string
@@ -84,6 +86,9 @@ glab repo clone -g <group> [flags] [<dir>] [-- <gitflags>...]`,
 			# Clones all non-archived repos in a group
 			$ glab repo clone -g everyonecancontribute --archived=false --paginate
 
+			# Clones only active projects in a group
+			$ glab repo clone -g everyonecancontribute --active=true --paginate
+
 			# Clones from a GitLab Self-Managed or GitLab Dedicated instance
 			$ GITLAB_HOST=salsa.debian.org glab repo clone myrepo
 		`),
@@ -118,12 +123,14 @@ glab repo clone -g <group> [flags] [<dir>] [-- <gitflags>...]`,
 				return &cmdutils.FlagError{Err: fmt.Errorf("Specify repository argument, or use the --group flag to specify a group to clone all repos from the group.")}
 			}
 
+			opts.archivedSet = cmd.Flags().Changed("archived")
+			opts.activeSet = cmd.Flags().Changed("active")
+
 			if runE != nil {
 				return runE(opts, ctxOpts)
 			}
 
 			opts.host = f.DefaultHostname()
-			opts.archivedSet = cmd.Flags().Changed("archived")
 
 			apiClient, err := f.ApiClient(opts.host)
 			if err != nil {
@@ -149,6 +156,7 @@ glab repo clone -g <group> [flags] [<dir>] [-- <gitflags>...]`,
 
 	repoCloneCmd.Flags().StringVarP(&opts.groupName, "group", "g", "", "Specify the group to clone repositories from.")
 	repoCloneCmd.Flags().BoolVarP(&opts.preserveNamespace, "preserve-namespace", "p", false, "Clone the repository in a subdirectory based on namespace.")
+	repoCloneCmd.Flags().BoolVarP(&opts.active, "active", "", false, "Limit by project status. When true, returns active projects. When false, returns projects that are archived or marked for deletion. Used with the --group flag.")
 	repoCloneCmd.Flags().BoolVarP(&opts.archived, "archived", "a", false, "Limit by archived status. Use with '-a=false' to exclude archived repositories. Used with the --group flag.")
 	repoCloneCmd.Flags().BoolVarP(&opts.includeSubgroups, "include-subgroups", "G", true, "Include projects in subgroups of this group. Default is true. Used with the --group flag.")
 	repoCloneCmd.Flags().BoolVarP(&opts.owned, "mine", "m", false, "Limit by projects in the group owned by the current authenticated user. Used with the --group flag.")
@@ -185,6 +193,9 @@ func groupClone(opts *options, ctxOpts *ContextOpts) error {
 	}
 	if opts.owned {
 		listOpts.Owned = gitlab.Ptr(true)
+	}
+	if opts.activeSet {
+		listOpts.Active = gitlab.Ptr(opts.active)
 	}
 	if opts.archivedSet {
 		listOpts.Archived = gitlab.Ptr(opts.archived)

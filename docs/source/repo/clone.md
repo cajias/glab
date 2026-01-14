@@ -48,6 +48,9 @@ $ glab repo clone -g everyonecancontribute --paginate
 # Clones all non-archived repos in a group
 $ glab repo clone -g everyonecancontribute --archived=false --paginate
 
+# Clones only active projects in a group
+$ glab repo clone -g everyonecancontribute --active=true --paginate
+
 # Clones from a GitLab Self-Managed or GitLab Dedicated instance
 $ GITLAB_HOST=salsa.debian.org glab repo clone myrepo
 
@@ -58,6 +61,7 @@ $ GITLAB_HOST=salsa.debian.org glab repo clone myrepo
 ```plaintext
   -g, --group string          Specify the group to clone repositories from.
   -p, --preserve-namespace    Clone the repository in a subdirectory based on namespace.
+      --active                Limit by project status. When true, returns active projects. When false, returns projects that are archived or marked for deletion. Used with the --group flag.
   -a, --archived              Limit by archived status. Use with '-a=false' to exclude archived repositories. Used with the --group flag.
   -G, --include-subgroups     Include projects in subgroups of this group. Default is true. Used with the --group flag. (default true)
   -m, --mine                  Limit by projects in the group owned by the current authenticated user. Used with the --group flag.
