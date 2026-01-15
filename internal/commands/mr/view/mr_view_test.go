@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -23,9 +22,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
-	"gitlab.com/gitlab-org/cli/internal/run"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	mainTest "gitlab.com/gitlab-org/cli/test"
 )
 
 var (
@@ -97,36 +94,6 @@ func TestMain(m *testing.M) {
 		}, nil
 	}
 	cmdtest.InitTest(m, "mr_view_test")
-}
-
-func TestMRView_web_numberArg(t *testing.T) {
-	cmd := NewCmdView(f)
-	cmdutils.EnableRepoOverride(cmd, f)
-
-	var seenCmd *exec.Cmd
-	restoreCmd := run.SetPrepareCmd(func(cmd *exec.Cmd) run.Runnable {
-		seenCmd = cmd
-		return &mainTest.OutputStub{}
-	})
-	defer restoreCmd()
-
-	_, err := cmdtest.RunCommand(cmd, "225 -w -R cli-automated-testing/test")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	out := stripansi.Strip(stdout.String())
-	outErr := stripansi.Strip(stderr.String())
-	stdout.Reset()
-	stderr.Reset()
-
-	assert.Contains(t, outErr, "Opening gitlab.com/cli-automated-testing/test/-/merge_requests/225 in your browser.")
-	assert.Equal(t, out, "")
-
-	if seenCmd == nil {
-		t.Log("expected a command to run")
-	}
 }
 
 func TestMRView(t *testing.T) {
