@@ -3,103 +3,84 @@
 package create
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
 func Test_LabelCreate(t *testing.T) {
-	type httpMock struct {
-		method string
-		path   string
-		status int
-		body   string
+	type testCase struct {
+		name        string
+		cli         string
+		expectedMsg []string
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
 
-	testCases := []struct {
-		Name        string
-		ExpectedMsg []string
-		wantErr     bool
-		cli         string
-		wantStderr  string
-		httpMocks   []httpMock
-	}{
+	testCases := []testCase{
 		{
-			Name:        "Label created",
-			ExpectedMsg: []string{"Created label: foo\nWith color: #FF0000"},
+			name:        "Label created",
 			cli:         "--name foo --color red",
-			httpMocks: []httpMock{
-				{
-					http.MethodPost,
-					"/api/v4/projects/OWNER/REPO/labels",
-					http.StatusCreated,
-					`{"name":"foo","color":"#FF0000"}`,
-				},
+			expectedMsg: []string{"Created label: foo\nWith color: #FF0000"},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockLabels.EXPECT().
+					CreateLabel("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Label{Name: "foo", Color: "#FF0000"}, nil, nil)
 			},
 		},
 		{
-			Name:        "Label not created because of missing name",
-			wantStderr:  "required flag(s) \"name\" not set",
+			name:        "Label not created because of missing name",
+			cli:         "",
 			wantErr:     true,
-			ExpectedMsg: []string{""},
+			wantStderr:  "required flag(s) \"name\" not set",
+			expectedMsg: []string{""},
+			setupMock:   func(tc *gitlabtesting.TestClient) {},
 		},
 		{
-			Name:        "Label created with description",
-			ExpectedMsg: []string{"Created label: foo\nWith color: #FF0000"},
+			name:        "Label created with description",
 			cli:         "--name foo --color red --description foo_desc",
-			httpMocks: []httpMock{
-				{
-					http.MethodPost,
-					"/api/v4/projects/OWNER/REPO/labels",
-					http.StatusCreated,
-					`{"name":"foo","color":"#FF0000", "description":"foo_desc"}`,
-				},
+			expectedMsg: []string{"Created label: foo\nWith color: #FF0000"},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockLabels.EXPECT().
+					CreateLabel("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Label{Name: "foo", Color: "#FF0000", Description: "foo_desc"}, nil, nil)
 			},
 		},
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.Name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdCreate,
+				false,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
 
-			for _, mock := range tc.httpMocks {
-				fakeHTTP.RegisterResponder(mock.method, mock.path, httpmock.NewStringResponse(mock.status, mock.body))
-			}
+			// WHEN
+			out, err := exec(tc.cli)
 
-			out, err := runCommand(t, fakeHTTP, tc.cli)
-
-			for _, msg := range tc.ExpectedMsg {
-				require.Contains(t, out.String(), msg)
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
 			}
-			if err != nil {
-				if tc.wantErr == true {
-					if assert.Error(t, err) {
-						require.Equal(t, tc.wantStderr, err.Error())
-					}
-					return
-				}
+			require.NoError(t, err)
+			for _, msg := range tc.expectedMsg {
+				assert.Contains(t, out.OutBuf.String(), msg)
 			}
 		})
 	}
-}
-
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-	cmd := NewCmdCreate(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
 }

@@ -3,80 +3,108 @@
 package list
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
+	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-	tc := cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname)
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithApiClient(tc),
-		cmdtest.WithGitLabClient(tc.Lab()),
-	)
-	cmd := NewCmdList(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
-
 func TestLabelList(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/labels",
-		httpmock.NewStringResponse(http.StatusOK, `
-	[
-		{
-			"id":1,
-			"name":"bug",
-			"description":null,
-			"text_color":"#FFFFFF",
-			"color":"#6699cc",
-			"priority":null,
-			"is_project_label":true
-		},
-		{
-			"id":2,
-			"name":"ux",
-			"description":"User Experience",
-			"text_color":"#FFFFFF",
-			"color":"#3cb371",
-			"priority":null,
-			"is_project_label":true
-		}
-	]
-	`))
-
-	output, err := runCommand(t, fakeHTTP, "")
-	if err != nil {
-		t.Errorf("error running command `label list`: %v", err)
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
 
-	out := output.String()
+	testLabels := []*gitlab.Label{
+		{
+			ID:          1,
+			Name:        "bug",
+			Description: "",
+			Color:       "#6699cc",
+		},
+		{
+			ID:          2,
+			Name:        "ux",
+			Description: "User Experience",
+			Color:       "#3cb371",
+		},
+	}
 
-	assert.Equal(t, heredoc.Doc(`Showing label 2 of 2 on OWNER/REPO.
-	
-	ID	Name	Description	Color
-	1	bug		#6699cc
-	2	ux	User Experience	#3cb371
-	
-	`), out)
-	assert.Empty(t, output.Stderr())
+	testCases := []testCase{
+		{
+			name: "List project labels",
+			cli:  "",
+			expectedOut: heredoc.Doc(`Showing label 2 of 2 on OWNER/REPO.
+
+			ID	Name	Description	Color
+			1	bug		#6699cc
+			2	ux	User Experience	#3cb371
+
+			`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockLabels.EXPECT().
+					ListLabels("OWNER/REPO", gomock.Any()).
+					Return(testLabels, nil, nil)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdList,
+				true,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+			)
+
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedOut, out.OutBuf.String())
+			assert.Empty(t, out.ErrBuf.String())
+		})
+	}
 }
 
 func TestLabelListJSON(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	fakeHTTP.MatchURL = httpmock.PathAndQuerystring
-	defer fakeHTTP.Verify(t)
+	testLabels := []*gitlab.Label{
+		{
+			ID:                     29739671,
+			Name:                   "my label",
+			Color:                  "#00b140",
+			TextColor:              "#FFFFFF",
+			Description:            "Simple label",
+			OpenIssuesCount:        0,
+			ClosedIssuesCount:      0,
+			OpenMergeRequestsCount: 0,
+			Subscribed:             false,
+			Priority:               0,
+			IsProjectLabel:         true,
+		},
+	}
 
 	expectedBody := `[
     {
@@ -94,75 +122,70 @@ func TestLabelListJSON(t *testing.T) {
     }
 ]`
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER%2FREPO/labels?page=1&per_page=30&with_counts=true",
-		httpmock.NewStringResponse(http.StatusOK, `[
-  {
-    "id": 29739671,
-    "name": "my label",
-    "description": "Simple label",
-    "description_html": "Simple label",
-    "text_color": "#FFFFFF",
-    "color": "#00b140",
-    "open_issues_count": 0,
-    "closed_issues_count": 0,
-    "open_merge_requests_count": 0,
-    "subscribed": false,
-    "priority": null,
-    "is_project_label": true
-  }
-]`))
+	// GIVEN
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockLabels.EXPECT().
+		ListLabels("OWNER/REPO", gomock.Any()).
+		Return(testLabels, nil, nil)
 
-	output, err := runCommand(t, fakeHTTP, "-F json")
-	if err != nil {
-		t.Errorf("error running command `label list -F json`: %v", err)
-	}
+	exec := cmdtest.SetupCmdForTest(
+		t,
+		NewCmdList,
+		true,
+		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+	)
 
-	assert.JSONEq(t, expectedBody, output.String())
-	assert.Empty(t, output.Stderr())
+	// WHEN
+	output, err := exec("-F json")
+
+	// THEN
+	require.NoError(t, err)
+	assert.JSONEq(t, expectedBody, output.OutBuf.String())
+	assert.Empty(t, output.ErrBuf.String())
 }
 
 func TestGroupLabelList(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/foo/labels",
-		httpmock.NewStringResponse(http.StatusOK, `
-	[
+	testLabels := []*gitlab.GroupLabel{
 		{
-			"id":1,
-			"name":"groupbug",
-			"description":null,
-			"text_color":"#FFFFFF",
-			"color":"#6699cc",
-			"priority":null,
-			"is_project_label":false
+			ID:          1,
+			Name:        "groupbug",
+			Description: "",
+			Color:       "#6699cc",
 		},
 		{
-			"id":2,
-			"name":"groupux",
-			"description":"User Experience",
-			"text_color":"#FFFFFF",
-			"color":"#3cb371",
-			"priority":null,
-			"is_project_label":false
-		}
-	]
-	`))
-
-	flags := "--group foo"
-	output, err := runCommand(t, fakeHTTP, flags)
-	if err != nil {
-		t.Errorf("error running command `label list %s`: %v", flags, err)
+			ID:          2,
+			Name:        "groupux",
+			Description: "User Experience",
+			Color:       "#3cb371",
+		},
 	}
 
-	out := output.String()
+	expectedOut := heredoc.Doc(`Showing label 2 of 2 for group foo.
 
-	assert.Equal(t, heredoc.Doc(`Showing label 2 of 2 for group foo.
-	
 	ID	Name	Description	Color
 	1	groupbug		#6699cc
 	2	groupux	User Experience	#3cb371
-	
-	`), out)
-	assert.Empty(t, output.Stderr())
+
+	`)
+
+	// GIVEN
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockGroupLabels.EXPECT().
+		ListGroupLabels("foo", gomock.Any()).
+		Return(testLabels, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(
+		t,
+		NewCmdList,
+		true,
+		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+	)
+
+	// WHEN
+	output, err := exec("--group foo")
+
+	// THEN
+	require.NoError(t, err)
+	assert.Equal(t, expectedOut, output.OutBuf.String())
+	assert.Empty(t, output.ErrBuf.String())
 }

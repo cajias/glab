@@ -3,13 +3,22 @@
 package reorder
 
 import (
+	"net/http"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
+	"gitlab.com/gitlab-org/cli/internal/api"
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/git"
+	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/run"
-	"gitlab.com/gitlab-org/cli/internal/testing/stacks"
+	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
 
 func Test_matchBranchesToStack(t *testing.T) {
@@ -140,11 +149,40 @@ func Test_matchBranchesToStack(t *testing.T) {
 	}
 }
 
+func setupTestFactoryForReorder(t *testing.T, testClient *gitlabtesting.TestClient) cmdutils.Factory {
+	t.Helper()
+
+	ios, _, _, _ := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(false))
+
+	// Create api.Client that wraps the mock gitlab.Client
+	apiClient, err := api.NewClient(
+		func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: ""}, nil
+		},
+		api.WithGitLabClient(testClient.Client),
+	)
+	require.NoError(t, err)
+
+	f := cmdtest.NewTestFactory(ios,
+		cmdtest.WithGitLabClient(testClient.Client),
+		func(f *cmdtest.Factory) {
+			f.BaseRepoStub = func() (glrepo.Interface, error) {
+				return glrepo.TestProject("stack_guy", "stackproject"), nil
+			}
+			f.ApiClientStub = func(repoHost string) (*api.Client, error) {
+				return apiClient, nil
+			}
+		},
+	)
+
+	return f
+}
+
 func Test_updateMRs(t *testing.T) {
 	type args struct {
-		newStack  git.Stack
-		oldStack  git.Stack
-		httpMocks []stacks.HttpMock
+		newStack   git.Stack
+		oldStack   git.Stack
+		setupMocks func(t *testing.T, testClient *gitlabtesting.TestClient)
 	}
 	tests := []struct {
 		name    string
@@ -267,46 +305,79 @@ func Test_updateMRs(t *testing.T) {
 						},
 					},
 				},
-				httpMocks: []stacks.HttpMock{
-					stacks.MockListOpenStackMRsByBranch("Branch7", "7"),
-					stacks.MockGetStackMR("Branch7", "7"),
-					stacks.MockPutStackMR("main", "7", "3"),
+				setupMocks: func(t *testing.T, testClient *gitlabtesting.TestClient) {
+					t.Helper()
+					// For each branch with an MR, we need:
+					// 1. ListProjectMergeRequests (open MRs by source branch)
+					// 2. GetMergeRequest
+					// 3. UpdateMergeRequest (to change target branch)
 
-					stacks.MockListOpenStackMRsByBranch("Branch5", "5"),
-					stacks.MockGetStackMR("Branch5", "5"),
-					stacks.MockPutStackMR("Branch7", "5", "3"),
+					branchesToUpdate := []struct {
+						branch    string
+						iid       int64
+						newTarget string
+					}{
+						{"Branch7", 7, "main"},
+						{"Branch5", 5, "Branch7"},
+						{"Branch8", 8, "Branch5"},
+						{"Branch1", 1, "Branch8"},
+						{"Branch9", 9, "Branch1"},
+						{"Branch4", 4, "Branch9"},
+						{"Branch2", 2, "Branch4"},
+						{"Branch3", 3, "Branch2"},
+						{"Branch6", 6, "Branch3"},
+						{"Branch10", 10, "Branch6"},
+					}
 
-					stacks.MockListOpenStackMRsByBranch("Branch8", "8"),
-					stacks.MockGetStackMR("Branch8", "8"),
-					stacks.MockPutStackMR("Branch5", "8", "3"),
+					for _, b := range branchesToUpdate {
+						branch := b.branch
+						iid := b.iid
+						newTarget := b.newTarget
 
-					stacks.MockListOpenStackMRsByBranch("Branch1", "1"),
-					stacks.MockGetStackMR("Branch1", "1"),
-					stacks.MockPutStackMR("Branch8", "1", "3"),
+						// MockListOpenStackMRsByBranch
+						testClient.MockMergeRequests.EXPECT().
+							ListProjectMergeRequests("stack_guy/stackproject", gomock.Any()).
+							DoAndReturn(func(pid any, opts *gitlab.ListProjectMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+								assert.Equal(t, branch, *opts.SourceBranch)
+								assert.Equal(t, "opened", *opts.State)
+								return []*gitlab.BasicMergeRequest{
+									{
+										ID:           iid,
+										IID:          iid,
+										ProjectID:    3,
+										SourceBranch: branch,
+										State:        "opened",
+									},
+								}, nil, nil
+							})
 
-					stacks.MockListOpenStackMRsByBranch("Branch9", "9"),
-					stacks.MockGetStackMR("Branch9", "9"),
-					stacks.MockPutStackMR("Branch1", "9", "3"),
+						// MockGetStackMR
+						testClient.MockMergeRequests.EXPECT().
+							GetMergeRequest("stack_guy/stackproject", iid, gomock.Any()).
+							Return(&gitlab.MergeRequest{
+								BasicMergeRequest: gitlab.BasicMergeRequest{
+									ID:           iid,
+									IID:          iid,
+									ProjectID:    3,
+									SourceBranch: branch,
+									State:        "opened",
+								},
+							}, nil, nil)
 
-					stacks.MockListOpenStackMRsByBranch("Branch4", "4"),
-					stacks.MockGetStackMR("Branch4", "4"),
-					stacks.MockPutStackMR("Branch9", "4", "3"),
-
-					stacks.MockListOpenStackMRsByBranch("Branch2", "2"),
-					stacks.MockGetStackMR("Branch2", "2"),
-					stacks.MockPutStackMR("Branch4", "2", "3"),
-
-					stacks.MockListOpenStackMRsByBranch("Branch3", "3"),
-					stacks.MockGetStackMR("Branch3", "3"),
-					stacks.MockPutStackMR("Branch2", "3", "3"),
-
-					stacks.MockListOpenStackMRsByBranch("Branch6", "6"),
-					stacks.MockGetStackMR("Branch6", "6"),
-					stacks.MockPutStackMR("Branch3", "6", "3"),
-
-					stacks.MockListOpenStackMRsByBranch("Branch10", "10"),
-					stacks.MockGetStackMR("Branch10", "10"),
-					stacks.MockPutStackMR("Branch6", "10", "3"),
+						// MockPutStackMR (UpdateMergeRequest)
+						// Note: UpdateMergeRequest is called with mr.ProjectID (int64) not the string path
+						testClient.MockMergeRequests.EXPECT().
+							UpdateMergeRequest(int64(3), iid, gomock.Any()).
+							DoAndReturn(func(pid any, mrIID int64, opts *gitlab.UpdateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+								assert.Equal(t, newTarget, *opts.TargetBranch)
+								return &gitlab.MergeRequest{
+									BasicMergeRequest: gitlab.BasicMergeRequest{
+										IID:          iid,
+										TargetBranch: newTarget,
+									},
+								}, nil, nil
+							})
+					}
 				},
 			},
 		},
@@ -320,10 +391,10 @@ func Test_updateMRs(t *testing.T) {
 			_, err := run.PrepareCmd(gitAddRemote).Output()
 			require.NoError(t, err)
 
-			fakeHTTP := stacks.SetupMocks(tt.args.httpMocks)
-			defer fakeHTTP.Verify(t)
+			testClient := gitlabtesting.NewTestClient(t)
+			tt.args.setupMocks(t, testClient)
 
-			factory := setupTestFactory(t, fakeHTTP, false)
+			factory := setupTestFactoryForReorder(t, testClient)
 
 			err = updateMRs(factory, tt.args.newStack, tt.args.oldStack)
 

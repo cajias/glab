@@ -4,17 +4,19 @@ package set
 
 import (
 	"bytes"
-	"net/http"
 	"testing"
 
 	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/api"
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
 )
 
 func Test_NewCmdSet(t *testing.T) {
@@ -206,31 +208,28 @@ func Test_NewCmdSet(t *testing.T) {
 }
 
 func Test_setRun_project(t *testing.T) {
-	reg := &httpmock.Mocker{}
-	defer reg.Verify(t)
-
-	reg.RegisterResponder(http.MethodPost, "/projects/owner/repo/variables",
-		httpmock.NewStringResponse(http.StatusCreated, `
-			{
-    			"key": "NEW_VARIABLE",
-    			"value": "new value",
-    			"variable_type": "env_var",
-    			"protected": false,
-    			"masked": false,
-				"raw": false,
-				"scope": "production"
-			}
-		`),
-	)
+	// GIVEN
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockProjectVariables.EXPECT().
+		CreateVariable("owner/repo", gomock.Any()).
+		Return(&gitlab.ProjectVariable{
+			Key:              "NEW_VARIABLE",
+			Value:            "new value",
+			VariableType:     "env_var",
+			Protected:        false,
+			Masked:           false,
+			Raw:              false,
+			EnvironmentScope: "production",
+		}, nil, nil)
 
 	io, _, stdout, _ := cmdtest.TestIOStreams()
 
 	opts := &options{
 		apiClient: func(repoHost string) (*api.Client, error) {
-			return cmdtest.NewTestApiClient(t, &http.Client{Transport: reg}, "", "gitlab.com"), nil
+			return cmdtest.NewTestApiClient(t, nil, "", "gitlab.com", api.WithGitLabClient(testClient.Client)), nil
 		},
 		baseRepo: func() (glrepo.Interface, error) {
-			return glrepo.FromFullName("owner/repo", glinstance.DefaultHostname)
+			return glrepo.New("owner", "repo", "gitlab.com"), nil
 		},
 		io:    io,
 		key:   "NEW_VARIABLE",
@@ -238,37 +237,37 @@ func Test_setRun_project(t *testing.T) {
 		scope: "*",
 	}
 
+	// WHEN
 	err := opts.run()
-	assert.NoError(t, err)
-	assert.Equal(t, stdout.String(), "✓ Created variable NEW_VARIABLE for owner/repo with scope *.\n")
+
+	// THEN
+	require.NoError(t, err)
+	assert.Equal(t, "✓ Created variable NEW_VARIABLE for owner/repo with scope *.\n", stdout.String())
 }
 
 func Test_setRun_group(t *testing.T) {
-	reg := &httpmock.Mocker{}
-	defer reg.Verify(t)
-
-	reg.RegisterResponder(http.MethodPost, "/groups/mygroup/variables",
-		httpmock.NewStringResponse(http.StatusCreated, `
-			{
-    			"key": "NEW_VARIABLE",
-    			"value": "new value",
-    			"variable_type": "env_var",
-    			"protected": false,
-    			"masked": false,
-				"raw": false,
-				"scope": "production"
-			}
-		`),
-	)
+	// GIVEN
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockGroupVariables.EXPECT().
+		CreateVariable("mygroup", gomock.Any()).
+		Return(&gitlab.GroupVariable{
+			Key:              "NEW_VARIABLE",
+			Value:            "new value",
+			VariableType:     "env_var",
+			Protected:        false,
+			Masked:           false,
+			Raw:              false,
+			EnvironmentScope: "production",
+		}, nil, nil)
 
 	io, _, stdout, _ := cmdtest.TestIOStreams()
 
 	opts := &options{
 		apiClient: func(repoHost string) (*api.Client, error) {
-			return cmdtest.NewTestApiClient(t, &http.Client{Transport: reg}, "", "gitlab.com"), nil
+			return cmdtest.NewTestApiClient(t, nil, "", "gitlab.com", api.WithGitLabClient(testClient.Client)), nil
 		},
 		baseRepo: func() (glrepo.Interface, error) {
-			return glrepo.FromFullName("owner/repo", glinstance.DefaultHostname)
+			return glrepo.New("owner", "repo", "gitlab.com"), nil
 		},
 		io:    io,
 		key:   "NEW_VARIABLE",
@@ -276,7 +275,10 @@ func Test_setRun_group(t *testing.T) {
 		group: "mygroup",
 	}
 
+	// WHEN
 	err := opts.run()
-	assert.NoError(t, err)
-	assert.Equal(t, stdout.String(), "✓ Created variable NEW_VARIABLE for group mygroup.\n")
+
+	// THEN
+	require.NoError(t, err)
+	assert.Equal(t, "✓ Created variable NEW_VARIABLE for group mygroup.\n", stdout.String())
 }

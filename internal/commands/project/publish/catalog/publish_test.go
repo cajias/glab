@@ -3,33 +3,24 @@
 package catalog
 
 import (
-	"fmt"
-	"io"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-	cmd := NewCmdPublishCatalog(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
-
 func TestPublishCatalog(t *testing.T) {
+	// This test uses httptest.NewServer because the catalog publish API uses raw HTTP
+	// via client.Do() rather than a GitLab client-go service interface.
+
 	tests := []struct {
 		name           string
 		tagName        string
@@ -99,47 +90,56 @@ func TestPublishCatalog(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
+			// Create a test server that handles both tag validation and catalog publish
+			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v4/projects/OWNER/REPO/repository/tags/"+tc.tagName:
+					if tc.isValidTagName {
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{"name": "` + tc.tagName + `"}`))
+					} else {
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"message": "404 Tag Not Found"}`))
+					}
 
-			if tc.wantBody != "" {
-				fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/projects/OWNER/REPO/catalog/publish",
-					func(req *http.Request) (*http.Response, error) {
-						body, _ := io.ReadAll(req.Body)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v4/projects/OWNER/REPO/catalog/publish":
+					if tc.wantBody != "" {
+						var reqBody, expectedBody map[string]any
+						err := json.NewDecoder(r.Body).Decode(&reqBody)
+						require.NoError(t, err)
+						err = json.Unmarshal([]byte(tc.wantBody), &expectedBody)
+						require.NoError(t, err)
 
-						assert.JSONEq(t, tc.wantBody, string(body))
+						reqBodyJSON, _ := json.Marshal(reqBody)
+						expectedBodyJSON, _ := json.Marshal(expectedBody)
+						assert.JSONEq(t, string(expectedBodyJSON), string(reqBodyJSON))
+					}
 
-						response := httpmock.NewJSONResponse(http.StatusOK, map[string]any{
-							"catalog_url": "https://gitlab.example.com/explore/catalog/my-namespace/my-component-project",
-						})
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{
+						"catalog_url": "https://gitlab.example.com/explore/catalog/my-namespace/my-component-project"
+					}`))
 
-						return response(req)
-					},
-				)
-			}
+				default:
+					// For missing tag test case, we don't expect any HTTP calls
+					if tc.tagName != "" {
+						t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					}
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer testServer.Close()
 
-			if tc.tagName != "" {
-				tagUrl := fmt.Sprintf("/api/v4/projects/OWNER/REPO/repository/tags/%s", tc.tagName)
-				fakeHTTP.RegisterResponder(http.MethodGet, tagUrl,
-					func(req *http.Request) (*http.Response, error) {
-						var response httpmock.Responder
-						if tc.isValidTagName {
-							response = httpmock.NewJSONResponse(http.StatusOK, map[string]any{
-								"name": tc.tagName,
-							})
-						} else {
-							response = httpmock.NewJSONResponse(http.StatusNotFound, map[string]any{
-								"message": "404 Tag Not Found",
-							})
-						}
-						return response(req)
-					},
-				)
-			}
+			// Create a GitLab client with the test server's URL
+			gitlabClient, err := gitlab.NewClient("test-token", gitlab.WithBaseURL(testServer.URL+"/api/v4"))
+			require.NoError(t, err)
 
-			output, err := runCommand(t, fakeHTTP, tc.tagName)
+			exec := cmdtest.SetupCmdForTest(t, NewCmdPublishCatalog, false,
+				cmdtest.WithGitLabClient(gitlabClient),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+			)
+
+			output, err := exec(tc.tagName)
 
 			if tc.wantErr {
 				assert.Error(t, err)

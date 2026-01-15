@@ -3,320 +3,267 @@
 package list
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
+	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, args string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname)),
-	)
-
-	cmd := NewCmdList(factory)
-
-	return cmdtest.ExecuteCommand(cmd, args, stdout, stderr)
-}
-
-func TestProjectList(t *testing.T) {
-	type httpMock struct {
-		method string
-		path   string
-		status int
-		body   string
-	}
-	userResponse := `[{
-							"id": 123,
-							"description": "This is a test project",
-							"path_with_namespace": "testuser/example"
-					}]`
-
-	projectResponse := `[{
-							"id": 123,
- 							"description": "This is a test project",
- 							"path_with_namespace": "gitlab-org/incubation-engineering/service-desk/meta"
-					}]`
-	groupResponse := `{
-							"id": 456,
-							"description": "This is a test group",
-							"path": "subgroup",
-							"full_path": "me/group/subgroup"
-					}`
-
-	tests := []struct {
+func Test_ProjectList(t *testing.T) {
+	type testCase struct {
 		name        string
-		httpMock    []httpMock
-		args        string
+		cli         string
 		expectedOut string
-	}{
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
+	}
+
+	testProject := &gitlab.Project{
+		ID:                123,
+		Description:       "This is a test project",
+		PathWithNamespace: "gitlab-org/incubation-engineering/service-desk/meta",
+	}
+
+	testUserProject := &gitlab.Project{
+		ID:                123,
+		Description:       "This is a test project",
+		PathWithNamespace: "testuser/example",
+	}
+
+	testGroup := &gitlab.Group{
+		ID:       456,
+		Path:     "subgroup",
+		FullPath: "me/group/subgroup",
+	}
+
+	testCases := []testCase{
 		{
-			name: "when no projects are found shows an empty list",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?order_by=last_activity_at&owned=true&page=1&per_page=30",
-				http.StatusOK,
-				"[]",
-			}},
-			args:        "",
+			name:        "when no projects are found shows an empty list",
+			cli:         "",
 			expectedOut: "Showing 0 of 0 projects (Page 0 of 0).\n\n\n",
-		},
-		{
-			name: "when no arguments, filters by ownership",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?order_by=last_activity_at&owned=true&page=1&per_page=30",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "when starred is passed as an arg, filters by starred",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?order_by=last_activity_at&page=1&per_page=30&starred=true",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--starred",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "when member is passed as an arg, filters by member",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?membership=true&order_by=last_activity_at&page=1&per_page=30",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--member",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "when mine is passed explicitly as an arg, filters by ownership",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?order_by=last_activity_at&owned=true&page=1&per_page=30",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--mine",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "when mine and starred are passed as args, filters by ownership and starred",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?order_by=last_activity_at&owned=true&page=1&per_page=30&starred=true",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--mine --starred",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "when starred and member are passed as args, filters by starred and membership",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?membership=true&order_by=last_activity_at&page=1&per_page=30&starred=true",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--starred --member",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "when mine and membership are passed as args, filters by ownership and membership",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?membership=true&order_by=last_activity_at&owned=true&page=1&per_page=30",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--mine --member",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "when mine, membership and starred is passed explicitly as arguments, filters by ownership, membership and starred",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?membership=true&order_by=last_activity_at&owned=true&page=1&per_page=30&starred=true",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--mine --member --starred",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "view all projects, no filters",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?order_by=last_activity_at&page=1&per_page=30",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--all",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "view all projects ordered by created_at date sorted descending",
-			httpMock: []httpMock{{
-				http.MethodGet,
-				"/api/v4/projects?order_by=created_at&owned=true&page=1&per_page=30&sort=desc",
-				http.StatusOK,
-				projectResponse,
-			}},
-			args:        "--order created_at --sort desc",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
-		},
-		{
-			name: "view all projects in a specific group",
-			httpMock: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/groups/me/group/subgroup",
-					http.StatusOK,
-					groupResponse,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/groups/456/projects?order_by=last_activity_at&owned=true&page=1&per_page=30",
-					http.StatusOK,
-					projectResponse,
-				},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{}, &gitlab.Response{}, nil)
 			},
-			args:        "--group me/group/subgroup",
-			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
 		},
 		{
-			name: "view all projects in a specific group including subgroups",
-			httpMock: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/groups/me%2Fgroup%2Fsubgroup",
-					http.StatusOK,
-					groupResponse,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/groups/456/projects?include_subgroups=true&order_by=last_activity_at&owned=true&page=1&per_page=30",
-					http.StatusOK,
-					projectResponse,
-				},
-			},
-			args:        "--group me/group/subgroup --include-subgroups",
+			name:        "when no arguments, filters by ownership",
+			cli:         "",
 			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
 		},
 		{
-			name: "view all not archived projects in a specific group",
-			httpMock: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/groups/me%2Fgroup%2Fsubgroup",
-					http.StatusOK,
-					groupResponse,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/groups/456/projects?archived=false&order_by=last_activity_at&page=1&per_page=30",
-					http.StatusOK,
-					projectResponse,
-				},
-			},
-			args:        "-a --group me/group/subgroup --archived=false",
+			name:        "when starred is passed as an arg, filters by starred",
+			cli:         "--starred",
 			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
 		},
 		{
-			name: "view all archived projects in a specific group",
-			httpMock: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/groups/me%2Fgroup%2Fsubgroup",
-					http.StatusOK,
-					groupResponse,
-				},
-				{
-					http.MethodGet,
-					"/api/v4/groups/456/projects?archived=true&order_by=last_activity_at&page=1&per_page=30",
-					http.StatusOK,
-					projectResponse,
-				},
-			},
-			args:        "-a --group me/group/subgroup --archived=true",
+			name:        "when member is passed as an arg, filters by member",
+			cli:         "--member",
 			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
 		},
 		{
-			name: "view all archived projects",
-			httpMock: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects?archived=true&order_by=last_activity_at&page=1&per_page=30",
-					http.StatusOK,
-					projectResponse,
-				},
-			},
-			args:        "-a --archived=true",
+			name:        "when mine is passed explicitly as an arg, filters by ownership",
+			cli:         "--mine",
 			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
 		},
 		{
-			name: "view all not archived projects",
-			httpMock: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/projects?archived=false&order_by=last_activity_at&page=1&per_page=30",
-					http.StatusOK,
-					projectResponse,
-				},
-			},
-			args:        "-a --archived=false",
+			name:        "when mine and starred are passed as args, filters by ownership and starred",
+			cli:         "--mine --starred",
 			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
 		},
 		{
-			name: "view all projects for a given user",
-			httpMock: []httpMock{
-				{
-					http.MethodGet,
-					"/api/v4/users/testuser/projects?order_by=last_activity_at&page=1&per_page=30",
-					http.StatusOK,
-					userResponse,
-				},
+			name:        "when starred and member are passed as args, filters by starred and membership",
+			cli:         "--starred --member",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
 			},
-			args:        "-u testuser",
+		},
+		{
+			name:        "when mine and membership are passed as args, filters by ownership and membership",
+			cli:         "--mine --member",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "when mine, membership and starred is passed explicitly as arguments, filters by ownership, membership and starred",
+			cli:         "--mine --member --starred",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all projects, no filters",
+			cli:         "--all",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all projects ordered by created_at date sorted descending",
+			cli:         "--order created_at --sort desc",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all projects in a specific group",
+			cli:         "--group me/group/subgroup",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroups.EXPECT().
+					GetGroup("me/group/subgroup", gomock.Any()).
+					Return(testGroup, nil, nil)
+				tc.MockGroups.EXPECT().
+					ListGroupProjects(int64(456), gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all projects in a specific group including subgroups",
+			cli:         "--group me/group/subgroup --include-subgroups",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroups.EXPECT().
+					GetGroup("me/group/subgroup", gomock.Any()).
+					Return(testGroup, nil, nil)
+				tc.MockGroups.EXPECT().
+					ListGroupProjects(int64(456), gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all not archived projects in a specific group",
+			cli:         "-a --group me/group/subgroup --archived=false",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroups.EXPECT().
+					GetGroup("me/group/subgroup", gomock.Any()).
+					Return(testGroup, nil, nil)
+				tc.MockGroups.EXPECT().
+					ListGroupProjects(int64(456), gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all archived projects in a specific group",
+			cli:         "-a --group me/group/subgroup --archived=true",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroups.EXPECT().
+					GetGroup("me/group/subgroup", gomock.Any()).
+					Return(testGroup, nil, nil)
+				tc.MockGroups.EXPECT().
+					ListGroupProjects(int64(456), gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all archived projects",
+			cli:         "-a --archived=true",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all not archived projects",
+			cli:         "-a --archived=false",
+			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ngitlab-org/incubation-engineering/service-desk/meta\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListProjects(gomock.Any()).
+					Return([]*gitlab.Project{testProject}, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:        "view all projects for a given user",
+			cli:         "-u testuser",
 			expectedOut: "Showing 1 of 0 projects (Page 0 of 0).\n\nProject path\tGit URL\tDescription\ntestuser/example\t\tThis is a test project\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ListUserProjects("testuser", gomock.Any()).
+					Return([]*gitlab.Project{testUserProject}, &gitlab.Response{}, nil)
+			},
 		},
 	}
 
-	for _, tc := range tests {
+	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdList,
+				false,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", glinstance.DefaultHostname, api.WithGitLabClient(testClient.Client))),
+			)
+
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantStderr, err.Error())
+				return
 			}
-			defer fakeHTTP.Verify(t)
-
-			for _, mock := range tc.httpMock {
-				fakeHTTP.RegisterResponder(mock.method, mock.path,
-					httpmock.NewStringResponse(mock.status, mock.body))
-			}
-
-			output, err := runCommand(t, fakeHTTP, tc.args)
-
-			if assert.NoErrorf(t, err, "error running command `project list %s`: %v", tc.args, err) {
-				out := output.String()
-
-				assert.Equal(t, tc.expectedOut, out)
-				assert.Empty(t, output.Stderr())
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedOut, out.String())
+			assert.Empty(t, out.Stderr())
 		})
 	}
 }

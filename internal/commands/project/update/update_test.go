@@ -3,190 +3,191 @@
 package update
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
+	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
 )
 
-func TestUpdateCmd(t *testing.T) {
-	type httpMock struct {
-		method       string
-		path         string
-		requestBody  string
-		status       int
-		responseBody string
+func Test_ProjectUpdate(t *testing.T) {
+	type testCase struct {
+		name      string
+		cli       string
+		wantErr   bool
+		errString string
+		setupMock func(tc *gitlabtesting.TestClient)
 	}
 
-	testCases := []struct {
-		description string
-		args        string
-		httpMocks   []httpMock
-		errString   string
-	}{{
-		description: "Update description for current repo",
-		args:        "--description foo",
-		httpMocks: []httpMock{{
-			method:       http.MethodPut,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo",
-			requestBody:  `{"description": "foo"}`,
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}},
-	}, {
-		description: "Update description for user's repo",
-		args:        "repo --description foo",
-		httpMocks: []httpMock{{
-			method:       http.MethodGet,
-			path:         "https://gitlab.com/api/v4/user",
-			status:       http.StatusOK,
-			responseBody: `{ "username": "test_user" }`,
-		}, {
-			method:       http.MethodPut,
-			path:         "https://gitlab.com/api/v4/projects/test_user%2Frepo",
-			requestBody:  `{"description": "foo"}`,
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"test_user / repo","web_url":"https://gitlab.com/test_user/repo"}`,
-		}},
-	}, {
-		description: "Update description for other repo",
-		args:        "otheruser/myproject --description foo",
-		httpMocks: []httpMock{{
-			method:       http.MethodPut,
-			path:         "https://gitlab.com/api/v4/projects/otheruser/myproject",
-			requestBody:  `{"description": "foo"}`,
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"otheruser / myproject","web_url":"https://gitlab.com/otheruser/myproject"}`,
-		}},
-	}, {
-		description: "Update description for repo at URL",
-		args:        "https://gitlab.com/user/project --description foo",
-		httpMocks: []httpMock{{
-			method:       http.MethodPut,
-			path:         "https://gitlab.com/api/v4/projects/user/project",
-			requestBody:  `{"description": "foo"}`,
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / project","web_url":"https://gitlab.com/user/project"}`,
-		}},
-	}, {
-		description: "Update default branch",
-		args:        "--defaultBranch main2",
-		httpMocks: []httpMock{{
-			method:       http.MethodPut,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo",
-			requestBody:  `{"default_branch": "main2"}`,
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}},
-	}, {
-		description: "Update both description and default branch at the same time",
-		args:        "--description foo --defaultBranch main2",
-		httpMocks: []httpMock{{
-			method:       http.MethodPut,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo",
-			requestBody:  `{"description": "foo", "default_branch": "main2"}`,
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}},
-	}, {
-		description: "No flags provided",
-		args:        "",
-		errString:   "at least one of the flags in the group",
-	}, {
-		description: "Archive project with just --archive flag",
-		args:        "--archive",
-		httpMocks: []httpMock{{
-			method:       http.MethodPost,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo/archive",
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}},
-	}, {
-		description: "Archive project with --archive=true",
-		args:        "--archive=true",
-		httpMocks: []httpMock{{
-			method:       http.MethodPost,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo/archive",
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}},
-	}, {
-		description: "Unarchive project",
-		args:        "--archive=false",
-		httpMocks: []httpMock{{
-			method:       http.MethodPost,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo/unarchive",
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}},
-	}, {
-		description: "Archive project and change description at the same time",
-		args:        "--archive=true --description=foobar",
-		httpMocks: []httpMock{{
-			method:       http.MethodPut,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo",
-			requestBody:  `{"description": "foobar"}`,
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}, {
-			method:       http.MethodPost,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo/archive",
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}},
-	}, {
-		description: "Unarchive project and change default branch at the same time",
-		args:        "--archive=false --defaultBranch=main2",
-		httpMocks: []httpMock{{
-			method:       http.MethodPut,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo",
-			requestBody:  `{"default_branch": "main2"}`,
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}, {
-			method:       http.MethodPost,
-			path:         "https://gitlab.com/api/v4/projects/user%2Frepo/unarchive",
-			status:       http.StatusOK,
-			responseBody: `{"name_with_namespace":"user / repo","web_url":"https://gitlab.com/user/repo"}`,
-		}},
-	}}
+	projectResult := &gitlab.Project{
+		NameWithNamespace: "user / repo",
+		WebURL:            "https://gitlab.com/user/repo",
+	}
 
-	for _, test := range testCases {
-		t.Run(test.description, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.FullURL,
-			}
-			defer fakeHTTP.Verify(t)
+	testUserResult := &gitlab.Project{
+		NameWithNamespace: "test_user / repo",
+		WebURL:            "https://gitlab.com/test_user/repo",
+	}
 
-			for _, mock := range test.httpMocks {
-				if mock.requestBody == "" {
-					fakeHTTP.RegisterResponder(mock.method, mock.path, httpmock.NewStringResponse(mock.status, mock.responseBody))
-				} else {
-					fakeHTTP.RegisterResponderWithBody(mock.method, mock.path, mock.requestBody, httpmock.NewStringResponse(mock.status, mock.responseBody))
-				}
-			}
+	otherProjectResult := &gitlab.Project{
+		NameWithNamespace: "otheruser / myproject",
+		WebURL:            "https://gitlab.com/otheruser/myproject",
+	}
 
-			ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
+	urlProjectResult := &gitlab.Project{
+		NameWithNamespace: "user / project",
+		WebURL:            "https://gitlab.com/user/project",
+	}
 
-			c := cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, "", glinstance.DefaultHostname)
-			factory := cmdtest.NewTestFactory(ios,
-				cmdtest.WithBaseRepo("user", "repo", glinstance.DefaultHostname),
-				cmdtest.WithApiClient(c),
-				cmdtest.WithGitLabClient(c.Lab()),
+	testCases := []testCase{
+		{
+			name: "Update description for current repo",
+			cli:  "--description foo",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					EditProject("OWNER/REPO", gomock.Any()).
+					Return(projectResult, nil, nil)
+			},
+		},
+		{
+			name: "Update description for user's repo",
+			cli:  "repo --description foo",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockUsers.EXPECT().
+					CurrentUser().
+					Return(&gitlab.User{Username: "test_user"}, nil, nil)
+				tc.MockProjects.EXPECT().
+					EditProject("test_user/repo", gomock.Any()).
+					Return(testUserResult, nil, nil)
+			},
+		},
+		{
+			name: "Update description for other repo",
+			cli:  "otheruser/myproject --description foo",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					EditProject("otheruser/myproject", gomock.Any()).
+					Return(otherProjectResult, nil, nil)
+			},
+		},
+		{
+			name: "Update description for repo at URL",
+			cli:  "https://gitlab.com/user/project --description foo",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					EditProject(gomock.Any(), gomock.Any()).
+					Return(urlProjectResult, nil, nil)
+			},
+		},
+		{
+			name: "Update default branch",
+			cli:  "--defaultBranch main2",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					EditProject("OWNER/REPO", gomock.Any()).
+					Return(projectResult, nil, nil)
+			},
+		},
+		{
+			name: "Update both description and default branch at the same time",
+			cli:  "--description foo --defaultBranch main2",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					EditProject("OWNER/REPO", gomock.Any()).
+					Return(projectResult, nil, nil)
+			},
+		},
+		{
+			name:      "No flags provided",
+			cli:       "",
+			wantErr:   true,
+			errString: "at least one of the flags in the group",
+			setupMock: func(tc *gitlabtesting.TestClient) {},
+		},
+		{
+			name: "Archive project with just --archive flag",
+			cli:  "--archive",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ArchiveProject("OWNER/REPO").
+					Return(projectResult, nil, nil)
+			},
+		},
+		{
+			name: "Archive project with --archive=true",
+			cli:  "--archive=true",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					ArchiveProject("OWNER/REPO").
+					Return(projectResult, nil, nil)
+			},
+		},
+		{
+			name: "Unarchive project",
+			cli:  "--archive=false",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					UnarchiveProject("OWNER/REPO").
+					Return(projectResult, nil, nil)
+			},
+		},
+		{
+			name: "Archive project and change description at the same time",
+			cli:  "--archive=true --description=foobar",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					EditProject("OWNER/REPO", gomock.Any()).
+					Return(projectResult, nil, nil)
+				tc.MockProjects.EXPECT().
+					ArchiveProject("OWNER/REPO").
+					Return(projectResult, nil, nil)
+			},
+		},
+		{
+			name: "Unarchive project and change default branch at the same time",
+			cli:  "--archive=false --defaultBranch=main2",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjects.EXPECT().
+					EditProject("OWNER/REPO", gomock.Any()).
+					Return(projectResult, nil, nil)
+				tc.MockProjects.EXPECT().
+					UnarchiveProject("OWNER/REPO").
+					Return(projectResult, nil, nil)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdUpdate,
+				true,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", glinstance.DefaultHostname, api.WithGitLabClient(testClient.Client))),
+				cmdtest.WithGitLabClient(testClient.Client),
 			)
 
-			cmd := NewCmdUpdate(factory)
-			_, err := cmdtest.ExecuteCommand(cmd, test.args, stdout, stderr)
+			// WHEN
+			_, err := exec(tc.cli)
 
-			if test.errString == "" {
-				assert.NoErrorf(t, err, "unexpected error running command `project update %s`: %v", test.args, err)
-			} else {
-				assert.ErrorContainsf(t, err, test.errString, "")
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errString)
+				return
 			}
+			require.NoError(t, err)
 		})
 	}
 }

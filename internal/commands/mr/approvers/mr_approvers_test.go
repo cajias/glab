@@ -3,75 +3,121 @@
 package approvers
 
 import (
-	"net/http"
 	"testing"
 
-	"github.com/MakeNowJust/heredoc/v2"
-	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", "").Lab()),
-		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
-	)
-
-	cmd := NewCmdApprovers(factory)
-
-	argv, err := shlex.Split(cli)
-	if err != nil {
-		return nil, err
+func TestMrApprovers(t *testing.T) {
+	type testCase struct {
+		name        string
+		cli         string
+		expectedOut string
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
-	cmd.SetArgs(argv)
 
-	_, err = cmd.ExecuteC()
-	return &test.CmdOut{
-		OutBuf: stdout,
-		ErrBuf: stderr,
-	}, err
-}
+	testMR := &gitlab.MergeRequest{
+		BasicMergeRequest: gitlab.BasicMergeRequest{
+			ID:          123,
+			IID:         123,
+			ProjectID:   3,
+			Title:       "test mr title",
+			Description: "test mr description",
+			State:       "opened",
+		},
+	}
 
-func TestMrApprove(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	approvalState := &gitlab.MergeRequestApprovalState{
+		ApprovalRulesOverwritten: true,
+		Rules: []*gitlab.MergeRequestApprovalRule{
+			{
+				ID:       239,
+				Name:     "All Members",
+				RuleType: "any_approver",
+				EligibleApprovers: []*gitlab.BasicUser{
+					{
+						ID:       1,
+						Username: "approver_1",
+						Name:     "Abc Approver",
+						State:    "active",
+					},
+					{
+						ID:       6,
+						Username: "approver_2",
+						Name:     "Bar Approver",
+						State:    "active",
+					},
+				},
+				ApprovalsRequired: 1,
+				ApprovedBy: []*gitlab.BasicUser{
+					{
+						ID:       1232,
+						Username: "foo_reviewer",
+						Name:     "Foo Reviewer",
+						State:    "active",
+					},
+				},
+				Approved: true,
+			},
+		},
+	}
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `/projects/OWNER/REPO/merge_requests/123`,
-		httpmock.NewStringResponse(http.StatusOK, `{
-			"id": 123,
-			"iid": 123,
-			"project_id": 3,
-			"title": "test mr title",
-			"description": "test mr description",
-			"state": "opened"}`))
+	testCases := []testCase{
+		{
+			name: "List approvers by MR ID",
+			cli:  "123",
+			// Note: trailing tabs are added by the table renderer
+			expectedOut: "\nListing merge request !123 eligible approvers:\n" +
+				"Approval rules overwritten.\n" +
+				"Rule \"All Members\" sufficient approvals (1/1 required):\n" +
+				"Name\tUsername\tApproved\n" +
+				"Abc Approver\tapprover_1\t-\t\n" +
+				"Bar Approver\tapprover_2\t-\t\n" +
+				"Foo Reviewer\tfoo_reviewer\t👍\t\n\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockMergeRequests.EXPECT().
+					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+					Return(testMR, nil, nil)
+				tc.MockMergeRequestApprovals.EXPECT().
+					GetApprovalState("OWNER/REPO", int64(123), gomock.Any()).
+					Return(approvalState, nil, nil)
+			},
+		},
+	}
 
-	fakeHTTP.RegisterResponder(http.MethodGet, `/projects/OWNER/REPO/merge_requests/123/approval_state`,
-		httpmock.NewFileResponse(http.StatusOK, "./testdata/approvalState.json"))
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdApprovers,
+				false,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
 
-	mrID := "123"
-	output, err := runCommand(t, fakeHTTP, mrID)
-	if assert.NoErrorf(t, err, "error running command `mr approvers %s`", mrID) {
-		out := output.String()
+			// WHEN
+			out, err := exec(tc.cli)
 
-		assert.Equal(t, heredoc.Doc(`
-
-		Listing merge request !123 eligible approvers:
-		Approval rules overwritten.
-		Rule "All Members" sufficient approvals (1/1 required):
-		Name	Username	Approved
-		Abc Approver	approver_1	-	
-		Bar Approver	approver_2	-	
-		Foo Reviewer	foo_reviewer	👍	
-
-		`), out)
-		assert.Empty(t, output.Stderr())
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantStderr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedOut, out.OutBuf.String())
+			assert.Empty(t, out.ErrBuf.String())
+		})
 	}
 }

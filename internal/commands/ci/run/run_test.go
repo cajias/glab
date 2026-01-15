@@ -3,127 +3,232 @@
 package run
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/survivorbat/huhtest"
+	"go.uber.org/mock/gomock"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/api"
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/run"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
 	"gitlab.com/gitlab-org/cli/test"
 )
 
-type responseJSON struct {
-	Ref string `json:"ref"`
-}
-
 func TestCIRun(t *testing.T) {
 	tests := []struct {
-		name string
-		cli  string
-
-		expectedPOSTBody string
-		expectedOut      string
-		expectedErr      string
+		name        string
+		cli         string
+		expectedRef string
+		expectedOut string
+		expectedErr string
+		setupMock   func(tc *gitlabtesting.TestClient, expectedRef string)
 	}{
 		{
-			name:             "when running `ci run` without any parameter, defaults to current branch",
-			cli:              "",
-			expectedPOSTBody: `"ref":"custom-branch-123"`,
-			expectedOut:      "Created pipeline (id: 123), status: created, ref: custom-branch-123, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run` without any parameter, defaults to current branch",
+			cli:         "",
+			expectedRef: "custom-branch-123",
+			expectedOut: "Created pipeline (id: 123), status: created, ref: custom-branch-123, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 		{
-			name:             "when running `ci run` with branch parameter, run CI at branch",
-			cli:              "-b ci-cd-improvement-399",
-			expectedPOSTBody: `"ref":"ci-cd-improvement-399"`,
-			expectedOut:      "Created pipeline (id: 123), status: created, ref: ci-cd-improvement-399, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run` with branch parameter, run CI at branch",
+			cli:         "-b ci-cd-improvement-399",
+			expectedRef: "ci-cd-improvement-399",
+			expectedOut: "Created pipeline (id: 123), status: created, ref: ci-cd-improvement-399, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 		{
-			name:             "when running `ci run` with --web opens the browser",
-			cli:              "-b web-branch --web",
-			expectedPOSTBody: `"ref":"web-branch"`,
-			expectedErr:      "Opening gitlab.com/OWNER/REPO/-/pipelines/123 in your browser.\n",
+			name:        "when running `ci run` with --web opens the browser",
+			cli:         "-b web-branch --web",
+			expectedRef: "web-branch",
+			expectedErr: "Opening gitlab.com/OWNER/REPO/-/pipelines/123 in your browser.\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 		{
-			name:             "when running `ci run` with variables",
-			cli:              "-b main --variables FOO:bar",
-			expectedPOSTBody: `"ref":"main","variables":[{"key":"FOO","value":"bar","variable_type":"env_var"}]`,
-			expectedOut:      "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run` with variables",
+			cli:         "-b main --variables FOO:bar",
+			expectedRef: "main",
+			expectedOut: "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						// Verify variables are passed
+						require.Len(t, *opt.Variables, 1)
+						assert.Equal(t, "FOO", *(*opt.Variables)[0].Key)
+						assert.Equal(t, "bar", *(*opt.Variables)[0].Value)
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 		{
-			name:             "when running `ci run` with multiple variables",
-			cli:              "-b main --variables FOO:bar --variables BAR:xxx",
-			expectedPOSTBody: `"ref":"main","variables":[{"key":"FOO","value":"bar","variable_type":"env_var"},{"key":"BAR","value":"xxx","variable_type":"env_var"}]`,
-			expectedOut:      "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run` with multiple variables",
+			cli:         "-b main --variables FOO:bar --variables BAR:xxx",
+			expectedRef: "main",
+			expectedOut: "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						require.Len(t, *opt.Variables, 2)
+						assert.Equal(t, "FOO", *(*opt.Variables)[0].Key)
+						assert.Equal(t, "bar", *(*opt.Variables)[0].Value)
+						assert.Equal(t, "BAR", *(*opt.Variables)[1].Key)
+						assert.Equal(t, "xxx", *(*opt.Variables)[1].Value)
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 		{
-			name:             "when running `ci run` with variables-env",
-			cli:              "-b main --variables-env FOO:bar",
-			expectedPOSTBody: `"ref":"main","variables":[{"key":"FOO","value":"bar","variable_type":"env_var"}]`,
-			expectedOut:      "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run` with variables-env",
+			cli:         "-b main --variables-env FOO:bar",
+			expectedRef: "main",
+			expectedOut: "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						require.Len(t, *opt.Variables, 1)
+						assert.Equal(t, "FOO", *(*opt.Variables)[0].Key)
+						assert.Equal(t, "bar", *(*opt.Variables)[0].Value)
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 		{
-			name:             "when running `ci run` with multiple variables-env",
-			cli:              "-b main --variables-env FOO:bar --variables-env BAR:xxx",
-			expectedPOSTBody: `"ref":"main","variables":[{"key":"FOO","value":"bar","variable_type":"env_var"},{"key":"BAR","value":"xxx","variable_type":"env_var"}]`,
-			expectedOut:      "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run` with multiple variables-env",
+			cli:         "-b main --variables-env FOO:bar --variables-env BAR:xxx",
+			expectedRef: "main",
+			expectedOut: "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						require.Len(t, *opt.Variables, 2)
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 		{
-			name:             "when running `ci run` with mixed variables-env and variables",
-			cli:              "-b main --variables-env FOO:bar --variables BAR:xxx",
-			expectedPOSTBody: `"ref":"main","variables":[{"key":"FOO","value":"bar","variable_type":"env_var"},{"key":"BAR","value":"xxx","variable_type":"env_var"}]`,
-			expectedOut:      "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run` with mixed variables-env and variables",
+			cli:         "-b main --variables-env FOO:bar --variables BAR:xxx",
+			expectedRef: "main",
+			expectedOut: "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						require.Len(t, *opt.Variables, 2)
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 		{
-			name:             "when running `ci run` with untyped input",
-			cli:              "-b main -i key1:val1 --input key2:val2",
-			expectedPOSTBody: `"ref":"main","inputs":{"key1":"val1","key2":"val2"}`,
-			expectedOut:      "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			name:        "when running `ci run` with untyped input",
+			cli:         "-b main -i key1:val1 --input key2:val2",
+			expectedRef: "main",
+			expectedOut: "Created pipeline (id: 123), status: created, ref: main, weburl: https://gitlab.com/OWNER/REPO/-/pipelines/123\n",
+			setupMock: func(tc *gitlabtesting.TestClient, expectedRef string) {
+				tc.MockPipelines.EXPECT().
+					CreatePipeline("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(pid any, opt *gitlab.CreatePipelineOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Pipeline, *gitlab.Response, error) {
+						// Verify inputs are passed
+						require.NotNil(t, opt.Inputs)
+						assert.Equal(t, gitlab.PipelineInputValue[string]{Value: "val1"}, opt.Inputs["key1"])
+						assert.Equal(t, gitlab.PipelineInputValue[string]{Value: "val2"}, opt.Inputs["key2"])
+						return &gitlab.Pipeline{
+							ID:     123,
+							IID:    123,
+							Status: "created",
+							Ref:    *opt.Ref,
+							WebURL: "https://gitlab.com/OWNER/REPO/-/pipelines/123",
+						}, nil, nil
+					})
+			},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
-
-			fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/projects/OWNER/REPO/pipeline",
-				func(req *http.Request) (*http.Response, error) {
-					rb, _ := io.ReadAll(req.Body)
-
-					var response responseJSON
-					err := json.Unmarshal(rb, &response)
-					if err != nil {
-						fmt.Printf("Error when parsing response body %s\n", rb)
-					}
-
-					// ensure CLI runs CI on correct branch
-					assert.Contains(t, string(rb), tc.expectedPOSTBody)
-					resp, _ := httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`{
- 						"id": 123,
- 						"iid": 123,
- 						"project_id": 3,
- 						"status": "created",
- 						"ref": "%s",
-            "web_url": "https://gitlab.com/OWNER/REPO/-/pipelines/123"}`, response.Ref))(req)
-					return resp, nil
-				},
-			)
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient, tc.expectedRef)
 
 			execFunc := cmdtest.SetupCmdForTest(t, NewCmdRun, true,
-				cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, "", glinstance.DefaultHostname).Lab()),
+				cmdtest.WithGitLabClient(testClient.Client),
 				cmdtest.WithBranch("custom-branch-123"),
 			)
 			restoreCmd := run.SetPrepareCmd(func(cmd *exec.Cmd) run.Runnable {
@@ -131,8 +236,10 @@ func TestCIRun(t *testing.T) {
 			})
 			t.Cleanup(restoreCmd)
 
+			// WHEN
 			out, err := execFunc(tc.cli)
 
+			// THEN
 			assert.NoErrorf(t, err, "error running command `ci run %s`: %v", tc.cli, err)
 
 			assert.Equal(t, tc.expectedOut, out.OutBuf.String())
@@ -143,9 +250,8 @@ func TestCIRun(t *testing.T) {
 
 func TestCIRunMrPipeline(t *testing.T) {
 	tests := []struct {
-		name string
-		cli  string
-
+		name        string
+		cli         string
 		expectedOut string
 		expectedErr string
 		mrIid       int
@@ -190,23 +296,21 @@ func TestCIRunMrPipeline(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+
 			if tc.expectedErr == "" {
-				iid := tc.mrIid
-				fakeHTTP.RegisterResponder(http.MethodPost, "/api/v4/projects/OWNER/REPO/merge_requests/"+fmt.Sprint(iid)+"/pipelines",
-					func(req *http.Request) (*http.Response, error) {
-						pipelineId := iid * 10
-						resp, _ := httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`{
- 						"id": %d,
- 						"status": "created",
-			            "web_url": "https://gitlab.com/OWNER/REPO/-/pipelines/%d"}`, pipelineId, pipelineId))(req)
-						return resp, nil
-					},
-				)
+				iid := int64(tc.mrIid)
+				pipelineId := iid * 10
+				testClient.MockMergeRequests.EXPECT().
+					CreateMergeRequestPipeline("OWNER/REPO", iid).
+					Return(&gitlab.PipelineInfo{
+						ID:     pipelineId,
+						Status: "created",
+						WebURL: fmt.Sprintf("https://gitlab.com/OWNER/REPO/-/pipelines/%d", pipelineId),
+					}, nil, nil)
 			}
+
 			api.ListMRs = func(client *gitlab.Client, projectID any, opts *gitlab.ListProjectMergeRequestsOptions, listOpts ...api.CliListMROption) ([]*gitlab.BasicMergeRequest, error) {
 				if *opts.SourceBranch == "custom-branch-123" {
 					return []*gitlab.BasicMergeRequest{
@@ -249,8 +353,9 @@ func TestCIRunMrPipeline(t *testing.T) {
 				}
 				return nil, fmt.Errorf("unexpected branch in this mock :(")
 			}
+
 			execFunc := cmdtest.SetupCmdForTest(t, NewCmdRun, true,
-				cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, "", glinstance.DefaultHostname).Lab()),
+				cmdtest.WithGitLabClient(testClient.Client),
 				cmdtest.WithBranch("custom-branch-123"),
 				cmdtest.WithResponder(t, huhtest.NewResponder().AddSelect("Multiple merge requests exist for this branch", 0).MatchRegexp()),
 			)
@@ -259,8 +364,10 @@ func TestCIRunMrPipeline(t *testing.T) {
 			})
 			t.Cleanup(restoreCmd)
 
+			// WHEN
 			out, err := execFunc(tc.cli)
 
+			// THEN
 			if tc.expectedErr == "" {
 				assert.NoErrorf(t, err, "error running command `ci run %s`: %v", tc.cli, err)
 

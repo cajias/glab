@@ -3,40 +3,27 @@
 package note
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/survivorbat/huhtest"
+	"go.uber.org/mock/gomock"
+
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/issuable"
 	"gitlab.com/gitlab-org/cli/internal/config"
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string, issueType issuable.IssueType) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-		cmdtest.WithConfig(config.NewFromString("editor: vi")),
-	)
-
-	cmd := NewCmdNote(factory, issueType)
-
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
-
 func Test_NewCmdNote(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	t.Parallel()
 
 	commands := []struct {
 		name      string
@@ -47,61 +34,78 @@ func Test_NewCmdNote(t *testing.T) {
 	}
 
 	for _, cc := range commands {
-		t.Run("--message flag specified", func(t *testing.T) {
-			fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/issues/1/notes",
-				httpmock.NewStringResponse(http.StatusCreated, `
-				{
-					"id": 301,
-					"created_at": "2013-10-02T08:57:14Z",
-					"updated_at": "2013-10-02T08:57:14Z",
-					"system": false,
-					"noteable_id": 1,
-					"noteable_type": "MergeRequest",
-					"noteable_iid": 1
-				}
-			`))
+		t.Run(cc.name+"_message_flag_specified", func(t *testing.T) {
+			t.Parallel()
 
-			fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/1",
-				httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`
-				{
-					"id": 1,
-					"iid": 1,
-					"issue_type": "%s",
-					"web_url": "https://gitlab.com/OWNER/REPO/issues/1"
-				}
-			`, cc.issueType)))
+			testClient := gitlabtesting.NewTestClient(t)
 
-			// glab issue note 1 --message "Here is my note"
-			// glab incident note 1 --message "Here is my note"
-			output, err := runCommand(t, fakeHTTP, `1 --message "Here is my note"`, cc.issueType)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			assert.Equal(t, output.Stderr(), "")
-			assert.Equal(t, output.String(), "https://gitlab.com/OWNER/REPO/issues/1#note_301\n")
+			// Mock GetIssue
+			testClient.MockIssues.EXPECT().
+				GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+				Return(&gitlab.Issue{
+					ID:        1,
+					IID:       1,
+					IssueType: gitlab.Ptr(string(cc.issueType)),
+					WebURL:    "https://gitlab.com/OWNER/REPO/issues/1",
+				}, nil, nil)
+
+			// Mock CreateIssueNote
+			testClient.MockNotes.EXPECT().
+				CreateIssueNote("OWNER/REPO", int64(1), gomock.Any()).
+				DoAndReturn(func(pid any, issueIID int64, opts *gitlab.CreateIssueNoteOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Note, *gitlab.Response, error) {
+					assert.Equal(t, "Here is my note", *opts.Body)
+					return &gitlab.Note{
+						ID:           301,
+						NoteableID:   1,
+						NoteableType: "Issue",
+						NoteableIID:  1,
+					}, nil, nil
+				})
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdNote(f, cc.issueType)
+			}, true,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+				cmdtest.WithConfig(config.NewFromString("editor: vi")),
+			)
+
+			output, err := exec(`1 --message "Here is my note"`)
+			require.NoError(t, err)
+			assert.Empty(t, output.Stderr())
+			assert.Equal(t, "https://gitlab.com/OWNER/REPO/issues/1#note_301\n", output.String())
 		})
 
-		t.Run("issue not found", func(t *testing.T) {
-			fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/122",
-				httpmock.NewStringResponse(http.StatusNotFound, `
-				{
-					"message": "issue not found"
-				}
-			`))
+		t.Run(cc.name+"_issue_not_found", func(t *testing.T) {
+			t.Parallel()
 
-			// glab issue note 1 --message "Here is my note"
-			// glab incident note 1 --message "Here is my note"
-			_, err := runCommand(t, fakeHTTP, `122`, cc.issueType)
-			assert.NotNil(t, err)
-			assert.Equal(t, "404 Not Found", err.Error())
+			testClient := gitlabtesting.NewTestClient(t)
+
+			// Mock GetIssue - returns 404
+			notFoundResp := &gitlab.Response{
+				Response: &http.Response{StatusCode: http.StatusNotFound},
+			}
+			testClient.MockIssues.EXPECT().
+				GetIssue("OWNER/REPO", int64(122), gomock.Any()).
+				Return(nil, notFoundResp, gitlab.ErrNotFound)
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdNote(f, cc.issueType)
+			}, true,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+				cmdtest.WithConfig(config.NewFromString("editor: vi")),
+			)
+
+			_, err := exec(`122`)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "Not Found")
 		})
 	}
 }
 
 func Test_NewCmdNote_error(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	t.Parallel()
 
 	commands := []struct {
 		name      string
@@ -112,53 +116,74 @@ func Test_NewCmdNote_error(t *testing.T) {
 	}
 
 	for _, cc := range commands {
-		t.Run("note could not be created", func(t *testing.T) {
-			fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/issues/1/notes",
-				httpmock.NewStringResponse(http.StatusUnauthorized, `
-				{
-					"message": "Unauthorized"
-				}
-			`))
+		t.Run(cc.name+"_note_could_not_be_created", func(t *testing.T) {
+			t.Parallel()
 
-			fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/1",
-				httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`
-				{
-					"id": 1,
-					"iid": 1,
-					"issue_type": "%s",
-					"web_url": "https://gitlab.com/OWNER/REPO/issues/1"
-				}
-			`, cc.issueType)))
+			testClient := gitlabtesting.NewTestClient(t)
 
-			// glab issue note 1 --message "Here is my note"
-			// glab incident note 1 --message "Here is my note"
-			_, err := runCommand(t, fakeHTTP, `1 -m "Some message"`, cc.issueType)
-			assert.NotNil(t, err)
-			assert.Equal(t, "POST https://gitlab.com/api/v4/projects/OWNER%2FREPO/issues/1/notes: 401 {message: Unauthorized}", err.Error())
+			// Mock GetIssue
+			testClient.MockIssues.EXPECT().
+				GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+				Return(&gitlab.Issue{
+					ID:        1,
+					IID:       1,
+					IssueType: gitlab.Ptr(string(cc.issueType)),
+					WebURL:    "https://gitlab.com/OWNER/REPO/issues/1",
+				}, nil, nil)
+
+			// Mock CreateIssueNote - returns 401
+			unauthorizedResp := &gitlab.Response{
+				Response: &http.Response{StatusCode: http.StatusUnauthorized},
+			}
+			testClient.MockNotes.EXPECT().
+				CreateIssueNote("OWNER/REPO", int64(1), gomock.Any()).
+				Return(nil, unauthorizedResp, errors.New("401 Unauthorized"))
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdNote(f, cc.issueType)
+			}, true,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+				cmdtest.WithConfig(config.NewFromString("editor: vi")),
+			)
+
+			_, err := exec(`1 -m "Some message"`)
+			require.Error(t, err)
 		})
 	}
 
 	t.Run("using incident note command with issue ID", func(t *testing.T) {
-		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/1",
-			httpmock.NewStringResponse(http.StatusOK, `
-				{
-					"id": 1,
-					"iid": 1,
-					"issue_type": "issue",
-					"web_url": "https://gitlab.com/OWNER/REPO/issues/1"
-				}
-			`))
+		t.Parallel()
 
-		output, err := runCommand(t, fakeHTTP, `1 -m "Some message"`, issuable.TypeIncident)
-		assert.Nil(t, err)
+		testClient := gitlabtesting.NewTestClient(t)
+
+		// Mock GetIssue - returns an issue (not incident)
+		testClient.MockIssues.EXPECT().
+			GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+			Return(&gitlab.Issue{
+				ID:        1,
+				IID:       1,
+				IssueType: gitlab.Ptr("issue"), // Not an incident
+				WebURL:    "https://gitlab.com/OWNER/REPO/issues/1",
+			}, nil, nil)
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdNote(f, issuable.TypeIncident)
+		}, true,
+			cmdtest.WithGitLabClient(testClient.Client),
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+			cmdtest.WithConfig(config.NewFromString("editor: vi")),
+		)
+
+		output, err := exec(`1 -m "Some message"`)
+		require.NoError(t, err)
 		assert.Equal(t, "Incident not found, but an issue with the provided ID exists. Run `glab issue comment <id>` to comment.\n", output.String())
 	})
 }
 
 func Test_IssuableNoteCreate_prompt(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
-
+	// NOTE: This test cannot run in parallel because the huh form library
+	// uses global state (charmbracelet/bubbles runeutil sanitizer).
 	commands := []struct {
 		name      string
 		issueType issuable.IssueType
@@ -168,49 +193,48 @@ func Test_IssuableNoteCreate_prompt(t *testing.T) {
 	}
 
 	for _, cc := range commands {
-		t.Run("message provided", func(t *testing.T) {
-			fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/issues/1/notes",
-				httpmock.NewStringResponse(http.StatusCreated, `
-				{
-					"id": 301,
-					"created_at": "2013-10-02T08:57:14Z",
-					"updated_at": "2013-10-02T08:57:14Z",
-					"system": false,
-					"noteable_id": 1,
-					"noteable_type": "MergeRequest",
-					"noteable_iid": 1
-				}
-			`))
+		t.Run(cc.name+"_message_provided", func(t *testing.T) {
+			testClient := gitlabtesting.NewTestClient(t)
 
-			fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/1",
-				httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`
-				{
-					"id": 1,
-					"iid": 1,
-					"issue_type": "%s",
-					"web_url": "https://gitlab.com/OWNER/REPO/issues/1"
-				}
-			`, cc.issueType)))
+			// Mock GetIssue
+			testClient.MockIssues.EXPECT().
+				GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+				Return(&gitlab.Issue{
+					ID:        1,
+					IID:       1,
+					IssueType: gitlab.Ptr(string(cc.issueType)),
+					WebURL:    "https://gitlab.com/OWNER/REPO/issues/1",
+				}, nil, nil)
+
+			// Mock CreateIssueNote
+			testClient.MockNotes.EXPECT().
+				CreateIssueNote("OWNER/REPO", int64(1), gomock.Any()).
+				DoAndReturn(func(pid any, issueIID int64, opts *gitlab.CreateIssueNoteOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Note, *gitlab.Response, error) {
+					// The prompt adds a trailing newline
+					assert.Contains(t, *opts.Body, "some note message")
+					return &gitlab.Note{
+						ID:           301,
+						NoteableID:   1,
+						NoteableType: "Issue",
+						NoteableIID:  1,
+					}, nil, nil
+				})
 
 			responder := huhtest.NewResponder()
 			responder.AddResponse("Message:", "some note message")
 
 			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
 				return NewCmdNote(f, cc.issueType)
-			}, false,
-				cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, "", glinstance.DefaultHostname).Lab()),
+			}, true,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
 				cmdtest.WithConfig(config.NewFromString("editor: vi")),
 				cmdtest.WithResponder(t, responder),
 			)
 
-			// glab issue note 1
-			// glab incident note 1
 			output, err := exec(`1`)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			assert.Equal(t, "", output.Stderr())
+			require.NoError(t, err)
+			assert.Empty(t, output.Stderr())
 			assert.Contains(t, output.String(), "https://gitlab.com/OWNER/REPO/issues/1#note_301")
 		})
 
@@ -224,33 +248,33 @@ func Test_IssuableNoteCreate_prompt(t *testing.T) {
 		}
 
 		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/1",
-					httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`
-					{
-						"id": 1,
-						"iid": 1,
-						"issue_type": "%s",
-						"web_url": "https://gitlab.com/OWNER/REPO/issues/1"
-					}
-				`, cc.issueType)))
+			t.Run(cc.name+"_"+tt.name, func(t *testing.T) {
+				testClient := gitlabtesting.NewTestClient(t)
+
+				// Mock GetIssue
+				testClient.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:        1,
+						IID:       1,
+						IssueType: gitlab.Ptr(string(cc.issueType)),
+						WebURL:    "https://gitlab.com/OWNER/REPO/issues/1",
+					}, nil, nil)
 
 				responder := huhtest.NewResponder()
 				responder.AddResponse("Message:", tt.message)
 
 				exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
 					return NewCmdNote(f, cc.issueType)
-				}, false,
-					cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, "", glinstance.DefaultHostname).Lab()),
+				}, true,
+					cmdtest.WithGitLabClient(testClient.Client),
+					cmdtest.WithBaseRepo("OWNER", "REPO", ""),
 					cmdtest.WithConfig(config.NewFromString("editor: vi")),
 					cmdtest.WithResponder(t, responder),
 				)
 
 				_, err := exec(`1`)
-				if err == nil {
-					t.Error("expected error")
-					return
-				}
+				require.Error(t, err)
 				assert.Equal(t, "aborted... Note is empty.", err.Error())
 			})
 		}

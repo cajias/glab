@@ -3,124 +3,98 @@
 package create
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
 func Test_ScheduleCreate(t *testing.T) {
-	type httpMock struct {
-		method string
-		path   string
-		status int
-		body   string
+	type testCase struct {
+		name        string
+		cli         string
+		expectedMsg []string
+		wantErr     bool
+		wantStderr  string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}
 
-	testCases := []struct {
-		Name        string
-		ExpectedMsg []string
-		wantErr     bool
-		cli         string
-		wantStderr  string
-		httpMocks   []httpMock
-	}{
+	testCases := []testCase{
 		{
-			Name:        "Schedule created",
-			ExpectedMsg: []string{"Created schedule with ID 2"},
+			name:        "Schedule created",
 			cli:         "--cron '*0 * * * *' --description 'example pipeline' --ref 'main'",
-			httpMocks: []httpMock{
-				{
-					http.MethodPost,
-					"/api/v4/projects/OWNER/REPO/pipeline_schedules",
-					http.StatusCreated,
-					`{"id": 2}`,
-				},
+			expectedMsg: []string{"Created schedule with ID 2"},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockPipelineSchedules.EXPECT().
+					CreatePipelineSchedule("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.PipelineSchedule{ID: 2}, nil, nil)
 			},
 		},
 		{
-			Name:        "Schedule not created because of missing ref",
-			wantStderr:  "required flag(s) \"ref\" not set",
-			wantErr:     true,
-			ExpectedMsg: []string{""},
+			name:        "Schedule not created because of missing ref",
 			cli:         "--cron '*0 * * * *' --description 'example pipeline'",
+			wantErr:     true,
+			wantStderr:  "required flag(s) \"ref\" not set",
+			expectedMsg: []string{""},
+			setupMock:   func(tc *gitlabtesting.TestClient) {},
 		},
 		{
-			Name:       "Schedule created but with skipped variable",
-			wantStderr: "invalid format for --variable: foo",
+			name:       "Schedule created but with skipped variable",
+			cli:        "--cron '*0 * * * *' --description 'example pipeline' --ref 'main' --variable 'foo'",
 			wantErr:    true,
-			cli:        "--cron '*0 * * * *' --description 'example pipeline' --ref 'main'  --variable 'foo'",
-			httpMocks: []httpMock{
-				{
-					http.MethodPost,
-					"/api/v4/projects/OWNER/REPO/pipeline_schedules",
-					http.StatusCreated,
-					`{}`,
-				},
+			wantStderr: "invalid format for --variable: foo",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockPipelineSchedules.EXPECT().
+					CreatePipelineSchedule("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.PipelineSchedule{ID: 0}, nil, nil)
 			},
 		},
 		{
-			Name:        "Schedule created with variable",
-			ExpectedMsg: []string{"Created schedule"},
+			name:        "Schedule created with variable",
 			cli:         "--cron '*0 * * * *' --description 'example pipeline' --ref 'main' --variable 'foo:bar'",
-			httpMocks: []httpMock{
-				{
-					http.MethodPost,
-					"/api/v4/projects/OWNER/REPO/pipeline_schedules",
-					http.StatusCreated,
-					`{}`,
-				},
-				{
-					http.MethodPost,
-					"/api/v4/projects/OWNER/REPO/pipeline_schedules/0/variables",
-					http.StatusCreated,
-					`{}`,
-				},
+			expectedMsg: []string{"Created schedule"},
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockPipelineSchedules.EXPECT().
+					CreatePipelineSchedule("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.PipelineSchedule{ID: 0}, nil, nil)
+				tc.MockPipelineSchedules.EXPECT().
+					CreatePipelineScheduleVariable("OWNER/REPO", int64(0), gomock.Any()).
+					Return(&gitlab.PipelineVariable{}, nil, nil)
 			},
 		},
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.Name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdCreate,
+				false,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
 
-			for _, mock := range tc.httpMocks {
-				fakeHTTP.RegisterResponder(mock.method, mock.path, httpmock.NewStringResponse(mock.status, mock.body))
-			}
+			// WHEN
+			out, err := exec(tc.cli)
 
-			out, err := runCommand(t, fakeHTTP, tc.cli)
-
-			for _, msg := range tc.ExpectedMsg {
-				require.Contains(t, out.String(), msg)
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantStderr, err.Error())
+				return
 			}
-			if err != nil {
-				if tc.wantErr == true {
-					if assert.Error(t, err) {
-						require.Equal(t, tc.wantStderr, err.Error())
-					}
-					return
-				}
+			require.NoError(t, err)
+			for _, msg := range tc.expectedMsg {
+				assert.Contains(t, out.OutBuf.String(), msg)
 			}
 		})
 	}
-}
-
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-	cmd := NewCmdCreate(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
 }

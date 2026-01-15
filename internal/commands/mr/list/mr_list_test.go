@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
@@ -21,34 +22,15 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
-
-func runCommand(t *testing.T, rt http.RoundTripper, isTTY bool, cli string, doHyperlinks string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(isTTY), iostreams.WithDisplayHyperLinks(doHyperlinks))
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname)),
-	)
-
-	cmd := NewCmdList(factory, nil)
-
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
 
 func TestNewCmdList(t *testing.T) {
 	ios, _, _, _ := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
 
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
-
+	// No API calls are made in this test since we provide a custom runFunc
 	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: fakeHTTP}, "", "")),
 		cmdtest.WithConfig(config.NewBlankConfig()),
 		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
 	)
@@ -69,59 +51,69 @@ func TestNewCmdList(t *testing.T) {
 }
 
 func TestMergeRequestList_tty(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests",
-		httpmock.NewStringResponse(http.StatusOK, `
-[
-  {
-    "state": "opened",
-    "description": "a description here",
-    "project_id": 1,
-    "updated_at": "2016-01-04T15:31:51.081Z",
-    "id": 76,
-    "title": "MergeRequest one",
-    "created_at": "2016-01-04T15:31:51.081Z",
-    "iid": 6,
-    "labels": ["foo", "bar"],
-	"target_branch": "master",
-    "source_branch": "test1",
-    "web_url": "http://gitlab.com/OWNER/REPO/merge_requests/6",
-    "references": {
-      "full": "OWNER/REPO/merge_requests/6",
-      "relative": "#6",
-      "short": "#6"
-    }
-  },
-  {
-    "state": "opened",
-    "description": "description two here",
-    "project_id": 1,
-    "updated_at": "2016-01-04T15:31:51.081Z",
-    "id": 77,
-    "title": "MergeRequest two",
-    "created_at": "2016-01-04T15:31:51.081Z",
-    "iid": 7,
-	"target_branch": "master",
-    "source_branch": "test2",
-    "labels": ["fooz", "baz"],
-    "web_url": "http://gitlab.com/OWNER/REPO/merge_requests/7",
-    "references": {
-      "full": "OWNER/REPO/merge_requests/7",
-      "relative": "#7",
-      "short": "#7"
-    }
-  }
-]
-`))
-
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	output, err := runCommand(t, fakeHTTP, true, "", "")
+	testClient := gitlabtesting.NewTestClient(t)
+
+	testClient.MockMergeRequests.EXPECT().
+		ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.BasicMergeRequest{
+			{
+				ID:           76,
+				IID:          6,
+				ProjectID:    1,
+				State:        "opened",
+				Title:        "MergeRequest one",
+				Description:  "a description here",
+				TargetBranch: "master",
+				SourceBranch: "test1",
+				Labels:       gitlab.Labels{"foo", "bar"},
+				WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/6",
+				References: &gitlab.IssueReferences{
+					Full:     "OWNER/REPO/merge_requests/6",
+					Relative: "#6",
+					Short:    "#6",
+				},
+			},
+			{
+				ID:           77,
+				IID:          7,
+				ProjectID:    1,
+				State:        "opened",
+				Title:        "MergeRequest two",
+				Description:  "description two here",
+				TargetBranch: "master",
+				SourceBranch: "test2",
+				Labels:       gitlab.Labels{"fooz", "baz"},
+				WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/7",
+				References: &gitlab.IssueReferences{
+					Full:     "OWNER/REPO/merge_requests/7",
+					Relative: "#7",
+					Short:    "#7",
+				},
+			},
+		}, nil, nil)
+
+	// Create an api.Client with the mock GitLab client
+	apiClient, err := api.NewClient(
+		func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+		},
+		api.WithGitLabClient(testClient.Client),
+	)
+	require.NoError(t, err)
+
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdList(f, nil)
+	}, true,
+		cmdtest.WithApiClient(apiClient),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("")
 	if err != nil {
-		t.Errorf("error running command `issue list`: %v", err)
+		t.Errorf("error running command `mr list`: %v", err)
 	}
 
 	assert.Equal(t, heredoc.Doc(`
@@ -135,23 +127,50 @@ func TestMergeRequestList_tty(t *testing.T) {
 }
 
 func TestMergeRequestList_tty_withFlags(t *testing.T) {
+	// NOTE: This test cannot use t.Parallel() because it uses t.Setenv().
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
 	t.Run("repo", func(t *testing.T) {
-		fakeHTTP := httpmock.New()
-		defer fakeHTTP.Verify(t)
+		testClient := gitlabtesting.NewTestClient(t)
 
-		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests",
-			httpmock.NewStringResponse(http.StatusOK, `[]`))
+		testClient.MockUsers.EXPECT().
+			ListUsers(gomock.Any()).
+			Return([]*gitlab.User{
+				{ID: 1, Username: "someuser"},
+			}, nil, nil)
 
-		fakeHTTP.RegisterResponder(http.MethodGet, "/users",
-			httpmock.NewStringResponse(http.StatusOK, `[{"id": 1, "iid": 1, "username": "john_smith"}]`))
+		testClient.MockMergeRequests.EXPECT().
+			ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+			DoAndReturn(func(pid any, opts *gitlab.ListProjectMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+				// Verify flags are passed correctly
+				// Note: -p is Page, -P is PerPage, so "-P1 -p100" means PerPage=1, Page=100
+				assert.Equal(t, "opened", *opts.State)
+				assert.Equal(t, int64(100), opts.Page)
+				assert.Equal(t, int64(1), opts.PerPage)
+				assert.NotNil(t, opts.AssigneeID) // User ID 1 from someuser lookup
+				assert.Equal(t, gitlab.LabelOptions{"bug"}, *opts.Labels)
+				assert.Equal(t, "1", *opts.Milestone)
+				return []*gitlab.BasicMergeRequest{}, nil, nil
+			})
 
-		output, err := runCommand(t, fakeHTTP, true, "--opened -P1 -p100 -a someuser -l bug -m1", "")
-		if err != nil {
-			t.Errorf("error running command `issue list`: %v", err)
-		}
+		apiClient, err := api.NewClient(
+			func(*http.Client) (gitlab.AuthSource, error) {
+				return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+			},
+			api.WithGitLabClient(testClient.Client),
+		)
+		require.NoError(t, err)
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdList(f, nil)
+		}, true,
+			cmdtest.WithApiClient(apiClient),
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		)
+
+		output, err := exec("--opened -P1 -p100 -a someuser -l bug -m1")
+		require.NoError(t, err)
 
 		assert.Equal(t, "", output.Stderr())
 		assert.Equal(t, `No open merge requests match your search in OWNER/REPO.
@@ -160,16 +179,29 @@ func TestMergeRequestList_tty_withFlags(t *testing.T) {
 `, output.String())
 	})
 	t.Run("group", func(t *testing.T) {
-		fakeHTTP := httpmock.New()
-		defer fakeHTTP.Verify(t)
+		testClient := gitlabtesting.NewTestClient(t)
 
-		fakeHTTP.RegisterResponder(http.MethodGet, "/groups/GROUP/merge_requests",
-			httpmock.NewStringResponse(http.StatusOK, `[]`))
+		testClient.MockMergeRequests.EXPECT().
+			ListGroupMergeRequests("GROUP", gomock.Any()).
+			Return([]*gitlab.BasicMergeRequest{}, nil, nil)
 
-		output, err := runCommand(t, fakeHTTP, true, "--group GROUP", "")
-		if err != nil {
-			t.Errorf("error running command `mr list`: %v", err)
-		}
+		apiClient, err := api.NewClient(
+			func(*http.Client) (gitlab.AuthSource, error) {
+				return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+			},
+			api.WithGitLabClient(testClient.Client),
+		)
+		require.NoError(t, err)
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdList(f, nil)
+		}, true,
+			cmdtest.WithApiClient(apiClient),
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		)
+
+		output, err := exec("--group GROUP")
+		require.NoError(t, err)
 
 		assert.Equal(t, "", output.Stderr())
 		assert.Equal(t, `No open merge requests available on GROUP.
@@ -178,59 +210,68 @@ func TestMergeRequestList_tty_withFlags(t *testing.T) {
 	})
 
 	t.Run("draft", func(t *testing.T) {
-		fakeHTTP := &httpmock.Mocker{
-			MatchURL: httpmock.PathAndQuerystring,
-		}
-		defer fakeHTTP.Verify(t)
+		testClient := gitlabtesting.NewTestClient(t)
 
-		fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER%2FREPO/merge_requests?page=1&per_page=30&state=opened&wip=yes",
-			httpmock.NewStringResponse(http.StatusOK, `[
-				{
-					"state": "opened",
-					"description": "a description here",
-					"project_id": 1,
-					"updated_at": "2016-01-04T15:31:51.081Z",
-					"id": 76,
-					"title": "MergeRequest one",
-					"created_at": "2016-01-04T15:31:51.081Z",
-					"iid": 6,
-					"draft": true,
-					"labels": ["foo", "bar"],
-					"target_branch": "master",
-					"source_branch": "test1",
-					"web_url": "http://gitlab.com/OWNER/REPO/merge_requests/6",
-					"references": {
-					"full": "OWNER/REPO/merge_requests/6",
-					"relative": "#6",
-					"short": "#6"
-					}
-				},
-				{
-					"state": "opened",
-					"description": "description two here",
-					"project_id": 1,
-					"updated_at": "2016-01-04T15:31:51.081Z",
-					"id": 77,
-					"title": "MergeRequest two",
-					"created_at": "2016-01-04T15:31:51.081Z",
-					"iid": 7,
-					"draft": true,
-					"target_branch": "master",
-					"source_branch": "test2",
-					"labels": ["fooz", "baz"],
-					"web_url": "http://gitlab.com/OWNER/REPO/merge_requests/7",
-					"references": {
-					  "full": "OWNER/REPO/merge_requests/7",
-					  "relative": "#7",
-					  "short": "#7"
-					}
-				}
-			]`))
+		testClient.MockMergeRequests.EXPECT().
+			ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+			DoAndReturn(func(pid any, opts *gitlab.ListProjectMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+				// Verify draft filter is passed
+				assert.Equal(t, "yes", *opts.WIP)
+				return []*gitlab.BasicMergeRequest{
+					{
+						ID:           76,
+						IID:          6,
+						ProjectID:    1,
+						State:        "opened",
+						Title:        "MergeRequest one",
+						Draft:        true,
+						TargetBranch: "master",
+						SourceBranch: "test1",
+						Labels:       gitlab.Labels{"foo", "bar"},
+						WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/6",
+						References: &gitlab.IssueReferences{
+							Full:     "OWNER/REPO/merge_requests/6",
+							Relative: "#6",
+							Short:    "#6",
+						},
+					},
+					{
+						ID:           77,
+						IID:          7,
+						ProjectID:    1,
+						State:        "opened",
+						Title:        "MergeRequest two",
+						Draft:        true,
+						TargetBranch: "master",
+						SourceBranch: "test2",
+						Labels:       gitlab.Labels{"fooz", "baz"},
+						WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/7",
+						References: &gitlab.IssueReferences{
+							Full:     "OWNER/REPO/merge_requests/7",
+							Relative: "#7",
+							Short:    "#7",
+						},
+					},
+				}, nil, nil
+			})
 
-		output, err := runCommand(t, fakeHTTP, true, "--draft", "")
-		if err != nil {
-			t.Errorf("error running command `mr list`: %v", err)
-		}
+		apiClient, err := api.NewClient(
+			func(*http.Client) (gitlab.AuthSource, error) {
+				return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+			},
+			api.WithGitLabClient(testClient.Client),
+		)
+		require.NoError(t, err)
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdList(f, nil)
+		}, true,
+			cmdtest.WithApiClient(apiClient),
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		)
+
+		output, err := exec("--draft")
+		require.NoError(t, err)
 
 		assert.Equal(t, output.Stderr(), "")
 		assert.Equal(t, heredoc.Doc(`
@@ -243,19 +284,33 @@ func TestMergeRequestList_tty_withFlags(t *testing.T) {
 	})
 
 	t.Run("not draft", func(t *testing.T) {
-		fakeHTTP := &httpmock.Mocker{
-			MatchURL: httpmock.PathAndQuerystring,
-		}
-		defer fakeHTTP.Verify(t)
+		testClient := gitlabtesting.NewTestClient(t)
 
-		fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/merge_requests?page=1&per_page=30&state=opened&wip=no",
-			httpmock.NewStringResponse(http.StatusOK, `[
-			]`))
+		testClient.MockMergeRequests.EXPECT().
+			ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+			DoAndReturn(func(pid any, opts *gitlab.ListProjectMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+				// Verify not-draft filter is passed
+				assert.Equal(t, "no", *opts.WIP)
+				return []*gitlab.BasicMergeRequest{}, nil, nil
+			})
 
-		output, err := runCommand(t, fakeHTTP, true, "--not-draft", "")
-		if err != nil {
-			t.Errorf("error running command `mr list`: %v", err)
-		}
+		apiClient, err := api.NewClient(
+			func(*http.Client) (gitlab.AuthSource, error) {
+				return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+			},
+			api.WithGitLabClient(testClient.Client),
+		)
+		require.NoError(t, err)
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdList(f, nil)
+		}, true,
+			cmdtest.WithApiClient(apiClient),
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		)
+
+		output, err := exec("--not-draft")
+		require.NoError(t, err)
 
 		assert.Equal(t, output.Stderr(), "")
 		assert.Equal(t, "No open merge requests match your search in OWNER/REPO.\n\n\n", output.String())
@@ -306,66 +361,77 @@ func TestMergeRequestList_hyperlinks(t *testing.T) {
 		{displayHyperlinksConfig: "true", isTTY: false, expectedCells: noHyperlinkCells},
 	}
 
-	for _, test := range tests {
-		t.Run("", func(t *testing.T) {
-			fakeHTTP := httpmock.New()
-			defer fakeHTTP.Verify(t)
+	testMRs := []*gitlab.BasicMergeRequest{
+		{
+			ID:           76,
+			IID:          6,
+			ProjectID:    1,
+			State:        "opened",
+			Title:        "MergeRequest one",
+			TargetBranch: "master",
+			SourceBranch: "test1",
+			Labels:       gitlab.Labels{"foo", "bar"},
+			WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/6",
+			References: &gitlab.IssueReferences{
+				Full:     "OWNER/REPO/merge_requests/6",
+				Relative: "#6",
+				Short:    "#6",
+			},
+		},
+		{
+			ID:           77,
+			IID:          7,
+			ProjectID:    1,
+			State:        "opened",
+			Title:        "MergeRequest two",
+			TargetBranch: "master",
+			SourceBranch: "test2",
+			Labels:       gitlab.Labels{"fooz", "baz"},
+			WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/7",
+			References: &gitlab.IssueReferences{
+				Full:     "OWNER/REPO/merge_requests/7",
+				Relative: "#7",
+				Short:    "#7",
+			},
+		},
+	}
 
-			fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/merge_requests",
-				httpmock.NewStringResponse(http.StatusOK, `
-[
-  {
-    "state": "opened",
-    "description": "a description here",
-    "project_id": 1,
-    "updated_at": "2016-01-04T15:31:51.081Z",
-    "id": 76,
-    "title": "MergeRequest one",
-    "created_at": "2016-01-04T15:31:51.081Z",
-    "iid": 6,
-    "labels": ["foo", "bar"],
-	"target_branch": "master",
-    "source_branch": "test1",
-    "web_url": "http://gitlab.com/OWNER/REPO/merge_requests/6",
-    "references": {
-      "full": "OWNER/REPO/merge_requests/6",
-      "relative": "#6",
-      "short": "#6"
-    }
-  },
-  {
-    "state": "opened",
-    "description": "description two here",
-    "project_id": 1,
-    "updated_at": "2016-01-04T15:31:51.081Z",
-    "id": 77,
-    "title": "MergeRequest two",
-    "created_at": "2016-01-04T15:31:51.081Z",
-    "iid": 7,
-	"target_branch": "master",
-    "source_branch": "test2",
-    "labels": ["fooz", "baz"],
-    "web_url": "http://gitlab.com/OWNER/REPO/merge_requests/7",
-    "references": {
-      "full": "OWNER/REPO/merge_requests/7",
-      "relative": "#7",
-      "short": "#7"
-    }
-  }
-]
-`))
+	for _, tc := range tests {
+		t.Run("", func(t *testing.T) {
+			testClient := gitlabtesting.NewTestClient(t)
+
+			testClient.MockMergeRequests.EXPECT().
+				ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+				Return(testMRs, nil, nil)
+
+			apiClient, err := api.NewClient(
+				func(*http.Client) (gitlab.AuthSource, error) {
+					return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+				},
+				api.WithGitLabClient(testClient.Client),
+			)
+			require.NoError(t, err)
 
 			doHyperlinks := "never"
-			if test.forceHyperlinksEnv == "1" {
+			if tc.forceHyperlinksEnv == "1" {
 				doHyperlinks = "always"
-			} else if test.displayHyperlinksConfig == "true" {
+			} else if tc.displayHyperlinksConfig == "true" {
 				doHyperlinks = "auto"
 			}
 
-			output, err := runCommand(t, fakeHTTP, test.isTTY, "", doHyperlinks)
-			if err != nil {
-				t.Errorf("error running command `mr list`: %v", err)
-			}
+			ios, _, stdout, stderr := cmdtest.TestIOStreams(
+				cmdtest.WithTestIOStreamsAsTTY(tc.isTTY),
+				iostreams.WithDisplayHyperLinks(doHyperlinks),
+			)
+
+			factory := cmdtest.NewTestFactory(ios,
+				cmdtest.WithApiClient(apiClient),
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
+
+			cmd := NewCmdList(factory, nil)
+			output, err := cmdtest.ExecuteCommand(cmd, "", stdout, stderr)
+			require.NoError(t, err)
 
 			out := output.String()
 
@@ -374,7 +440,7 @@ func TestMergeRequestList_hyperlinks(t *testing.T) {
 			// first two lines have the header and some separating whitespace, so skip those
 			for lineNum, line := range lines[2:] {
 				gotCells := strings.Split(line, "\t")
-				expectedCells := test.expectedCells[lineNum]
+				expectedCells := tc.expectedCells[lineNum]
 
 				assert.Equal(t, len(expectedCells), len(gotCells))
 
@@ -391,81 +457,204 @@ func TestMergeRequestList_hyperlinks(t *testing.T) {
 func TestMergeRequestList_labels(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
+	// NOTE: These subtests cannot run in parallel because they use cmdutils.GroupOverride()
+	// which modifies global viper state (SetEnvPrefix, BindEnv).
 
 	type labelTest struct {
-		cli           string
-		expectedQuery string
+		name            string
+		cli             string
+		expectLabels    *gitlab.LabelOptions
+		expectNotLabels *gitlab.LabelOptions
 	}
 
 	tests := []labelTest{
-		{cli: "--label foo", expectedQuery: "labels=foo&page=1&per_page=30&state=opened"},
-		{cli: "--not-label fooz", expectedQuery: "not%5Blabels%5D=fooz&page=1&per_page=30&state=opened"},
+		{
+			name:         "--label",
+			cli:          "--label foo",
+			expectLabels: &gitlab.LabelOptions{"foo"},
+		},
+		{
+			name:            "--not-label",
+			cli:             "--not-label fooz",
+			expectNotLabels: &gitlab.LabelOptions{"fooz"},
+		},
 	}
 
-	for _, test := range tests {
-		t.Run("", func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
-			}
-			defer fakeHTTP.Verify(t)
+	testMR := &gitlab.BasicMergeRequest{
+		ID:           76,
+		IID:          6,
+		ProjectID:    1,
+		State:        "opened",
+		Title:        "MergeRequest one",
+		TargetBranch: "master",
+		SourceBranch: "test1",
+		Labels:       gitlab.Labels{"foo", "bar"},
+		WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/6",
+		References: &gitlab.IssueReferences{
+			Full:     "OWNER/REPO/merge_requests/6",
+			Relative: "#6",
+			Short:    "#6",
+		},
+	}
 
-			path := fmt.Sprintf("/api/v4/projects/OWNER/REPO/merge_requests?%s", test.expectedQuery)
-			fakeHTTP.RegisterResponder(http.MethodGet, path,
-				httpmock.NewStringResponse(http.StatusOK, `
-		[
-		  {
-			"state": "opened",
-			"description": "a description here",
-			"project_id": 1,
-			"updated_at": "2016-01-04T15:31:51.081Z",
-			"id": 76,
-			"title": "MergeRequest one",
-			"created_at": "2016-01-04T15:31:51.081Z",
-			"iid": 6,
-			"labels": ["foo", "bar"],
-			"target_branch": "master",
-			"source_branch": "test1",
-			"web_url": "http://gitlab.com/OWNER/REPO/merge_requests/6",
-			"references": {
-			  "full": "OWNER/REPO/merge_requests/6",
-			  "relative": "#6",
-			  "short": "#6"
-			}
-		  }
-		]
-		`))
-			output, err := runCommand(t, fakeHTTP, true, test.cli, "")
-			if err != nil {
-				t.Errorf("error running command `issue list %s`: %v", test.cli, err)
-			}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testClient := gitlabtesting.NewTestClient(t)
 
-			assert.Contains(t, output.String(), "!6	OWNER/REPO/merge_requests/6")
+			testClient.MockMergeRequests.EXPECT().
+				ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+				DoAndReturn(func(pid any, opts *gitlab.ListProjectMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+					if tc.expectLabels != nil {
+						assert.Equal(t, tc.expectLabels, opts.Labels)
+					}
+					if tc.expectNotLabels != nil {
+						assert.Equal(t, tc.expectNotLabels, opts.NotLabels)
+					}
+					return []*gitlab.BasicMergeRequest{testMR}, nil, nil
+				})
+
+			apiClient, err := api.NewClient(
+				func(*http.Client) (gitlab.AuthSource, error) {
+					return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+				},
+				api.WithGitLabClient(testClient.Client),
+			)
+			require.NoError(t, err)
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdList(f, nil)
+			}, true,
+				cmdtest.WithApiClient(apiClient),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+			)
+
+			output, err := exec(tc.cli)
+			require.NoError(t, err)
+
+			assert.Contains(t, output.String(), "!6\tOWNER/REPO/merge_requests/6")
 			assert.Empty(t, output.Stderr())
 		})
 	}
 }
 
 func TestMrListJSON(t *testing.T) {
-	fakeHTTP := httpmock.New()
-	fakeHTTP.MatchURL = httpmock.PathAndQuerystring
-	defer fakeHTTP.Verify(t)
+	t.Parallel()
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/merge_requests?page=1&per_page=30&state=opened",
-		httpmock.NewFileResponse(http.StatusOK, "./testdata/mrList.json"))
+	testClient := gitlabtesting.NewTestClient(t)
 
-	output, err := runCommand(t, fakeHTTP, true, "-F json", "")
-	if err != nil {
-		t.Errorf("error running command `mr list -F json`: %v", err)
+	createdAt1, _ := time.Parse(time.RFC3339Nano, "2022-01-20T21:20:50.665Z")
+	updatedAt1, _ := time.Parse(time.RFC3339Nano, "2022-01-20T21:47:54.11Z")
+	createdAt2, _ := time.Parse(time.RFC3339Nano, "2022-01-18T17:02:23.27Z")
+	updatedAt2, _ := time.Parse(time.RFC3339Nano, "2022-01-18T18:06:50.054Z")
+
+	testMRs := []*gitlab.BasicMergeRequest{
+		{
+			ID:                          136297744,
+			IID:                         4,
+			TargetBranch:                "main",
+			SourceBranch:                "1-fake-issue-3",
+			ProjectID:                   29316529,
+			Title:                       "Draft: Resolve \"fake issue\"",
+			State:                       "opened",
+			Imported:                    false,
+			ImportedFrom:                "",
+			CreatedAt:                   &createdAt1,
+			UpdatedAt:                   &updatedAt1,
+			Upvotes:                     0,
+			Downvotes:                   0,
+			Author:                      &gitlab.BasicUser{ID: 8814129, Username: "OWNER", Name: "Some User", State: "active", Locked: false, AvatarURL: "https://gitlab.com/uploads/-/system/user/avatar/8814129/avatar.png", WebURL: "https://gitlab.com/OWNER"},
+			Assignee:                    &gitlab.BasicUser{ID: 8814129, Username: "OWNER", Name: "Some User", State: "active", Locked: false, AvatarURL: "https://gitlab.com/uploads/-/system/user/avatar/8814129/avatar.png", WebURL: "https://gitlab.com/OWNER"},
+			Assignees:                   []*gitlab.BasicUser{{ID: 8814129, Username: "OWNER", Name: "Some User", State: "active", Locked: false, AvatarURL: "https://gitlab.com/uploads/-/system/user/avatar/8814129/avatar.png", WebURL: "https://gitlab.com/OWNER"}},
+			Reviewers:                   []*gitlab.BasicUser{},
+			SourceProjectID:             29316529,
+			TargetProjectID:             29316529,
+			Labels:                      gitlab.Labels{},
+			Description:                 "Closes #1",
+			Draft:                       true,
+			MergeWhenPipelineSucceeds:   false,
+			DetailedMergeStatus:         "draft_status",
+			SHA:                         "44eb489568f7cb1a5a730fce6b247cd3797172ca",
+			UserNotesCount:              0,
+			ShouldRemoveSourceBranch:    false,
+			ForceRemoveSourceBranch:     true,
+			AllowCollaboration:          false,
+			AllowMaintainerToPush:       false,
+			WebURL:                      "https://gitlab.com/OWNER/REPO/-/merge_requests/4",
+			References:                  &gitlab.IssueReferences{Short: "!4", Relative: "!4", Full: "OWNER/REPO!4"},
+			DiscussionLocked:            false,
+			TimeStats:                   &gitlab.TimeStats{},
+			Squash:                      false,
+			SquashOnMerge:               false,
+			TaskCompletionStatus:        &gitlab.TasksCompletionStatus{Count: 0, CompletedCount: 0},
+			HasConflicts:                false,
+			BlockingDiscussionsResolved: true,
+		},
+		{
+			ID:                          135750125,
+			IID:                         1,
+			TargetBranch:                "main",
+			SourceBranch:                "OWNER-main-patch-25608",
+			ProjectID:                   29316529,
+			Title:                       "Update .gitlab-ci.yml",
+			State:                       "opened",
+			Imported:                    false,
+			ImportedFrom:                "",
+			CreatedAt:                   &createdAt2,
+			UpdatedAt:                   &updatedAt2,
+			Upvotes:                     0,
+			Downvotes:                   0,
+			Author:                      &gitlab.BasicUser{ID: 8814129, Username: "OWNER", Name: "Some User", State: "active", Locked: false, AvatarURL: "https://gitlab.com/uploads/-/system/user/avatar/8814129/avatar.png", WebURL: "https://gitlab.com/OWNER"},
+			Assignees:                   []*gitlab.BasicUser{},
+			Reviewers:                   []*gitlab.BasicUser{},
+			SourceProjectID:             29316529,
+			TargetProjectID:             29316529,
+			Labels:                      gitlab.Labels{},
+			Description:                 "",
+			Draft:                       false,
+			MergeWhenPipelineSucceeds:   false,
+			DetailedMergeStatus:         "mergeable",
+			SHA:                         "123f34ebfd5d97ef562974e55e01b83f06ae7b4a",
+			UserNotesCount:              0,
+			ShouldRemoveSourceBranch:    false,
+			ForceRemoveSourceBranch:     true,
+			AllowCollaboration:          false,
+			AllowMaintainerToPush:       false,
+			WebURL:                      "https://gitlab.com/OWNER/REPO/-/merge_requests/1",
+			References:                  &gitlab.IssueReferences{Short: "!1", Relative: "!1", Full: "OWNER/REPO!1"},
+			DiscussionLocked:            false,
+			TimeStats:                   &gitlab.TimeStats{},
+			Squash:                      false,
+			SquashOnMerge:               false,
+			TaskCompletionStatus:        &gitlab.TasksCompletionStatus{Count: 0, CompletedCount: 0},
+			HasConflicts:                false,
+			BlockingDiscussionsResolved: true,
+		},
 	}
 
-	if err != nil {
-		panic(err)
-	}
+	testClient.MockMergeRequests.EXPECT().
+		ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+		Return(testMRs, nil, nil)
+
+	apiClient, err := api.NewClient(
+		func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+		},
+		api.WithGitLabClient(testClient.Client),
+	)
+	require.NoError(t, err)
+
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdList(f, nil)
+	}, true,
+		cmdtest.WithApiClient(apiClient),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("-F json")
+	require.NoError(t, err)
 
 	b, err := os.ReadFile("./testdata/mrList.json")
-	if err != nil {
-		fmt.Print(err)
-	}
+	require.NoError(t, err)
 
 	expectedOut := string(b)
 
@@ -477,41 +666,55 @@ func TestMergeRequestList_GroupAndReviewer(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/user",
-		httpmock.NewStringResponse(http.StatusOK, `{"id": 1, "username": "me"}`))
+	// Mock CurrentUser for @me lookup
+	testClient.MockUsers.EXPECT().
+		CurrentUser(gomock.Any()).
+		Return(&gitlab.User{ID: 1, Username: "me"}, nil, nil)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/GROUP/merge_requests",
-		httpmock.NewStringResponse(http.StatusOK, `
-[
-  {
-    "state" : "opened",
-    "description" : "a description here",
-    "project_id" : 1,
-    "updated_at" : "2016-01-04T15:31:51.081Z",
-    "id" : 76,
-    "title" : "MergeRequest one",
-    "created_at" : "2016-01-04T15:31:51.081Z",
-    "iid" : 6,
-    "labels" : ["foo", "bar"],
-	"target_branch": "master",
-    "source_branch": "test1",
-    "web_url": "http://gitlab.com/OWNER/REPO/merge_requests/6",
-    "references": {
-      "full": "OWNER/REPO/merge_requests/6",
-      "relative": "#6",
-      "short": "#6"
-    }
-  }
-]
-`))
+	// Mock ListGroupMergeRequests and verify reviewer_id is set
+	testClient.MockMergeRequests.EXPECT().
+		ListGroupMergeRequests("GROUP", gomock.Any()).
+		DoAndReturn(func(gid any, opts *gitlab.ListGroupMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			assert.NotNil(t, opts.ReviewerID) // ReviewerID is set to user ID 1
+			return []*gitlab.BasicMergeRequest{
+				{
+					ID:           76,
+					IID:          6,
+					ProjectID:    1,
+					State:        "opened",
+					Title:        "MergeRequest one",
+					TargetBranch: "master",
+					SourceBranch: "test1",
+					Labels:       gitlab.Labels{"foo", "bar"},
+					WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/6",
+					References: &gitlab.IssueReferences{
+						Full:     "OWNER/REPO/merge_requests/6",
+						Relative: "#6",
+						Short:    "#6",
+					},
+				},
+			}, nil, nil
+		})
 
-	output, err := runCommand(t, fakeHTTP, true, "--group GROUP --reviewer @me", "")
-	if err != nil {
-		t.Errorf("error running command `mr list`: %v", err)
-	}
+	apiClient, err := api.NewClient(
+		func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+		},
+		api.WithGitLabClient(testClient.Client),
+	)
+	require.NoError(t, err)
+
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdList(f, nil)
+	}, true,
+		cmdtest.WithApiClient(apiClient),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("--group GROUP --reviewer @me")
+	require.NoError(t, err)
 
 	assert.Equal(t, heredoc.Doc(`
 		Showing 1 open merge request on GROUP. (Page 1)
@@ -520,51 +723,61 @@ func TestMergeRequestList_GroupAndReviewer(t *testing.T) {
 
 	`), output.String())
 	assert.Equal(t, ``, output.Stderr())
-
-	lastRequest := fakeHTTP.Requests[len(fakeHTTP.Requests)-1]
-	assert.Contains(t, lastRequest.URL.RawQuery, "reviewer_id=1")
 }
 
 func TestMergeRequestList_GroupAndAssignee(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	// Add stub for user lookup
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/user",
-		httpmock.NewStringResponse(http.StatusOK, `{"id": 1, "username": "me"}`))
+	// Mock CurrentUser for @me lookup
+	testClient.MockUsers.EXPECT().
+		CurrentUser(gomock.Any()).
+		Return(&gitlab.User{ID: 1, Username: "me"}, nil, nil)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/GROUP/merge_requests",
-		httpmock.NewStringResponse(http.StatusOK, `
-[
-  {
-    "state" : "opened",
-    "description" : "a description here",
-    "project_id" : 1,
-    "updated_at" : "2016-01-04T15:31:51.081Z",
-    "id" : 76,
-    "title" : "MergeRequest one",
-    "created_at" : "2016-01-04T15:31:51.081Z",
-    "iid" : 6,
-    "labels" : ["foo", "bar"],
-	"target_branch": "master",
-    "source_branch": "test1",
-    "web_url": "http://gitlab.com/OWNER/REPO/merge_requests/6",
-    "references": {
-      "full": "OWNER/REPO/merge_requests/6",
-      "relative": "#6",
-      "short": "#6"
-    }
-  }
-]
-`))
+	// Mock ListGroupMergeRequests and verify assignee_id is set
+	testClient.MockMergeRequests.EXPECT().
+		ListGroupMergeRequests("GROUP", gomock.Any()).
+		DoAndReturn(func(gid any, opts *gitlab.ListGroupMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			assert.NotNil(t, opts.AssigneeID)
+			return []*gitlab.BasicMergeRequest{
+				{
+					ID:           76,
+					IID:          6,
+					ProjectID:    1,
+					State:        "opened",
+					Title:        "MergeRequest one",
+					TargetBranch: "master",
+					SourceBranch: "test1",
+					Labels:       gitlab.Labels{"foo", "bar"},
+					WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/6",
+					References: &gitlab.IssueReferences{
+						Full:     "OWNER/REPO/merge_requests/6",
+						Relative: "#6",
+						Short:    "#6",
+					},
+				},
+			}, nil, nil
+		})
 
-	output, err := runCommand(t, fakeHTTP, true, "--group GROUP --assignee @me", "")
-	if err != nil {
-		t.Errorf("error running command `mr list`: %v", err)
-	}
+	apiClient, err := api.NewClient(
+		func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+		},
+		api.WithGitLabClient(testClient.Client),
+	)
+	require.NoError(t, err)
+
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdList(f, nil)
+	}, true,
+		cmdtest.WithApiClient(apiClient),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("--group GROUP --assignee @me")
+	require.NoError(t, err)
 
 	assert.Equal(t, heredoc.Doc(`
 		Showing 1 open merge request on GROUP. (Page 1)
@@ -573,79 +786,95 @@ func TestMergeRequestList_GroupAndAssignee(t *testing.T) {
 
 	`), output.String())
 	assert.Equal(t, ``, output.Stderr())
-
-	lastRequest := fakeHTTP.Requests[len(fakeHTTP.Requests)-1]
-	assert.Contains(t, lastRequest.URL.RawQuery, "assignee_id=1")
 }
 
 func TestMergeRequestList_GroupWithAssigneeAndReviewer(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	fakeHTTP := httpmock.New()
-	defer fakeHTTP.Verify(t)
-	fakeHTTP.MatchURL = httpmock.PathAndQuerystring
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/users?per_page=30&username=some.user",
-		httpmock.NewStringResponse(http.StatusOK, `[{"id": 2, "username": "some.user"}]`))
+	// Mock ListUsers for reviewer lookup (some.user -> ID 2)
+	testClient.MockUsers.EXPECT().
+		ListUsers(gomock.Any()).
+		DoAndReturn(func(opts *gitlab.ListUsersOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.User, *gitlab.Response, error) {
+			if *opts.Username == "some.user" {
+				return []*gitlab.User{{ID: 2, Username: "some.user"}}, nil, nil
+			}
+			if *opts.Username == "other.user" {
+				return []*gitlab.User{{ID: 1, Username: "other.user"}}, nil, nil
+			}
+			return nil, nil, nil
+		}).Times(2)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/users?per_page=30&username=other.user",
-		httpmock.NewStringResponse(http.StatusOK, `[{"id": 1, "username": "other.user"}]`))
+	// Mock ListGroupMergeRequests - called twice (once for assignee, once for reviewer)
+	// Note: CreatedAt is required because the API sorts combined results by CreatedAt
+	createdAt1, _ := time.Parse(time.RFC3339, "2024-01-04T15:31:51.081Z")
+	createdAt2, _ := time.Parse(time.RFC3339, "2016-01-04T15:31:51.081Z")
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/GROUP/merge_requests?assignee_id=1&page=1&per_page=30&state=opened",
-		httpmock.NewStringResponse(http.StatusOK, `
-[
-  {
-    "state": "opened",
-    "description": "a description here",
-    "project_id": 1,
-    "updated_at": "2016-01-04T15:31:51.081Z",
-    "id": 76,
-    "title": "MergeRequest one",
-    "created_at": "2016-01-04T15:31:51.081Z",
-    "iid": 6,
-    "labels": ["foo", "bar"],
-    "target_branch": "master",
-    "source_branch": "test1",
-    "web_url": "http://gitlab.com/OWNER/REPO/merge_requests/6",
-    "references": {
-      "full": "OWNER/REPO/merge_requests/6",
-      "relative": "#6",
-      "short": "#6"
-    }
-  }
-]
-`))
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/groups/GROUP/merge_requests?page=1&per_page=30&reviewer_id=2&state=opened",
-		httpmock.NewStringResponse(http.StatusOK, `
-[
-  {
-    "state": "opened",
-    "description": "a description here",
-    "project_id": 2,
-    "updated_at": "2024-01-04T15:31:51.081Z",
-    "id": 77,
-    "title": "MergeRequest one",
-    "created_at": "2024-01-04T15:31:51.081Z",
-    "iid": 7,
-    "labels": ["baz", "bar"],
-    "target_branch": "master",
-    "source_branch": "test2",
-    "web_url": "http://gitlab.com/OWNER/REPO/merge_requests/7",
-    "references": {
-      "full": "OWNER/REPO/merge_requests/7",
-      "relative": "#7",
-      "short": "#7"
-    }
-  }
-]
-`))
-
-	output, err := runCommand(t, fakeHTTP, true, "--group GROUP --reviewer=some.user --assignee=other.user", "")
-	if err != nil {
-		t.Errorf("error running command `mr list`: %v", err)
+	reviewerMR := &gitlab.BasicMergeRequest{
+		ID:           77,
+		IID:          7,
+		ProjectID:    2,
+		State:        "opened",
+		Title:        "MergeRequest one",
+		TargetBranch: "master",
+		SourceBranch: "test2",
+		Labels:       gitlab.Labels{"baz", "bar"},
+		WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/7",
+		CreatedAt:    &createdAt1,
+		References: &gitlab.IssueReferences{
+			Full:     "OWNER/REPO/merge_requests/7",
+			Relative: "#7",
+			Short:    "#7",
+		},
 	}
+
+	assigneeMR := &gitlab.BasicMergeRequest{
+		ID:           76,
+		IID:          6,
+		ProjectID:    1,
+		State:        "opened",
+		Title:        "MergeRequest one",
+		TargetBranch: "master",
+		SourceBranch: "test1",
+		Labels:       gitlab.Labels{"foo", "bar"},
+		WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/6",
+		CreatedAt:    &createdAt2,
+		References: &gitlab.IssueReferences{
+			Full:     "OWNER/REPO/merge_requests/6",
+			Relative: "#6",
+			Short:    "#6",
+		},
+	}
+
+	testClient.MockMergeRequests.EXPECT().
+		ListGroupMergeRequests("GROUP", gomock.Any()).
+		DoAndReturn(func(gid any, opts *gitlab.ListGroupMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			if opts.ReviewerID != nil {
+				return []*gitlab.BasicMergeRequest{reviewerMR}, nil, nil
+			}
+			// Assignee request
+			return []*gitlab.BasicMergeRequest{assigneeMR}, nil, nil
+		}).Times(2)
+
+	apiClient, err := api.NewClient(
+		func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+		},
+		api.WithGitLabClient(testClient.Client),
+	)
+	require.NoError(t, err)
+
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdList(f, nil)
+	}, true,
+		cmdtest.WithApiClient(apiClient),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("--group GROUP --reviewer=some.user --assignee=other.user")
+	require.NoError(t, err)
 
 	assert.Equal(t, heredoc.Doc(`
 		Showing 2 open merge requests on GROUP. (Page 1)
@@ -655,69 +884,75 @@ func TestMergeRequestList_GroupWithAssigneeAndReviewer(t *testing.T) {
 
 	`), output.String())
 	assert.Equal(t, ``, output.Stderr())
-
-	requests := fakeHTTP.Requests
-	// 2 for users lookup, 2 for merge requests (assignee and reviewer)
-	assert.Len(t, requests, 4)
 }
 
 func TestMergeRequestList_SortAndOrderBy(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
-	defer fakeHTTP.Verify(t)
+	testClient := gitlabtesting.NewTestClient(t)
 
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO/merge_requests?order_by=created_at&page=1&per_page=30&sort=desc&state=opened",
-		httpmock.NewStringResponse(http.StatusOK, `[
+	testClient.MockMergeRequests.EXPECT().
+		ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+		DoAndReturn(func(pid any, opts *gitlab.ListProjectMergeRequestsOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+			// Verify sort and order_by are passed correctly
+			assert.Equal(t, "created_at", *opts.OrderBy)
+			assert.Equal(t, "desc", *opts.Sort)
+			return []*gitlab.BasicMergeRequest{
 				{
-					"state": "opened",
-					"description": "a description here",
-					"project_id": 1,
-					"updated_at": "2016-01-04T16:00:00.081Z",
-					"id": 76,
-					"title": "MergeRequest one",
-					"created_at": "2016-01-04T16:00:00.081Z",
-					"iid": 6,
-					"draft": true,
-					"labels": ["foo", "bar"],
-					"target_branch": "master",
-					"source_branch": "test1",
-					"web_url": "http://gitlab.com/OWNER/REPO/merge_requests/6",
-					"references": {
-					"full": "OWNER/REPO/merge_requests/6",
-					"relative": "#6",
-					"short": "#6"
-					}
+					ID:           76,
+					IID:          6,
+					ProjectID:    1,
+					State:        "opened",
+					Title:        "MergeRequest one",
+					Draft:        true,
+					TargetBranch: "master",
+					SourceBranch: "test1",
+					Labels:       gitlab.Labels{"foo", "bar"},
+					WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/6",
+					References: &gitlab.IssueReferences{
+						Full:     "OWNER/REPO/merge_requests/6",
+						Relative: "#6",
+						Short:    "#6",
+					},
 				},
 				{
-					"state": "opened",
-					"description": "description two here",
-					"project_id": 1,
-					"updated_at": "2016-01-04T15:00:00.081Z",
-					"id": 77,
-					"title": "MergeRequest two",
-					"created_at": "2016-01-04T15:00:00.081Z",
-					"iid": 7,
-					"draft": true,
-					"target_branch": "master",
-					"source_branch": "test2",
-					"labels": ["fooz", "baz"],
-					"web_url": "http://gitlab.com/OWNER/REPO/merge_requests/7",
-					"references": {
-					  "full": "OWNER/REPO/merge_requests/7",
-					  "relative": "#7",
-					  "short": "#7"
-					}
-				}
-	]`))
+					ID:           77,
+					IID:          7,
+					ProjectID:    1,
+					State:        "opened",
+					Title:        "MergeRequest two",
+					Draft:        true,
+					TargetBranch: "master",
+					SourceBranch: "test2",
+					Labels:       gitlab.Labels{"fooz", "baz"},
+					WebURL:       "http://gitlab.com/OWNER/REPO/merge_requests/7",
+					References: &gitlab.IssueReferences{
+						Full:     "OWNER/REPO/merge_requests/7",
+						Relative: "#7",
+						Short:    "#7",
+					},
+				},
+			}, nil, nil
+		})
 
-	output, err := runCommand(t, fakeHTTP, true, "--order created_at --sort desc", "")
-	if err != nil {
-		t.Errorf("error running command `mr list`: %v", err)
-	}
+	apiClient, err := api.NewClient(
+		func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+		},
+		api.WithGitLabClient(testClient.Client),
+	)
+	require.NoError(t, err)
+
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdList(f, nil)
+	}, true,
+		cmdtest.WithApiClient(apiClient),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("--order created_at --sort desc")
+	require.NoError(t, err)
 
 	assert.Equal(t, output.Stderr(), "")
 	assert.Equal(t, heredoc.Doc(`

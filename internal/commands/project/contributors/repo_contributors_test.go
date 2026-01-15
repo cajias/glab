@@ -3,110 +3,114 @@
 package contributors
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
-	)
-	cmd := NewCmdContributors(factory)
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
-
-func TestProjectContributors(t *testing.T) {
-	type httpMock struct {
-		method   string
-		path     string
-		status   int
-		bodyFile string
+func Test_ProjectContributors(t *testing.T) {
+	type testCase struct {
+		name           string
+		cli            string
+		expectedOutput string
+		wantErr        bool
+		wantStderr     string
+		setupMock      func(tc *gitlabtesting.TestClient)
 	}
 
-	tests := []struct {
-		name     string
-		cli      string
-		httpMock httpMock
+	testContributors := []*gitlab.Contributor{
+		{
+			Name:    "Test User",
+			Email:   "tu@gitlab.com",
+			Commits: 41,
+		},
+		{
+			Name:    "Test User2",
+			Email:   "tu2@gitlab.com",
+			Commits: 12,
+		},
+	}
 
-		expectedOutput string
-	}{
+	testCases := []testCase{
 		{
 			name: "view project contributors",
 			cli:  "",
-			httpMock: httpMock{
-				http.MethodGet,
-				"/api/v4/projects/OWNER/REPO/repository/contributors?order_by=commits&page=1&per_page=30&sort=desc",
-				http.StatusOK,
-				"testdata/contributors.json",
-			},
 			expectedOutput: heredoc.Doc(`Showing 2 contributors on OWNER/REPO. (Page 1)
 
-															Test User	tu@gitlab.com	41 commits
-															Test User2	tu2@gitlab.com	12 commits
+			Test User	tu@gitlab.com	41 commits
+			Test User2	tu2@gitlab.com	12 commits
 
-															`),
+			`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockRepositories.EXPECT().
+					Contributors("OWNER/REPO", gomock.Any()).
+					Return(testContributors, nil, nil)
+			},
 		},
 		{
 			name: "view project contributors for a different project",
 			cli:  "-R foo/bar",
-			httpMock: httpMock{
-				http.MethodGet,
-				"/api/v4/projects/foo/bar/repository/contributors?order_by=commits&page=1&per_page=30&sort=desc",
-				http.StatusOK,
-				"testdata/contributors.json",
-			},
 			expectedOutput: heredoc.Doc(`Showing 2 contributors on foo/bar. (Page 1)
 
-															Test User	tu@gitlab.com	41 commits
-															Test User2	tu2@gitlab.com	12 commits
+			Test User	tu@gitlab.com	41 commits
+			Test User2	tu2@gitlab.com	12 commits
 
-															`),
+			`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockRepositories.EXPECT().
+					Contributors("foo/bar", gomock.Any()).
+					Return(testContributors, nil, nil)
+			},
 		},
 		{
 			name: "view project contributors ordered by name sorted in ascending order",
 			cli:  "--order name --sort asc",
-			httpMock: httpMock{
-				http.MethodGet,
-				"/api/v4/projects/OWNER/REPO/repository/contributors?order_by=name&page=1&per_page=30&sort=asc",
-				http.StatusOK,
-				"testdata/contributors.json",
-			},
 			expectedOutput: heredoc.Doc(`Showing 2 contributors on OWNER/REPO. (Page 1)
 
-															Test User	tu@gitlab.com	41 commits
-															Test User2	tu2@gitlab.com	12 commits
+			Test User	tu@gitlab.com	41 commits
+			Test User2	tu2@gitlab.com	12 commits
 
-															`),
+			`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockRepositories.EXPECT().
+					Contributors("OWNER/REPO", gomock.Any()).
+					Return(testContributors, nil, nil)
+			},
 		},
 	}
 
-	for _, tc := range tests {
+	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeHTTP := &httpmock.Mocker{
-				MatchURL: httpmock.PathAndQuerystring,
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdContributors,
+				false,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
+
+			// WHEN
+			out, err := exec(tc.cli)
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantStderr, err.Error())
+				return
 			}
-			defer fakeHTTP.Verify(t)
-
-			fakeHTTP.RegisterResponder(tc.httpMock.method, tc.httpMock.path,
-				httpmock.NewFileResponse(tc.httpMock.status, tc.httpMock.bodyFile))
-
-			output, err := runCommand(t, fakeHTTP, tc.cli)
-
-			if assert.NoErrorf(t, err, "error running command `project contributors %s`: %v", tc.cli, err) {
-				assert.Equal(t, tc.expectedOutput, output.String())
-				assert.Empty(t, output.Stderr())
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedOutput, out.String())
+			assert.Empty(t, out.Stderr())
 		})
 	}
 }

@@ -4,20 +4,18 @@ package delete
 
 import (
 	"bytes"
-	"net/http"
 	"testing"
 
 	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/api"
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
 )
 
 func Test_NewCmdDelete(t *testing.T) {
@@ -69,7 +67,7 @@ func Test_NewCmdDelete(t *testing.T) {
 						tc := gitlabtesting.NewTestClient(t)
 						tc.MockProjectVariables.EXPECT().RemoveVariable(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 						tc.MockGroupVariables.EXPECT().RemoveVariable(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
-						return cmdtest.NewTestApiClient(t, &http.Client{}, "", repoHost, api.WithGitLabClient(tc.Client)), nil
+						return cmdtest.NewTestApiClient(t, nil, "", repoHost, api.WithGitLabClient(tc.Client)), nil
 					}
 				},
 				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
@@ -97,80 +95,85 @@ func Test_NewCmdDelete(t *testing.T) {
 }
 
 func Test_deleteRun(t *testing.T) {
-	reg := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
-	defer reg.Verify(t)
-
-	reg.RegisterResponder(http.MethodDelete, "/api/v4/projects/owner%2Frepo/variables/TEST_VAR?filter%5Benvironment_scope%5D=%2A",
-		httpmock.NewStringResponse(http.StatusNoContent, " "),
-	)
-
-	reg.RegisterResponder(http.MethodDelete, "/api/v4/projects/owner%2Frepo/variables/TEST_VAR?filter%5Benvironment_scope%5D=stage",
-		httpmock.NewStringResponse(http.StatusNoContent, " "),
-	)
-
-	reg.RegisterResponder(http.MethodDelete, "/api/v4/groups/testGroup/variables/TEST_VAR",
-		httpmock.NewStringResponse(http.StatusNoContent, " "),
-	)
-
-	apiClient := func(repoHost string) (*api.Client, error) {
-		return cmdtest.NewTestApiClient(t, &http.Client{Transport: reg}, "", "gitlab.com"), nil
-	}
-	baseRepo := func() (glrepo.Interface, error) {
-		return glrepo.FromFullName("owner/repo", glinstance.DefaultHostname)
-	}
-
 	tests := []struct {
 		name        string
-		opts        options
+		key         string
+		scope       string
+		group       string
 		wantsErr    bool
 		wantsOutput string
+		setupMock   func(tc *gitlabtesting.TestClient)
 	}{
 		{
-			name: "delete project variable no scope",
-			opts: options{
-				apiClient: apiClient,
-				baseRepo:  baseRepo,
-				key:       "TEST_VAR",
-				scope:     "*",
-			},
+			name:        "delete project variable no scope",
+			key:         "TEST_VAR",
+			scope:       "*",
 			wantsErr:    false,
 			wantsOutput: "✓ Deleted variable TEST_VAR with scope * for owner/repo.\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjectVariables.EXPECT().
+					RemoveVariable("owner/repo", "TEST_VAR", gomock.Any()).
+					Return(nil, nil)
+			},
 		},
 		{
-			name: "delete project variable with stage scope",
-			opts: options{
-				apiClient: apiClient,
-				baseRepo:  baseRepo,
-				key:       "TEST_VAR",
-				scope:     "stage",
-			},
+			name:        "delete project variable with stage scope",
+			key:         "TEST_VAR",
+			scope:       "stage",
 			wantsErr:    false,
 			wantsOutput: "✓ Deleted variable TEST_VAR with scope stage for owner/repo.\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockProjectVariables.EXPECT().
+					RemoveVariable("owner/repo", "TEST_VAR", gomock.Any()).
+					Return(nil, nil)
+			},
 		},
 		{
-			name: "delete group variable",
-			opts: options{
-				apiClient: apiClient,
-				baseRepo:  baseRepo,
-				key:       "TEST_VAR",
-				scope:     "",
-				group:     "testGroup",
-			},
+			name:        "delete group variable",
+			key:         "TEST_VAR",
+			scope:       "",
+			group:       "testGroup",
 			wantsErr:    false,
 			wantsOutput: "✓ Deleted variable TEST_VAR for group testGroup.\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockGroupVariables.EXPECT().
+					RemoveVariable("testGroup", "TEST_VAR", gomock.Any()).
+					Return(nil, nil)
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			io, _, stdout, _ := cmdtest.TestIOStreams()
-			tt.opts.io = io
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tt.setupMock(testClient)
 
-			err := tt.opts.run()
-			assert.NoError(t, err)
-			assert.Equal(t, stdout.String(), tt.wantsOutput)
+			io, _, stdout, _ := cmdtest.TestIOStreams()
+
+			opts := &options{
+				apiClient: func(repoHost string) (*api.Client, error) {
+					return cmdtest.NewTestApiClient(t, nil, "", "gitlab.com", api.WithGitLabClient(testClient.Client)), nil
+				},
+				baseRepo: func() (glrepo.Interface, error) {
+					return glrepo.New("owner", "repo", "gitlab.com"), nil
+				},
+				io:    io,
+				key:   tt.key,
+				scope: tt.scope,
+				group: tt.group,
+			}
+
+			// WHEN
+			err := opts.run()
+
+			// THEN
+			if tt.wantsErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantsOutput, stdout.String())
 		})
 	}
 }

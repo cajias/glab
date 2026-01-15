@@ -4,17 +4,19 @@ package get
 
 import (
 	"bytes"
-	"net/http"
 	"testing"
 
 	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/api"
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
 )
 
 func Test_NewCmdGet(t *testing.T) {
@@ -118,48 +120,79 @@ func Test_NewCmdGet(t *testing.T) {
 }
 
 func Test_getRun_project(t *testing.T) {
-	reg := &httpmock.Mocker{}
-	defer reg.Verify(t)
-
 	varContent := `
-			TEST variable\n
-			content
-		`
+		TEST variable\n
+		content
+	`
 
-	body := struct {
-		Key              string `json:"key"`
-		VariableType     string `json:"variable_type"`
-		Value            string `json:"value"`
-		Protected        bool   `json:"protected"`
-		Masked           bool   `json:"masked"`
-		EnvironmentScope string `json:"environment_scope"`
-	}{
-		Key:              "TEST_VAR",
-		VariableType:     "env_var",
-		Value:            varContent,
-		Protected:        false,
-		Masked:           false,
-		EnvironmentScope: "*",
-	}
-
-	reg.RegisterResponder(http.MethodGet, "/projects/owner/repo/variables/TEST_VAR",
-		httpmock.NewJSONResponse(http.StatusOK, body),
-	)
+	// GIVEN
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockProjectVariables.EXPECT().
+		GetVariable("owner/repo", "TEST_VAR", gomock.Any()).
+		Return(&gitlab.ProjectVariable{
+			Key:              "TEST_VAR",
+			VariableType:     "env_var",
+			Value:            varContent,
+			Protected:        false,
+			Masked:           false,
+			EnvironmentScope: "*",
+		}, nil, nil)
 
 	io, _, stdout, _ := cmdtest.TestIOStreams()
 
 	opts := &options{
 		apiClient: func(repoHost string) (*api.Client, error) {
-			return cmdtest.NewTestApiClient(t, &http.Client{Transport: reg}, "", "gitlab.com"), nil
+			return cmdtest.NewTestApiClient(t, nil, "", "gitlab.com", api.WithGitLabClient(testClient.Client)), nil
 		},
 		baseRepo: func() (glrepo.Interface, error) {
-			return glrepo.FromFullName("owner/repo", glinstance.DefaultHostname)
+			return glrepo.New("owner", "repo", "gitlab.com"), nil
 		},
 		io:  io,
 		key: "TEST_VAR",
 	}
 
+	// WHEN
 	err := opts.run()
-	assert.NoError(t, err)
+
+	// THEN
+	require.NoError(t, err)
+	assert.Equal(t, varContent, stdout.String())
+}
+
+func Test_getRun_group(t *testing.T) {
+	varContent := `group variable content`
+
+	// GIVEN
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockGroupVariables.EXPECT().
+		GetVariable("mygroup", "GROUP_VAR", gomock.Any()).
+		Return(&gitlab.GroupVariable{
+			Key:              "GROUP_VAR",
+			VariableType:     "env_var",
+			Value:            varContent,
+			Protected:        false,
+			Masked:           false,
+			EnvironmentScope: "*",
+		}, nil, nil)
+
+	io, _, stdout, _ := cmdtest.TestIOStreams()
+
+	opts := &options{
+		apiClient: func(repoHost string) (*api.Client, error) {
+			return cmdtest.NewTestApiClient(t, nil, "", "gitlab.com", api.WithGitLabClient(testClient.Client)), nil
+		},
+		baseRepo: func() (glrepo.Interface, error) {
+			return glrepo.New("owner", "repo", "gitlab.com"), nil
+		},
+		io:    io,
+		key:   "GROUP_VAR",
+		group: "mygroup",
+	}
+
+	// WHEN
+	err := opts.run()
+
+	// THEN
+	require.NoError(t, err)
 	assert.Equal(t, varContent, stdout.String())
 }

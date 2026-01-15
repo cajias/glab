@@ -6,193 +6,240 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/MakeNowJust/heredoc/v2"
-	"github.com/google/shlex"
+	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
+
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/issuable"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
-func runCommand(t *testing.T, rt http.RoundTripper, issuableID string, issueType issuable.IssueType) (*test.CmdOut, error) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", "").Lab()),
-		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
-	)
-
-	cmd := NewCmdSubscribe(factory, issueType)
-
-	argv, err := shlex.Split(issuableID)
-	if err != nil {
-		return nil, err
-	}
-	cmd.SetArgs(argv)
-
-	_, err = cmd.ExecuteC()
-	return &test.CmdOut{
-		OutBuf: stdout,
-		ErrBuf: stderr,
-	}, err
-}
-
-func mockIssuableGet(fakeHTTP *httpmock.Mocker, id int, issueType string, subscribed bool) {
-	fakeHTTP.RegisterResponder(http.MethodGet, fmt.Sprintf("/projects/OWNER/REPO/issues/%d", id),
-		httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`{
-			"id": %d,
-			"iid": %d,
-			"title": "test issue",
-			"subscribed": %t,
-			"issue_type": "%s",
-			"created_at": "2023-05-02T10:51:26.371Z"
-		}`, id, id, subscribed, issueType)),
-	)
-}
-
-func mockIssuableSubscribe(fakeHTTP *httpmock.Mocker, id int, issueType string) {
-	fakeHTTP.RegisterResponder(http.MethodPost, fmt.Sprintf("/projects/OWNER/REPO/issues/%d/subscribe", id),
-		func(req *http.Request) (*http.Response, error) {
-			resp, _ := httpmock.NewStringResponse(http.StatusOK, fmt.Sprintf(`{
-				"id": %d,
-				"iid": %d,
-				"subscribed": true,
-				"issue_type": "%s",
-				"created_at": "2023-05-02T10:51:26.371Z"
-			}`, id, id, issueType))(req)
-
-			return resp, nil
-		},
-	)
-}
-
-func TestIssuableSubscribe(t *testing.T) {
+func Test_IssuableSubscribe(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
 
-	t.Run("issue_subscribe", func(t *testing.T) {
-		iid := 1
-		fakeHTTP := httpmock.New()
+	type testCase struct {
+		name       string
+		iid        int
+		issueType  issuable.IssueType
+		wantOutput string
+		wantErr    bool
+		setupMock  func(tc *gitlabtesting.TestClient)
+	}
 
-		mockIssuableGet(fakeHTTP, iid, string(issuable.TypeIssue), false)
-		mockIssuableSubscribe(fakeHTTP, iid, string(issuable.TypeIssue))
+	createdAt, _ := time.Parse(time.RFC3339, "2023-05-02T10:51:26.371Z")
 
-		output, err := runCommand(t, fakeHTTP, fmt.Sprint(iid), issuable.TypeIssue)
-
-		wantOutput := heredoc.Doc(`
+	testCases := []testCase{
+		{
+			name:      "issue_subscribe",
+			iid:       1,
+			issueType: issuable.TypeIssue,
+			wantOutput: heredoc.Doc(`
 				- Subscribing to issue #1 in OWNER/REPO
 				✓ Subscribed
-				`)
-		require.NoErrorf(t, err, "error running command `issue subscribe %d`", iid)
-		require.Contains(t, output.String(), wantOutput)
-		require.Empty(t, output.Stderr())
-	})
-
-	t.Run("incident_subscribe", func(t *testing.T) {
-		iid := 2
-		fakeHTTP := httpmock.New()
-
-		mockIssuableGet(fakeHTTP, iid, string(issuable.TypeIncident), false)
-		mockIssuableSubscribe(fakeHTTP, iid, string(issuable.TypeIncident))
-
-		output, err := runCommand(t, fakeHTTP, fmt.Sprint(iid), issuable.TypeIncident)
-
-		wantOutput := heredoc.Doc(`
+				`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         1,
+						IID:        1,
+						Title:      "test issue",
+						Subscribed: false,
+						IssueType:  gitlab.Ptr("issue"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+				tc.MockIssues.EXPECT().
+					SubscribeToIssue("OWNER/REPO", int64(1), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         1,
+						IID:        1,
+						Subscribed: true,
+						IssueType:  gitlab.Ptr("issue"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+			},
+		},
+		{
+			name:      "incident_subscribe",
+			iid:       2,
+			issueType: issuable.TypeIncident,
+			wantOutput: heredoc.Doc(`
 				- Subscribing to incident #2 in OWNER/REPO
 				✓ Subscribed
-				`)
-		require.NoErrorf(t, err, "error running command `incident subscribe %d`", iid)
-		require.Contains(t, output.String(), wantOutput)
-		require.Empty(t, output.Stderr())
-	})
-
-	t.Run("incident_subscribe_using_issue_command", func(t *testing.T) {
-		iid := 2
-		fakeHTTP := httpmock.New()
-
-		mockIssuableGet(fakeHTTP, iid, string(issuable.TypeIncident), false)
-		mockIssuableSubscribe(fakeHTTP, iid, string(issuable.TypeIncident))
-
-		output, err := runCommand(t, fakeHTTP, fmt.Sprint(iid), issuable.TypeIssue)
-
-		wantOutput := heredoc.Doc(`
+				`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(2), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         2,
+						IID:        2,
+						Title:      "test incident",
+						Subscribed: false,
+						IssueType:  gitlab.Ptr("incident"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+				tc.MockIssues.EXPECT().
+					SubscribeToIssue("OWNER/REPO", int64(2), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         2,
+						IID:        2,
+						Subscribed: true,
+						IssueType:  gitlab.Ptr("incident"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+			},
+		},
+		{
+			name:      "incident_subscribe_using_issue_command",
+			iid:       2,
+			issueType: issuable.TypeIssue,
+			wantOutput: heredoc.Doc(`
 				- Subscribing to issue #2 in OWNER/REPO
 				✓ Subscribed
-				`)
-		require.NoErrorf(t, err, "error running command `issue subscribe %d`", iid)
-		require.Contains(t, output.String(), wantOutput)
-		require.Empty(t, output.Stderr())
-	})
-
-	t.Run("issue_subscribe_using_incident_command", func(t *testing.T) {
-		iid := 1
-		fakeHTTP := httpmock.New()
-
-		mockIssuableGet(fakeHTTP, iid, string(issuable.TypeIssue), false)
-		mockIssuableSubscribe(fakeHTTP, iid, string(issuable.TypeIssue))
-
-		output, err := runCommand(t, fakeHTTP, fmt.Sprint(iid), issuable.TypeIncident)
-
-		wantOutput := "Incident not found, but an issue with the provided ID exists. Run `glab issue subscribe <id>` to subscribe.\n"
-		require.NoErrorf(t, err, "error running command `incident subscribe %d`", iid)
-		require.Contains(t, output.String(), wantOutput)
-		require.Empty(t, output.Stderr())
-	})
-
-	t.Run("issue_subscribe_to_already_subscribed_issue", func(t *testing.T) {
-		iid := 3
-		fakeHTTP := httpmock.New()
-
-		mockIssuableGet(fakeHTTP, iid, string(issuable.TypeIssue), true)
-		fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/issues/3/subscribe",
-			httpmock.NewStringResponse(http.StatusNotModified, ``),
-		)
-
-		output, err := runCommand(t, fakeHTTP, fmt.Sprint(iid), issuable.TypeIssue)
-
-		wantOutput := heredoc.Doc(`
+				`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(2), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         2,
+						IID:        2,
+						Title:      "test incident",
+						Subscribed: false,
+						IssueType:  gitlab.Ptr("incident"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+				tc.MockIssues.EXPECT().
+					SubscribeToIssue("OWNER/REPO", int64(2), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         2,
+						IID:        2,
+						Subscribed: true,
+						IssueType:  gitlab.Ptr("incident"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+			},
+		},
+		{
+			name:       "issue_subscribe_using_incident_command",
+			iid:        1,
+			issueType:  issuable.TypeIncident,
+			wantOutput: "Incident not found, but an issue with the provided ID exists. Run `glab issue subscribe <id>` to subscribe.\n",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         1,
+						IID:        1,
+						Title:      "test issue",
+						Subscribed: false,
+						IssueType:  gitlab.Ptr("issue"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+			},
+		},
+		{
+			name:      "issue_subscribe_to_already_subscribed_issue",
+			iid:       3,
+			issueType: issuable.TypeIssue,
+			wantOutput: heredoc.Doc(`
 				- Subscribing to issue #3 in OWNER/REPO
 				x You are already subscribed to this issue.
-				`)
-		require.NoErrorf(t, err, "error running command `issue subscribe %d`", iid)
-		require.Contains(t, output.String(), wantOutput)
-		require.Empty(t, output.Stderr())
-	})
-
-	t.Run("incident_subscribe_to_already_subscribed_incident", func(t *testing.T) {
-		iid := 3
-		fakeHTTP := httpmock.New()
-
-		mockIssuableGet(fakeHTTP, iid, string(issuable.TypeIncident), true)
-		fakeHTTP.RegisterResponder(http.MethodPost, "/projects/OWNER/REPO/issues/3/subscribe",
-			httpmock.NewStringResponse(http.StatusNotModified, ``),
-		)
-
-		output, err := runCommand(t, fakeHTTP, fmt.Sprint(iid), issuable.TypeIncident)
-
-		wantOutput := heredoc.Doc(`
+				`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(3), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         3,
+						IID:        3,
+						Title:      "test issue",
+						Subscribed: true,
+						IssueType:  gitlab.Ptr("issue"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+				notModifiedResponse := &gitlab.Response{Response: &http.Response{StatusCode: http.StatusNotModified}}
+				tc.MockIssues.EXPECT().
+					SubscribeToIssue("OWNER/REPO", int64(3), gomock.Any()).
+					Return(nil, notModifiedResponse, fmt.Errorf("304 Not Modified"))
+			},
+		},
+		{
+			name:      "incident_subscribe_to_already_subscribed_incident",
+			iid:       3,
+			issueType: issuable.TypeIncident,
+			wantOutput: heredoc.Doc(`
 				- Subscribing to incident #3 in OWNER/REPO
 				x You are already subscribed to this incident.
-				`)
-		require.NoErrorf(t, err, "error running command `incident subscribe %d`", iid)
-		require.Contains(t, output.String(), wantOutput)
-		require.Empty(t, output.Stderr())
-	})
+				`),
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(3), gomock.Any()).
+					Return(&gitlab.Issue{
+						ID:         3,
+						IID:        3,
+						Title:      "test incident",
+						Subscribed: true,
+						IssueType:  gitlab.Ptr("incident"),
+						CreatedAt:  &createdAt,
+					}, nil, nil)
+				notModifiedResponse := &gitlab.Response{Response: &http.Response{StatusCode: http.StatusNotModified}}
+				tc.MockIssues.EXPECT().
+					SubscribeToIssue("OWNER/REPO", int64(3), gomock.Any()).
+					Return(nil, notModifiedResponse, fmt.Errorf("304 Not Modified"))
+			},
+		},
+		{
+			name:       "issue_not_found",
+			iid:        404,
+			issueType:  issuable.TypeIssue,
+			wantOutput: "404 Not Found",
+			wantErr:    true,
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				notFoundResponse := &gitlab.Response{Response: &http.Response{StatusCode: http.StatusNotFound}}
+				tc.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(404), gomock.Any()).
+					Return(nil, notFoundResponse, fmt.Errorf("404 Not Found"))
+			},
+		},
+	}
 
-	t.Run("issue_not_found", func(t *testing.T) {
-		fakeHTTP := httpmock.New()
-		fakeHTTP.RegisterResponder(http.MethodGet, "/projects/OWNER/REPO/issues/404",
-			httpmock.NewStringResponse(http.StatusNotFound, `{"message": "404 not found"}`),
-		)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GIVEN
+			testClient := gitlabtesting.NewTestClient(t)
+			tc.setupMock(testClient)
 
-		iid := 404
-		_, err := runCommand(t, fakeHTTP, fmt.Sprint(iid), issuable.TypeIssue)
+			cmdFunc := func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdSubscribe(f, tc.issueType)
+			}
 
-		require.Contains(t, err.Error(), "404 Not Found")
-	})
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				cmdFunc,
+				true, // TTY mode for subscribe output
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
+
+			// WHEN
+			out, err := exec(fmt.Sprint(tc.iid))
+
+			// THEN
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantOutput)
+				return
+			}
+			require.NoError(t, err)
+			assert.Contains(t, out.String(), tc.wantOutput)
+			assert.Empty(t, out.Stderr())
+		})
+	}
 }

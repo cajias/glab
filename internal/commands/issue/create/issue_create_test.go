@@ -3,17 +3,15 @@
 package create
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
-	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/internal/testing/httpmock"
-	"gitlab.com/gitlab-org/cli/test"
 )
 
 func TestGenerateIssueWebURL(t *testing.T) {
@@ -40,45 +38,38 @@ func TestGenerateIssueWebURL(t *testing.T) {
 	assert.Equal(t, expectedUrl, u)
 }
 
-func runCommand(t *testing.T, rt http.RoundTripper, cli string) (*test.CmdOut, error) {
-	t.Helper()
+func TestIssueCreateWhenIssuesDisabled(t *testing.T) {
+	// GIVEN
+	testClient := gitlabtesting.NewTestClient(t)
 
-	ios, _, stdout, stderr := cmdtest.TestIOStreams()
+	testClient.MockProjects.EXPECT().
+		GetProject("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.Project{
+			ID:                37777023,
+			Description:       "this is a test description",
+			Name:              "REPO",
+			NameWithNamespace: "Test User / REPO",
+			Path:              "REPO",
+			PathWithNamespace: "OWNER/REPO",
+			DefaultBranch:     "main",
+			HTTPURLToRepo:     "https://gitlab.com/OWNER/REPO.git",
+			WebURL:            "https://gitlab.com/OWNER/REPO",
+			ReadmeURL:         "https://gitlab.com/OWNER/REPO/-/blob/main/README.md",
+			IssuesEnabled:     false,
+		}, nil, nil)
 
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, &http.Client{Transport: rt}, "", glinstance.DefaultHostname).Lab()),
+	exec := cmdtest.SetupCmdForTest(
+		t,
+		NewCmdCreate,
+		false,
+		cmdtest.WithGitLabClient(testClient.Client),
 	)
 
-	cmd := NewCmdCreate(factory)
-
-	return cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-}
-
-func TestIssueCreateWhenIssuesDisabled(t *testing.T) {
-	fakeHTTP := &httpmock.Mocker{
-		MatchURL: httpmock.PathAndQuerystring,
-	}
-	defer fakeHTTP.Verify(t)
-
-	fakeHTTP.RegisterResponder(http.MethodGet, "/api/v4/projects/OWNER/REPO?license=true&with_custom_attributes=true",
-		httpmock.NewStringResponse(http.StatusOK, `{
-							  "id": 37777023,
-							  "description": "this is a test description",
-							  "name": "REPO",
-							  "name_with_namespace": "Test User / REPO",
-							  "path": "REPO",
-							  "path_with_namespace": "OWNER/REPO",
-							  "created_at": "2022-07-13T02:04:56.151Z",
-							  "default_branch": "main",
-							  "http_url_to_repo": "https://gitlab.com/OWNER/REPO.git",
-							  "web_url": "https://gitlab.com/OWNER/REPO",
-							  "readme_url": "https://gitlab.com/OWNER/REPO/-/blob/main/README.md",
-							  "issues_enabled": false
-							}`))
-
+	// WHEN
 	cli := `--title "test title" --description "test description"`
+	output, err := exec(cli)
 
-	output, err := runCommand(t, fakeHTTP, cli)
+	// THEN
 	assert.NotNil(t, err)
 	assert.Empty(t, output.String())
 	assert.Equal(t, "Issues are disabled for project \"OWNER/REPO\" or require project membership. "+
