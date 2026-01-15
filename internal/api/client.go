@@ -50,10 +50,6 @@ type Client struct {
 	clientKeyFile  string
 	// cookie file for IdP/SSO authentication
 	cookieFile string
-	// ssoPrompt is called to get user consent before SSO redirects
-	ssoPrompt SSOConsentFunc
-	// ssoPersist is called to save approved SSO domains to config
-	ssoPersist SSOPersistFunc
 	// ssoAllowedDomains are pre-approved SSO domains (loaded from config)
 	ssoAllowedDomains map[string]bool
 
@@ -239,7 +235,7 @@ func (c *Client) initializeHTTPClient() error {
 		ssoClient := &http.Client{
 			Transport: rt, // Use underlying transport, NOT ssoTransport
 			Jar:       jar,
-			Timeout:   SSOTimeout,
+			Timeout:   ssoTimeout,
 			// Limit redirects to prevent infinite redirect loops during SSO flow
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= maxRedirects {
@@ -257,8 +253,6 @@ func (c *Client) initializeHTTPClient() error {
 		c.httpClient.Transport = &ssoTransport{
 			rt:             rt,
 			ssoClient:      ssoClient,
-			promptForSSO:   c.ssoPrompt,
-			persistDomain:  c.ssoPersist,
 			allowedDomains: c.ssoAllowedDomains,
 		}
 	}
@@ -286,7 +280,7 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 	// We load ALL cookies because the request may be redirected to an identity
 	// provider (e.g., SAML/SSO) on a different domain, and those redirects
 	// need the IdP cookies to authenticate.
-	domainCookies := make(map[string][]*http.Cookie)
+	domainCookies := make(map[string][]*http.Cookie, len(cookies))
 	for _, cookie := range cookies {
 		// Normalize domain - remove leading dot for URL construction
 		domain := strings.TrimPrefix(cookie.Domain, ".")
@@ -380,25 +374,6 @@ func WithCookieFile(cookieFile string) ClientOption {
 	}
 }
 
-// WithSSOPrompt configures a callback function to prompt for user consent before SSO redirects.
-// The function receives the IdP domain and should return (allowed, error).
-// If not set, SSO redirects will fail with an error requiring interactive mode.
-func WithSSOPrompt(fn SSOConsentFunc) ClientOption {
-	return func(c *Client) error {
-		c.ssoPrompt = fn
-		return nil
-	}
-}
-
-// WithSSOPersist configures a callback to save approved SSO domains to persistent storage.
-// This is called after the user consents to an SSO redirect.
-func WithSSOPersist(fn SSOPersistFunc) ClientOption {
-	return func(c *Client) error {
-		c.ssoPersist = fn
-		return nil
-	}
-}
-
 // WithSSOAllowedDomains configures pre-approved SSO domains (typically loaded from config).
 // Redirects to these domains will not prompt for consent.
 func WithSSOAllowedDomains(domains map[string]bool) ClientOption {
@@ -408,35 +383,45 @@ func WithSSOAllowedDomains(domains map[string]bool) ClientOption {
 	}
 }
 
+// getConfigValue retrieves a config value and logs any errors for debugging.
+// Config errors are not fatal since values may legitimately not exist.
+func getConfigValue(cfg config.Config, host, key string) string {
+	val, err := cfg.Get(host, key)
+	if err != nil {
+		dbg.Debugf("config: failed to read %q for host %q: %v", key, host, err)
+	}
+	return val
+}
+
 // NewClientFromConfig initializes the global api with the config data.
-// Deprecated: Use NewClientFromConfigWithIO for interactive SSO consent prompts.
+// Deprecated: Use NewClientFromConfigWithIO.
 func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, userAgent string) (*Client, error) {
 	return NewClientFromConfigWithIO(repoHost, cfg, isGraphQL, userAgent, nil)
 }
 
-// NewClientFromConfigWithIO initializes the api client with config data and optional iostreams.
-// If io is provided and a cookie file is configured, SSO redirects will prompt for user consent.
-func NewClientFromConfigWithIO(repoHost string, cfg config.Config, isGraphQL bool, userAgent string, io *iostreams.IOStreams) (*Client, error) {
-	apiHost, _ := cfg.Get(repoHost, "api_host")
+// NewClientFromConfigWithIO initializes the api client with config data.
+// The io parameter is reserved for future use and currently unused.
+func NewClientFromConfigWithIO(repoHost string, cfg config.Config, isGraphQL bool, userAgent string, _ *iostreams.IOStreams) (*Client, error) {
+	apiHost := getConfigValue(cfg, repoHost, "api_host")
 	if apiHost == "" {
 		apiHost = repoHost
 	}
 
-	apiProtocol, _ := cfg.Get(repoHost, "api_protocol")
+	apiProtocol := getConfigValue(cfg, repoHost, "api_protocol")
 	if apiProtocol == "" {
 		apiProtocol = glinstance.DefaultProtocol
 	}
 
-	isOAuth2Cfg, _ := cfg.Get(repoHost, "is_oauth2")
+	isOAuth2Cfg := getConfigValue(cfg, repoHost, "is_oauth2")
 
-	token, _ := cfg.Get(repoHost, "token")
-	jobToken, _ := cfg.Get(repoHost, "job_token")
-	tlsVerify, _ := cfg.Get(repoHost, "skip_tls_verify")
+	token := getConfigValue(cfg, repoHost, "token")
+	jobToken := getConfigValue(cfg, repoHost, "job_token")
+	tlsVerify := getConfigValue(cfg, repoHost, "skip_tls_verify")
 	skipTlsVerify := tlsVerify == "true" || tlsVerify == "1"
-	caCert, _ := cfg.Get(repoHost, "ca_cert")
-	clientCert, _ := cfg.Get(repoHost, "client_cert")
-	keyFile, _ := cfg.Get(repoHost, "client_key")
-	cookieFile, _ := cfg.Get(repoHost, "cookie_file")
+	caCert := getConfigValue(cfg, repoHost, "ca_cert")
+	clientCert := getConfigValue(cfg, repoHost, "client_cert")
+	keyFile := getConfigValue(cfg, repoHost, "client_key")
+	cookieFile := getConfigValue(cfg, repoHost, "cookie_file")
 
 	// Build options based on configuration
 	options := []ClientOption{
@@ -508,20 +493,11 @@ func NewClientFromConfigWithIO(repoHost string, cfg config.Config, isGraphQL boo
 		options = append(options, WithCookieFile(cookieFile))
 
 		// Load pre-approved SSO domain from config
-		ssoDomain, _ := cfg.Get(repoHost, "sso_domain")
+		ssoDomain := getConfigValue(cfg, repoHost, "sso_domain")
 		if ssoDomain != "" {
 			options = append(options, WithSSOAllowedDomains(map[string]bool{ssoDomain: true}))
 		}
 
-		// Add SSO consent prompt if iostreams is available
-		if io != nil {
-			options = append(options, WithSSOPrompt(NewSSOPrompt(io)))
-
-			// Add persist callback to save approved domains to config
-			options = append(options, WithSSOPersist(func(domain string) error {
-				return cfg.Set(repoHost, "sso_domain", domain)
-			}))
-		}
 	}
 
 	return NewClient(newAuthSource, options...)
