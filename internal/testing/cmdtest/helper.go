@@ -337,6 +337,15 @@ func WithStdin(stdin string) FactoryOption {
 	}
 }
 
+// WithIOStreamsOverride configures an IOStreams instance for testing
+//
+// Attention: only use as a last resort and prefer functions like WithStdin etc to configure the IOStreams that's already created.
+func WithIOStreamsOverride(ios *iostreams.IOStreams) FactoryOption {
+	return func(f *Factory) {
+		f.IOStub = ios
+	}
+}
+
 func WithExecutor(exec cmdutils.Executor) FactoryOption {
 	return func(f *Factory) {
 		f.ExecutorStub = exec
