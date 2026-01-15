@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCreateCookieJar_MultipleDomains(t *testing.T) {
@@ -33,9 +36,7 @@ func TestCreateCookieJar_MultipleDomains(t *testing.T) {
 `, futureTimestamp, futureTimestamp, futureTimestamp, futureTimestamp, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	// Create a client with the cookie file and a base URL for the GitLab instance
 	client := &Client{
@@ -45,9 +46,7 @@ func TestCreateCookieJar_MultipleDomains(t *testing.T) {
 
 	// Create the cookie jar
 	jar, err := client.createCookieJar()
-	if err != nil {
-		t.Fatalf("createCookieJar() error = %v", err)
-	}
+	require.NoError(t, err, "createCookieJar() returned error")
 
 	// Verify that cookies are loaded for all domains, not just the base URL
 	testCases := []struct {
@@ -75,9 +74,7 @@ func TestCreateCookieJar_MultipleDomains(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequest("GET", tc.url, nil)
-			if err != nil {
-				t.Fatalf("failed to create request: %v", err)
-			}
+			require.NoError(t, err, "failed to create request")
 
 			cookies := jar.Cookies(req.URL)
 			found := false
@@ -88,10 +85,8 @@ func TestCreateCookieJar_MultipleDomains(t *testing.T) {
 				}
 			}
 
-			if !found {
-				t.Errorf("expected to find cookie '%s' for URL %s, but it was not found. Found cookies: %v",
-					tc.expectedCookie, tc.url, cookieNames(cookies))
-			}
+			assert.True(t, found, "expected to find cookie '%s' for URL %s, but it was not found. Found cookies: %v",
+				tc.expectedCookie, tc.url, cookieNames(cookies))
 		})
 	}
 }
@@ -111,9 +106,7 @@ example.com	FALSE	/	TRUE	%d	exact_cookie	value3
 `, futureTimestamp, futureTimestamp, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    "https://example.com/api/v4",
@@ -121,9 +114,7 @@ example.com	FALSE	/	TRUE	%d	exact_cookie	value3
 	}
 
 	jar, err := client.createCookieJar()
-	if err != nil {
-		t.Fatalf("createCookieJar() error = %v", err)
-	}
+	require.NoError(t, err, "createCookieJar() returned error")
 
 	// The jar should contain cookies for all domains
 	// Note: The cookie jar's Cookies() method returns cookies based on domain matching
@@ -131,9 +122,7 @@ example.com	FALSE	/	TRUE	%d	exact_cookie	value3
 	cookies := jar.Cookies(req.URL)
 
 	// At least one cookie should be available (root_cookie matches subdomains)
-	if len(cookies) == 0 {
-		t.Error("expected at least one cookie to be available for www.example.com")
-	}
+	assert.NotEmpty(t, cookies, "expected at least one cookie to be available for www.example.com")
 }
 
 func TestCreateCookieJar_FileNotFound(t *testing.T) {
@@ -143,9 +132,7 @@ func TestCreateCookieJar_FileNotFound(t *testing.T) {
 	}
 
 	_, err := client.createCookieJar()
-	if err == nil {
-		t.Error("expected error for non-existent cookie file")
-	}
+	assert.Error(t, err, "expected error for non-existent cookie file")
 }
 
 // cookieNames is a helper function to extract cookie names for error messages

@@ -246,7 +246,7 @@ func TestSSOTransport_HTTPSEnforcement(t *testing.T) {
 	defer gitlabServer.Close()
 
 	jar, _ := cookiejar.New(nil)
-	ssoClient := &http.Client{Jar: jar, Timeout: SSOTimeout}
+	ssoClient := &http.Client{Jar: jar, Timeout: ssoTimeout}
 
 	transport := &ssoTransport{
 		rt:        http.DefaultTransport,
@@ -310,7 +310,7 @@ func TestSSOTransport_HTTPSEnforcement(t *testing.T) {
 		}))
 		defer localServer.Close()
 
-		transport.ssoClient = &http.Client{Jar: jar, Timeout: SSOTimeout}
+		transport.ssoClient = &http.Client{Jar: jar, Timeout: ssoTimeout}
 
 		req, _ := http.NewRequest(http.MethodPost, "https://gitlab.example.com/api/v4/projects", bytes.NewReader([]byte("{}")))
 

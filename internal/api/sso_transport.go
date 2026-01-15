@@ -6,17 +6,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"gitlab.com/gitlab-org/cli/internal/dbg"
 )
-
-// SSOConsentFunc prompts the user for consent before redirecting to an SSO IdP.
-// It receives the IdP domain and returns (allowed, error).
-// If nil, SSO redirects to unknown domains will fail with an error.
-type SSOConsentFunc func(domain string) (bool, error)
 
 // ssoTransport is an http.RoundTripper that handles SSO authentication redirects
 // and preserves HTTP methods for mutating requests during redirects.
@@ -33,8 +29,6 @@ type SSOConsentFunc func(domain string) (bool, error)
 // This allows all HTTP requests (including those from the gitlab.Client library)
 // to automatically handle SSO authentication and method-preserving redirects
 // without requiring special handling at the caller level.
-// SSOPersistFunc saves an approved SSO domain to persistent storage (e.g., config).
-type SSOPersistFunc func(domain string) error
 
 type ssoTransport struct {
 	// rt is the underlying RoundTripper (typically http.Transport)
@@ -42,15 +36,9 @@ type ssoTransport struct {
 	// ssoClient is used for SSO flow and retry requests.
 	// It shares the same cookie jar but uses the underlying transport.
 	ssoClient *http.Client
-	// promptForSSO is called to get user consent before redirecting to an IdP.
-	// If nil, redirects to unknown domains will fail.
-	promptForSSO SSOConsentFunc
-	// persistDomain is called after consent is granted to save the domain.
-	// If nil, domains are only remembered for the current session.
-	persistDomain SSOPersistFunc
 	// mu protects allowedDomains from concurrent access
 	mu sync.RWMutex
-	// allowedDomains tracks domains the user has approved (from config or session).
+	// allowedDomains tracks domains the user has approved (from config).
 	allowedDomains map[string]bool
 }
 
@@ -59,10 +47,10 @@ type ssoTransport struct {
 // balance between following legitimate redirect chains and preventing infinite loops.
 const maxRedirects = 10
 
-// SSOTimeout is the timeout for SSO authentication requests.
+// ssoTimeout is the timeout for SSO authentication requests.
 // This provides a reasonable limit for completing the SSO flow with an external IdP
 // while preventing indefinite hangs if the IdP is unresponsive.
-const SSOTimeout = 30 * time.Second
+const ssoTimeout = 30 * time.Second
 
 // requiresMethodPreservation returns true if the status code is one that causes
 // standard HTTP clients to convert POST to GET. Per HTTP spec:
@@ -76,29 +64,52 @@ func requiresMethodPreservation(statusCode int) bool {
 }
 
 // isSSORedirect returns true if the redirect is to a different host (IdP).
+// Known limitation: cannot normalize original host's port without knowing its scheme,
+// so gitlab.example.com:443 would be treated as different from gitlab.example.com.
 func isSSORedirect(originalHost, locationHeader string) bool {
 	if locationHeader == "" {
 		return false
 	}
-	// Parse the location header to get the host
-	// It could be a relative URL or an absolute URL
-	if strings.HasPrefix(locationHeader, "http://") || strings.HasPrefix(locationHeader, "https://") {
-		// Absolute URL - extract the host
-		urlWithoutScheme := strings.TrimPrefix(strings.TrimPrefix(locationHeader, "https://"), "http://")
-		// Get the host part (before the first /)
-		redirectHost := urlWithoutScheme
-		if idx := strings.Index(redirectHost, "/"); idx != -1 {
-			redirectHost = redirectHost[:idx]
-		}
-		// Compare hosts including ports (127.0.0.1:8080 != 127.0.0.1:9090)
-		return redirectHost != originalHost
+
+	// Parse the location header as a URL
+	redirectURL, err := url.Parse(locationHeader)
+	if err != nil {
+		// If we can't parse it, treat it as relative (same host)
+		return false
 	}
+
 	// Relative URL - same host
-	return false
+	if redirectURL.Host == "" {
+		return false
+	}
+
+	// Compare normalized hosts (hostname without default ports)
+	return normalizeHost(redirectURL.Host, redirectURL.Scheme) != normalizeHost(originalHost, "")
+}
+
+// normalizeHost removes default ports from a host string for comparison.
+// This ensures gitlab.example.com:443 equals gitlab.example.com for HTTPS.
+// Known limitation: hostnames that resolve to loopback addresses are not detected.
+func normalizeHost(host, scheme string) string {
+	hostname, port, err := net.SplitHostPort(host)
+	if err != nil {
+		// No port in the host string
+		return strings.ToLower(host)
+	}
+
+	// Remove default ports for the scheme
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		return strings.ToLower(hostname)
+	}
+
+	// Keep non-default ports
+	return strings.ToLower(host)
 }
 
 // isLocalhost returns true if the hostname is a localhost/loopback address.
 // This handles "localhost", IPv4 loopback (127.0.0.0/8), and IPv6 loopback (::1).
+// Known limitation: does not perform DNS resolution, so hostnames like "myhost.local"
+// that resolve to 127.0.0.1 are not detected as localhost.
 func isLocalhost(hostname string) bool {
 	if hostname == "localhost" {
 		return true
@@ -136,13 +147,16 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	location := resp.Header.Get("Location")
+	dbg.Debugf("ssoTransport: %s %s received %d redirect to %s", req.Method, req.URL, resp.StatusCode, location)
 
 	// Handle cross-host SSO redirects
 	if isSSORedirect(req.URL.Host, location) {
+		dbg.Debugf("ssoTransport: detected SSO redirect (cross-host)")
 		return t.handleSSORedirect(req, resp, location, bodyBytes)
 	}
 
 	// Handle same-host redirects - follow the redirect while preserving the method
+	dbg.Debugf("ssoTransport: following same-host redirect while preserving %s method", req.Method)
 	return t.handleSameHostRedirect(req, resp, location, bodyBytes)
 }
 
@@ -169,28 +183,10 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		return nil, fmt.Errorf("SSO redirect rejected: expected HTTPS but got %s (URL: %s)", redirectURL.Scheme, redirectURL.Host)
 	}
 
-	// Check if user has consented to redirect to this IdP domain
+	// Check if the IdP domain is pre-approved in config
 	redirectHost := redirectURL.Hostname()
 	if !t.isDomainAllowed(redirectHost) {
-		if t.promptForSSO == nil {
-			return nil, fmt.Errorf("SSO redirect to %s requires consent; use interactive mode or pre-approve the domain", redirectHost)
-		}
-		allowed, err := t.promptForSSO(redirectHost)
-		if err != nil {
-			return nil, fmt.Errorf("SSO consent prompt failed: %w", err)
-		}
-		if !allowed {
-			return nil, fmt.Errorf("SSO redirect to %s was declined by user", redirectHost)
-		}
-		// Remember consent for rest of session
-		t.addAllowedDomain(redirectHost)
-
-		// Persist to config if callback is set
-		if t.persistDomain != nil {
-			if err := t.persistDomain(redirectHost); err != nil {
-				dbg.Debugf("failed to persist SSO domain %s to config: %v", redirectHost, err)
-			}
-		}
+		return nil, fmt.Errorf("SSO redirect to %s requires consent; configure sso_domain in your glab config: glab config set sso_domain %s -h <hostname>", redirectHost, redirectHost)
 	}
 
 	// Complete SSO flow with a GET request (which the IdP expects)
@@ -200,16 +196,19 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		return nil, fmt.Errorf("failed to create SSO request: %w", err)
 	}
 
+	dbg.Debugf("completing SSO flow: GET %s", redirectURL.String())
 	ssoResp, err := t.ssoClient.Do(ssoReq)
 	if err != nil {
 		return nil, fmt.Errorf("SSO flow request failed: %w", err)
 	}
-	// Consume and close the response body
-	_, _ = io.Copy(io.Discard, ssoResp.Body)
-	ssoResp.Body.Close()
+	// Ensure response body is always consumed and closed
+	defer func() {
+		_, _ = io.Copy(io.Discard, ssoResp.Body)
+		ssoResp.Body.Close()
+	}()
 
 	// Validate SSO response - if IdP returned an error, the SSO flow failed
-	if ssoResp.StatusCode >= 400 {
+	if ssoResp.StatusCode >= http.StatusBadRequest {
 		return nil, fmt.Errorf("SSO authentication failed: IdP returned status %d; cookies may be expired or invalid", ssoResp.StatusCode)
 	}
 
@@ -242,7 +241,7 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 	currentURL := req.URL
 
 	// Follow redirects, preserving the method
-	for redirectCount := 0; redirectCount < maxRedirects; redirectCount++ {
+	for range maxRedirects {
 		// Resolve the redirect URL
 		redirectURL, err := currentURL.Parse(location)
 		if err != nil {
@@ -318,15 +317,4 @@ func (t *ssoTransport) isDomainAllowed(domain string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.allowedDomains[domain]
-}
-
-// addAllowedDomain adds a domain to the allowed list.
-// Thread-safe.
-func (t *ssoTransport) addAllowedDomain(domain string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.allowedDomains == nil {
-		t.allowedDomains = make(map[string]bool)
-	}
-	t.allowedDomains[domain] = true
 }
