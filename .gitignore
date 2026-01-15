@@ -3,7 +3,9 @@
 
 # Go caches
 .go/
+.gocache/
 .golangci-lint/
+.golangci-lint-cache/
 
 # man pages
 /share/man/man1

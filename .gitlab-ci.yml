@@ -78,30 +78,32 @@ include:
     file: templates/gcp_auth.yaml
 
 # From: https://docs.gitlab.com/ci/caching/#cache-go-dependencies
+# Base template for Go caching - extended by jobs that need Go dependencies
 .go-cache:
   variables:
     GOPATH: $CI_PROJECT_DIR/.go
+    GOCACHE: $CI_PROJECT_DIR/.gocache
+    GOLANGCI_LINT_CACHE: $CI_PROJECT_DIR/.golangci-lint-cache
   cache:
     paths:
       - $CI_PROJECT_DIR/.go/pkg/mod/
-    key:
-      files:
-        - go.sum
-    policy: pull
-
-prepare_go_cache:
-  stage: .pre
-  variables:
-    GOPATH: $CI_PROJECT_DIR/.go
-  cache:
-    paths:
-      - $CI_PROJECT_DIR/.go/pkg/mod/
+      - $CI_PROJECT_DIR/.gocache/
+      - $CI_PROJECT_DIR/.golangci-lint-cache/
     key:
       files:
         - go.sum
     policy: pull-push
+
+prepare_go_cache:
+  extends: .go-cache
+  stage: .pre
+  cache:
+    key:
+      prefix: prepare
   script:
     - go mod download
+    # Pre-compile standard library and common packages to warm up GOCACHE
+    - go build -o /dev/null ./...
 
 .documentation:
   stage: documentation
@@ -201,6 +203,9 @@ check_go_generated_code:
   needs:
     - job: prepare_go_cache
       optional: true
+  cache:
+    key:
+      prefix: check-generated
   script:
     # Workaround config.yaml.lock file permissions
     - chmod 600 internal/config/config.yaml.lock
@@ -230,12 +235,15 @@ lint_commit:
 
 lint:
   extends:
-    - .test
     - .go-cache
+    - .test
   needs:
     - job: prepare_go_cache
       optional: true
   image: ${GITLAB_DEPENDENCY_PROXY}golangci/golangci-lint:v$GOLANGCI_LINT_VERSION
+  cache:
+    key:
+      prefix: lint
   script:
     # Write the code coverage report to gl-code-quality-report.json
     # and print linting issues to stdout in the format: path/to/file:line description
@@ -264,6 +272,9 @@ tests:unit:
   variables:
     # NOTE: required for race detector
     CGO_ENABLED: "1"
+  cache:
+    key:
+      prefix: test-unit
   script:
     - make test-race
   after_script:
@@ -432,8 +443,8 @@ windows_installer:
       optional: true
 
 build_windows:
-  stage: build
   extends: .go-cache
+  stage: build
   needs:
     - job: prepare_go_cache
       optional: true
@@ -444,6 +455,9 @@ build_windows:
     - changes:
         - .goreleaser.yml
         - .gitlab-ci.yml
+  cache:
+    key:
+      prefix: build-windows
   script:
     - GOOS=windows GOARCH=amd64 make build
     - mv bin/glab bin/glab.exe
