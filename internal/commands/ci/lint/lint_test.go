@@ -15,7 +15,6 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	gitlabtesting "gitlab.com/gitlab-org/api/client-go/testing"
 
-	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
 
@@ -137,21 +136,17 @@ func Test_lintRun(t *testing.T) {
 				args += " " + tt.cliArgs
 			}
 
-			ios, _, stdout, stderr := cmdtest.TestIOStreams()
-			factory := cmdtest.NewTestFactory(ios,
+			opts := []cmdtest.FactoryOption{
 				cmdtest.WithGitLabClient(testClient.Client),
-			)
-
+			}
 			if !tt.showHaveBaseRepo {
-				factory.BaseRepoStub = func() (glrepo.Interface, error) {
-					return nil, fmt.Errorf("no base repo present")
-				}
+				opts = append(opts, cmdtest.WithBaseRepoError(fmt.Errorf("no base repo present")))
 			}
 
-			cmd := NewCmdLint(factory)
+			exec := cmdtest.SetupCmdForTest(t, NewCmdLint, false, opts...)
 
 			// WHEN
-			result, err := cmdtest.ExecuteCommand(cmd, args, stdout, stderr)
+			result, err := exec(args)
 
 			// THEN
 			if tt.wantErr {

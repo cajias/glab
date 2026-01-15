@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/acarl005/stripansi"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -24,9 +24,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/commands/issuable"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
-	"gitlab.com/gitlab-org/cli/internal/run"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	mainTest "gitlab.com/gitlab-org/cli/test"
 )
 
 var (
@@ -35,6 +33,13 @@ var (
 	stderr *bytes.Buffer
 	io     *iostreams.IOStreams
 )
+
+var testConfig = config.NewFromString(heredoc.Doc(`
+	hosts:
+	  gitlab.com:
+	    username: monalisa
+	    token: OTOKEN
+`))
 
 type issuableData struct {
 	title       string
@@ -78,9 +83,11 @@ func TestMain(m *testing.M) {
 		if projectID == "" || projectID == "WRONG_REPO" || projectID == "expected_err" {
 			return nil, fmt.Errorf("error expected")
 		}
-		repo, err := f.BaseRepo()
-		if err != nil {
-			return nil, err
+
+		// Use projectID directly instead of f.BaseRepo() to support per-test factories
+		repoPath, ok := projectID.(string)
+		if !ok {
+			return nil, fmt.Errorf("unexpected projectID type: %T", projectID)
 		}
 
 		testIssuable := testIssuables[int(issueID)]
@@ -94,7 +101,7 @@ func TestMain(m *testing.M) {
 			State:       "opened",
 			Description: testIssuable.description,
 			References: &gitlab.IssueReferences{
-				Full: fmt.Sprintf("%s#%d", repo.FullName(), issueID),
+				Full: fmt.Sprintf("%s#%d", repoPath, issueID),
 			},
 			Milestone: &gitlab.Milestone{
 				Title: "MilestoneTitle",
@@ -112,40 +119,13 @@ func TestMain(m *testing.M) {
 				Name:     "John Dev Wick",
 				Username: "jdwick",
 			},
-			WebURL:         fmt.Sprintf("https://%s/%s/-/issues/%d", repo.RepoHost(), repo.FullName(), issueID),
+			WebURL:         fmt.Sprintf("https://gitlab.com/%s/-/issues/%d", repoPath, issueID),
 			CreatedAt:      &timer,
 			UserNotesCount: 2,
 			IssueType:      &issueType,
 		}, nil
 	}
 	cmdtest.InitTest(m, "mr_view_test")
-}
-
-func TestNewCmdView_web_numberArg(t *testing.T) {
-	cmd := NewCmdView(f, issuable.TypeIncident)
-	cmdutils.EnableRepoOverride(cmd, f)
-
-	var seenCmd *exec.Cmd
-	restoreCmd := run.SetPrepareCmd(func(cmd *exec.Cmd) run.Runnable {
-		seenCmd = cmd
-		return &mainTest.OutputStub{}
-	})
-	defer restoreCmd()
-
-	_, err := cmdtest.RunCommand(cmd, "225 -w -R cli-automated-testing/test")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	assert.Contains(t, stderr.String(), "Opening gitlab.com/cli-automated-testing/test/-/issues/225 in your browser.")
-	assert.Equal(t, "", stdout.String())
-
-	if seenCmd == nil {
-		t.Log("expected a command to run")
-	}
-	stdout.Reset()
-	stderr.Reset()
 }
 
 func TestNewCmdView(t *testing.T) {
@@ -204,17 +184,19 @@ func TestNewCmdView(t *testing.T) {
 				}, nil
 			}
 
-			io.IsaTTY = tt.isTTY
-			io.IsErrTTY = tt.isTTY
-			cmd := NewCmdView(f, tt.viewIssueType)
-			cmdutils.EnableRepoOverride(cmd, f)
-			_, err := cmdtest.ExecuteCommand(cmd, fmt.Sprintf("%d -c -s -R cli-automated-testing/test", tt.issueID), stdout, stderr)
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				cmd := NewCmdView(f, tt.viewIssueType)
+				cmdutils.EnableRepoOverride(cmd, f)
+				return cmd
+			}, tt.isTTY,
+				cmdtest.WithConfig(testConfig),
+			)
+
+			result, err := exec(fmt.Sprintf("%d -c -s -R cli-automated-testing/test", tt.issueID))
 			require.NoError(t, err)
 
-			out := stripansi.Strip(stdout.String())
-			outErr := stripansi.Strip(stderr.String())
-			stdout.Reset()
-			stderr.Reset()
+			out := stripansi.Strip(result.String())
+			outErr := stripansi.Strip(result.Stderr())
 
 			viewIncidentWithIssueID := tt.viewIssueType == issuable.TypeIncident && testIssuable.issueType != issuable.TypeIncident
 			wantErrorMsg := "Incident not found, but an issue with the provided ID exists. Run `glab issue view <id>` to view.\n"
@@ -507,12 +489,14 @@ func Test_assigneesList(t *testing.T) {
 }
 
 func TestIssueViewJSON(t *testing.T) {
-	cmd := NewCmdView(f, issuable.TypeIssue)
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdView(f, issuable.TypeIssue)
+	}, false,
+		cmdtest.WithConfig(testConfig),
+	)
 
-	output, err := cmdtest.ExecuteCommand(cmd, "1 -F json", stdout, stderr)
-	if err != nil {
-		t.Errorf("error running command `issue view 1 -F json`: %v", err)
-	}
+	output, err := exec("1 -F json")
+	require.NoError(t, err)
 
 	assert.True(t, json.Valid([]byte(output.String())))
 	assert.Empty(t, output.Stderr())

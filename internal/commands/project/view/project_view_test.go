@@ -16,7 +16,6 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
-	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/run"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 	"gitlab.com/gitlab-org/cli/test"
@@ -443,8 +442,6 @@ test readme
 			// Setup mocks
 			tc.setupMocks(t, testClient)
 
-			ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(tc.isTTY))
-
 			// Create api.Client that wraps the mock gitlab.Client
 			apiClient, err := api.NewClient(
 				func(*http.Client) (gitlab.AuthSource, error) {
@@ -456,24 +453,17 @@ test readme
 				t.Fatalf("failed to create api client: %v", err)
 			}
 
-			factory := cmdtest.NewTestFactory(ios,
+			repoHost := glinstance.DefaultHostname
+			if tc.repoHost != "" {
+				repoHost = tc.repoHost
+			}
+
+			cmdExec := cmdtest.SetupCmdForTest(t, NewCmdView, tc.isTTY,
 				cmdtest.WithGitLabClient(testClient.Client),
 				cmdtest.WithBranch("#current-branch"),
-				func(f *cmdtest.Factory) {
-					f.BaseRepoStub = func() (glrepo.Interface, error) {
-						if tc.repoHost == "" {
-							return glrepo.New("OWNER", "REPO", glinstance.DefaultHostname), nil
-						}
-						return glrepo.NewWithHost("OWNER", "REPO", tc.repoHost), nil
-					}
-					// Set ApiClientStub to return our api.Client with the mock gitlab.Client
-					f.ApiClientStub = func(repoHost string) (*api.Client, error) {
-						return apiClient, nil
-					}
-				},
+				cmdtest.WithBaseRepo("OWNER", "REPO", repoHost),
+				cmdtest.WithApiClient(apiClient),
 			)
-
-			cmd := NewCmdView(factory)
 
 			var restoreCmd func()
 			if tc.stub {
@@ -483,7 +473,7 @@ test readme
 				defer restoreCmd()
 			}
 
-			output, err := cmdtest.ExecuteCommand(cmd, tc.cli, stdout, stderr)
+			output, err := cmdExec(tc.cli)
 
 			if assert.NoErrorf(t, err, "error running command `project view %s`: %v", tc.cli, err) {
 				assert.Equal(t, tc.expectedOutput, output.String())

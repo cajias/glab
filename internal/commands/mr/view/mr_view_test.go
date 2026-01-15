@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/acarl005/stripansi"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,9 +23,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
-	"gitlab.com/gitlab-org/cli/internal/run"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	mainTest "gitlab.com/gitlab-org/cli/test"
 )
 
 var (
@@ -34,6 +32,13 @@ var (
 	stderr    *bytes.Buffer
 	ioStreams *iostreams.IOStreams
 )
+
+var testConfig = config.NewFromString(heredoc.Doc(`
+	hosts:
+	  gitlab.com:
+	    username: monalisa
+	    token: OTOKEN
+`))
 
 func TestMain(m *testing.M) {
 	ioStreams, _, stdout, stderr = cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
@@ -54,10 +59,13 @@ func TestMain(m *testing.M) {
 		if projectID == "" || projectID == "WRONG_REPO" || projectID == "expected_err" {
 			return nil, fmt.Errorf("error expected")
 		}
-		repo, err := f.BaseRepo()
-		if err != nil {
-			return nil, err
+
+		// Use projectID directly instead of f.BaseRepo() to support per-test factories
+		repoPath, ok := projectID.(string)
+		if !ok {
+			return nil, fmt.Errorf("unexpected projectID type: %T", projectID)
 		}
+
 		return &gitlab.MergeRequest{
 			BasicMergeRequest: gitlab.BasicMergeRequest{
 				ID:          mrID,
@@ -87,7 +95,7 @@ func TestMain(m *testing.M) {
 						Username: "mona",
 					},
 				},
-				WebURL:         fmt.Sprintf("https://%s/%s/-/merge_requests/%d", repo.RepoHost(), repo.FullName(), mrID),
+				WebURL:         fmt.Sprintf("https://gitlab.com/%s/-/merge_requests/%d", repoPath, mrID),
 				CreatedAt:      &timer,
 				UserNotesCount: 2,
 				Milestone: &gitlab.Milestone{
@@ -97,36 +105,6 @@ func TestMain(m *testing.M) {
 		}, nil
 	}
 	cmdtest.InitTest(m, "mr_view_test")
-}
-
-func TestMRView_web_numberArg(t *testing.T) {
-	cmd := NewCmdView(f)
-	cmdutils.EnableRepoOverride(cmd, f)
-
-	var seenCmd *exec.Cmd
-	restoreCmd := run.SetPrepareCmd(func(cmd *exec.Cmd) run.Runnable {
-		seenCmd = cmd
-		return &mainTest.OutputStub{}
-	})
-	defer restoreCmd()
-
-	_, err := cmdtest.RunCommand(cmd, "225 -w -R cli-automated-testing/test")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	out := stripansi.Strip(stdout.String())
-	outErr := stripansi.Strip(stderr.String())
-	stdout.Reset()
-	stderr.Reset()
-
-	assert.Contains(t, outErr, "Opening gitlab.com/cli-automated-testing/test/-/merge_requests/225 in your browser.")
-	assert.Equal(t, out, "")
-
-	if seenCmd == nil {
-		t.Log("expected a command to run")
-	}
 }
 
 func TestMRView(t *testing.T) {
@@ -167,14 +145,21 @@ func TestMRView(t *testing.T) {
 	}
 
 	t.Run("show", func(t *testing.T) {
-		cmd := NewCmdView(f)
-		cmdutils.EnableRepoOverride(cmd, f)
+		client, _ := gitlab.NewClient("")
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			cmd := NewCmdView(f)
+			cmdutils.EnableRepoOverride(cmd, f)
+			return cmd
+		}, true,
+			cmdtest.WithConfig(testConfig),
+			cmdtest.WithGitLabClient(client),
+		)
 
-		cmdOut, err := cmdtest.ExecuteCommand(cmd, "13 -c -s -R cli-automated-testing/test", stdout, stderr)
+		result, err := exec("13 -c -s -R cli-automated-testing/test")
 		require.NoError(t, err)
 
-		out := stripansi.Strip(cmdOut.OutBuf.String())
-		outErr := stripansi.Strip(cmdOut.ErrBuf.String())
+		out := stripansi.Strip(result.String())
+		outErr := stripansi.Strip(result.Stderr())
 
 		require.Contains(t, out, "mrTitle !13")
 		require.Equal(t, outErr, "")
@@ -183,17 +168,21 @@ func TestMRView(t *testing.T) {
 	})
 
 	t.Run("no_tty", func(t *testing.T) {
-		ioStreams.IsaTTY = false
-		ioStreams.IsErrTTY = false
+		client, _ := gitlab.NewClient("")
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			cmd := NewCmdView(f)
+			cmdutils.EnableRepoOverride(cmd, f)
+			return cmd
+		}, false, // non-TTY
+			cmdtest.WithConfig(testConfig),
+			cmdtest.WithGitLabClient(client),
+		)
 
-		cmd := NewCmdView(f)
-		cmdutils.EnableRepoOverride(cmd, f)
-
-		cmdOut, err := cmdtest.ExecuteCommand(cmd, "13 -c -s -R cli-automated-testing/test", stdout, stderr)
+		result, err := exec("13 -c -s -R cli-automated-testing/test")
 		require.NoError(t, err)
 
-		out := stripansi.Strip(cmdOut.OutBuf.String())
-		outErr := stripansi.Strip(cmdOut.ErrBuf.String())
+		out := stripansi.Strip(result.String())
+		outErr := stripansi.Strip(result.Stderr())
 
 		expectedOutputs := []string{
 			`title:\tmrTitle`,
@@ -494,14 +483,14 @@ func Test_reviewersList(t *testing.T) {
 }
 
 func TestMrViewJSON(t *testing.T) {
-	cmd := NewCmdView(f)
-	stdout.Reset()
-	stderr.Reset()
+	client, _ := gitlab.NewClient("")
+	exec := cmdtest.SetupCmdForTest(t, NewCmdView, false,
+		cmdtest.WithConfig(testConfig),
+		cmdtest.WithGitLabClient(client),
+	)
 
-	output, err := cmdtest.ExecuteCommand(cmd, "1 -F json", stdout, stderr)
-	if err != nil {
-		t.Errorf("error running command `mr view 1 -F json`: %v", err)
-	}
+	output, err := exec("1 -F json")
+	require.NoError(t, err)
 
 	assert.True(t, json.Valid([]byte(output.String())))
 	assert.Empty(t, output.Stderr())

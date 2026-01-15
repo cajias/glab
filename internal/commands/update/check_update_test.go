@@ -26,6 +26,23 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
 
+// mockClientCreator sets up the clientCreator with a test client and returns a cleanup function.
+func mockClientCreator(t *testing.T, testClient *gitlabtesting.TestClient) {
+	t.Helper()
+	oldCreator := clientCreator
+	clientCreator = func(userAgent string, options ...api.ClientOption) (*api.Client, error) {
+		return api.NewClient(
+			func(*http.Client) (gitlab.AuthSource, error) {
+				return gitlab.AccessTokenAuthSource{Token: ""}, nil
+			},
+			api.WithGitLabClient(testClient.Client),
+		)
+	}
+	t.Cleanup(func() {
+		clientCreator = oldCreator
+	})
+}
+
 func TestNewCheckUpdateCmd(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
@@ -74,31 +91,14 @@ func TestNewCheckUpdateCmd(t *testing.T) {
 					}, nil, nil
 				})
 
-			// Override clientCreator to use the mocked client
-			oldCreator := clientCreator
-			clientCreator = func(userAgent string, options ...api.ClientOption) (*api.Client, error) {
-				return api.NewClient(
-					func(*http.Client) (gitlab.AuthSource, error) {
-						return gitlab.AccessTokenAuthSource{Token: ""}, nil
-					},
-					api.WithGitLabClient(testClient.Client),
-				)
-			}
-			t.Cleanup(func() {
-				clientCreator = oldCreator
-			})
-
-			ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-
-			factory := cmdtest.NewTestFactory(
-				ios,
-				cmdtest.WithBuildInfo(api.BuildInfo{Version: tc.args.version}),
-			)
-
-			cmd := NewCheckUpdateCmd(factory)
+			mockClientCreator(t, testClient)
 
 			defer config.StubWriteConfig(io.Discard, io.Discard)()
-			output, err := cmdtest.ExecuteCommand(cmd, "", stdout, stderr)
+
+			exec := cmdtest.SetupCmdForTest(t, NewCheckUpdateCmd, true,
+				cmdtest.WithBuildInfo(api.BuildInfo{Version: tc.args.version}),
+			)
+			output, err := exec("")
 
 			require.NoError(t, err)
 			assert.Empty(t, output.String())
@@ -118,31 +118,14 @@ func TestNewCheckUpdateCmd_error(t *testing.T) {
 		ListReleases("gitlab-org/cli", gomock.Any()).
 		Return(nil, notFoundResp, errors.New("404 Not Found"))
 
-	// Override clientCreator to use the mocked client
-	oldCreator := clientCreator
-	clientCreator = func(userAgent string, options ...api.ClientOption) (*api.Client, error) {
-		return api.NewClient(
-			func(*http.Client) (gitlab.AuthSource, error) {
-				return gitlab.AccessTokenAuthSource{Token: ""}, nil
-			},
-			api.WithGitLabClient(testClient.Client),
-		)
-	}
-	t.Cleanup(func() {
-		clientCreator = oldCreator
-	})
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-
-	factory := cmdtest.NewTestFactory(
-		ios,
-		cmdtest.WithBuildInfo(api.BuildInfo{Version: "1.11.0"}),
-	)
-
-	cmd := NewCheckUpdateCmd(factory)
+	mockClientCreator(t, testClient)
 
 	defer config.StubWriteConfig(io.Discard, io.Discard)()
-	output, err := cmdtest.ExecuteCommand(cmd, "", stdout, stderr)
+
+	exec := cmdtest.SetupCmdForTest(t, NewCheckUpdateCmd, true,
+		cmdtest.WithBuildInfo(api.BuildInfo{Version: "1.11.0"}),
+	)
+	output, err := exec("")
 
 	require.Error(t, err)
 	assert.Equal(t, `failed checking for glab updates: 404 Not Found`, err.Error())
@@ -158,31 +141,14 @@ func TestNewCheckUpdateCmd_no_release(t *testing.T) {
 		ListReleases("gitlab-org/cli", gomock.Any()).
 		Return([]*gitlab.Release{}, nil, nil)
 
-	// Override clientCreator to use the mocked client
-	oldCreator := clientCreator
-	clientCreator = func(userAgent string, options ...api.ClientOption) (*api.Client, error) {
-		return api.NewClient(
-			func(*http.Client) (gitlab.AuthSource, error) {
-				return gitlab.AccessTokenAuthSource{Token: ""}, nil
-			},
-			api.WithGitLabClient(testClient.Client),
-		)
-	}
-	t.Cleanup(func() {
-		clientCreator = oldCreator
-	})
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-
-	factory := cmdtest.NewTestFactory(
-		ios,
-		cmdtest.WithBuildInfo(api.BuildInfo{Version: "1.11.0"}),
-	)
-
-	cmd := NewCheckUpdateCmd(factory)
+	mockClientCreator(t, testClient)
 
 	defer config.StubWriteConfig(io.Discard, io.Discard)()
-	output, err := cmdtest.ExecuteCommand(cmd, "", stdout, stderr)
+
+	exec := cmdtest.SetupCmdForTest(t, NewCheckUpdateCmd, true,
+		cmdtest.WithBuildInfo(api.BuildInfo{Version: "1.11.0"}),
+	)
+	output, err := exec("")
 
 	require.Error(t, err)
 	assert.Equal(t, "no release found for glab.", err.Error())

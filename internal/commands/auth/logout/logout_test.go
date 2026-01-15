@@ -13,19 +13,7 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/test"
 )
-
-func runCommand(cfg config.Config, args string) (*test.CmdOut, error) {
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-	factory := cmdtest.NewTestFactory(ios, cmdtest.WithConfig(cfg))
-
-	cmd := NewCmdLogout(factory)
-	// workaround for CI
-	cmd.Flags().BoolP("help", "x", false, "")
-
-	return cmdtest.ExecuteCommand(cmd, args, stdout, stderr)
-}
 
 func Test_NewCmdLogout(t *testing.T) {
 	tests := []struct {
@@ -73,7 +61,8 @@ func Test_NewCmdLogout(t *testing.T) {
 			// removing the environment variable so CI does not interfere
 			t.Setenv("GITLAB_TOKEN", "")
 
-			output, err := runCommand(cfg, fmt.Sprintf("--hostname %s", tt.hostname))
+			exec := cmdtest.SetupCmdForTest(t, NewCmdLogout, true, cmdtest.WithConfig(cfg))
+			output, err := exec(fmt.Sprintf("--hostname %s", tt.hostname))
 
 			if tt.wantErr {
 				assert.Error(t, err)

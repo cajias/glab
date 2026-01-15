@@ -1159,25 +1159,6 @@ func Test_handleNavigation(t *testing.T) {
 	}
 }
 
-func runCommand(t *testing.T, testClient *gitlabtesting.TestClient, cli string) (*test.CmdOut, error, func()) {
-	t.Helper()
-
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(testClient.Client),
-	)
-
-	cmd := NewCmdView(factory)
-
-	restoreCmd := run.SetPrepareCmd(func(cmd *exec.Cmd) run.Runnable {
-		return &test.OutputStub{}
-	})
-
-	cmdOut, err := cmdtest.ExecuteCommand(cmd, cli, stdout, stderr)
-
-	return cmdOut, err, restoreCmd
-}
-
 func Test_bracketEscaper(t *testing.T) {
 	t.Parallel()
 
@@ -1319,8 +1300,15 @@ func TestCIView(t *testing.T) {
 			testClient := gitlabtesting.NewTestClient(t)
 			tc.setupMock(testClient)
 
-			output, err, restoreCmd := runCommand(t, testClient, tc.cli)
+			restoreCmd := run.SetPrepareCmd(func(cmd *exec.Cmd) run.Runnable {
+				return &test.OutputStub{}
+			})
 			defer restoreCmd()
+
+			exec := cmdtest.SetupCmdForTest(t, NewCmdView, true,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
+			output, err := exec(tc.cli)
 
 			if assert.NoErrorf(t, err, "error running command `ci view %s`: %v", tc.cli, err) {
 				assert.Empty(t, output.String())

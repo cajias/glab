@@ -104,41 +104,6 @@ func InitTest(m *testing.M, suffix string) {
 	os.Exit(code)
 }
 
-func RunCommand(cmd *cobra.Command, cli string, stds ...*bytes.Buffer) (*test.CmdOut, error) {
-	// var stdin *bytes.Buffer
-	var stderr *bytes.Buffer
-	var stdout *bytes.Buffer
-
-	//for i, std := range stds {
-	//	if std != nil {
-	//		if i == 0 {
-	//			stdin = std
-	//		}
-	//		if i == 1 {
-	//			stdout = std
-	//		}
-	//		if i == 2 {
-	//			stderr = std
-	//		}
-	//	}
-	//}
-	//cmd.SetIn(stdin)
-	//cmd.SetOut(stdout)
-	//cmd.SetErr(stderr)
-
-	argv, err := shlex.Split(cli)
-	if err != nil {
-		return nil, err
-	}
-	cmd.SetArgs(argv)
-	_, err = cmd.ExecuteC()
-
-	return &test.CmdOut{
-		OutBuf: stdout,
-		ErrBuf: stderr,
-	}, err
-}
-
 // WithTestIOStreamsAsTTY sets stdin, stdout and stderr as TTY
 // By default they are not treated as TTYs. This will overwrite the behavior
 // for the three of them. If you only want to set a specific one,
@@ -337,6 +302,15 @@ func WithStdin(stdin string) FactoryOption {
 	}
 }
 
+// WithIOStreamsOverride configures an IOStreams instance for testing
+//
+// Attention: only use as a last resort and prefer functions like WithStdin etc to configure the IOStreams that's already created.
+func WithIOStreamsOverride(ios *iostreams.IOStreams) FactoryOption {
+	return func(f *Factory) {
+		f.IOStub = ios
+	}
+}
+
 func WithExecutor(exec cmdutils.Executor) FactoryOption {
 	return func(f *Factory) {
 		f.ExecutorStub = exec
@@ -400,7 +374,20 @@ func SetupCmdForTest(t *testing.T, cmdFunc CmdFunc, isTTY bool, opts ...FactoryO
 	f := NewTestFactory(ios, opts...)
 	return func(cli string) (*test.CmdOut, error) {
 		defer f.cleanup()
-		return ExecuteCommand(cmdFunc(f), cli, &f.stdout, &f.stderr)
+
+		argv, err := shlex.Split(cli)
+		if err != nil {
+			return nil, err
+		}
+
+		cmd := cmdFunc(f)
+		cmd.SetArgs(argv)
+
+		_, err = cmd.ExecuteC()
+		return &test.CmdOut{
+			OutBuf: &f.stdout,
+			ErrBuf: &f.stderr,
+		}, err
 	}
 }
 
@@ -445,24 +432,6 @@ func WithResponder(t *testing.T, responder *huhtest.Responder) FactoryOption {
 
 		f.execSetup = append(f.execSetup, startResponder)
 	}
-}
-
-func ExecuteCommand(cmd *cobra.Command, cli string, stdout *bytes.Buffer, stderr *bytes.Buffer) (*test.CmdOut, error) {
-	argv, err := shlex.Split(cli)
-	if err != nil {
-		return nil, err
-	}
-
-	cmd.SetArgs(argv)
-	cmd.SetIn(&bytes.Buffer{})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-
-	_, err = cmd.ExecuteC()
-	return &test.CmdOut{
-		OutBuf: stdout,
-		ErrBuf: stderr,
-	}, err
 }
 
 func CopyTestRepo(log fatalLogger, name string) string {

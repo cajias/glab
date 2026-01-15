@@ -419,18 +419,21 @@ func TestMergeRequestList_hyperlinks(t *testing.T) {
 				doHyperlinks = "auto"
 			}
 
-			ios, _, stdout, stderr := cmdtest.TestIOStreams(
+			ios, _, _, _ := cmdtest.TestIOStreams(
 				cmdtest.WithTestIOStreamsAsTTY(tc.isTTY),
 				iostreams.WithDisplayHyperLinks(doHyperlinks),
 			)
 
-			factory := cmdtest.NewTestFactory(ios,
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdList(f, nil)
+			}, tc.isTTY,
+				cmdtest.WithIOStreamsOverride(ios),
 				cmdtest.WithApiClient(apiClient),
 				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
 			)
 
-			cmd := NewCmdList(factory, nil)
-			output, err := cmdtest.ExecuteCommand(cmd, "", stdout, stderr)
+			output, err := exec("")
 			require.NoError(t, err)
 
 			out := output.String()
