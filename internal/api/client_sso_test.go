@@ -159,40 +159,44 @@ func TestIsSSORedirect(t *testing.T) {
 	tests := []struct {
 		name           string
 		originalHost   string
+		originalScheme string
 		locationHeader string
 		want           bool
 	}{
 		// Empty location
-		{"empty location", "gitlab.example.com", "", false},
+		{"empty location", "gitlab.example.com", "https", "", false},
 
 		// Relative URLs - same host
-		{"relative path", "gitlab.example.com", "/api/v4/projects", false},
-		{"relative path with query", "gitlab.example.com", "/oauth/callback?code=123", false},
+		{"relative path", "gitlab.example.com", "https", "/api/v4/projects", false},
+		{"relative path with query", "gitlab.example.com", "https", "/oauth/callback?code=123", false},
 
 		// Absolute URLs - same host
-		{"same host https", "gitlab.example.com", "https://gitlab.example.com/callback", false},
-		{"same host http", "gitlab.example.com", "http://gitlab.example.com/callback", false},
-		{"same host with path", "gitlab.example.com", "https://gitlab.example.com/api/v4/projects", false},
+		{"same host https", "gitlab.example.com", "https", "https://gitlab.example.com/callback", false},
+		{"same host http", "gitlab.example.com", "http", "http://gitlab.example.com/callback", false},
+		{"same host with path", "gitlab.example.com", "https", "https://gitlab.example.com/api/v4/projects", false},
 
 		// Absolute URLs - different host (SSO)
-		{"different host", "gitlab.example.com", "https://idp.example.com/saml", true},
-		{"different subdomain", "gitlab.example.com", "https://sso.example.com/auth", true},
-		{"completely different domain", "gitlab.example.com", "https://okta.com/login", true},
+		{"different host", "gitlab.example.com", "https", "https://idp.example.com/saml", true},
+		{"different subdomain", "gitlab.example.com", "https", "https://sso.example.com/auth", true},
+		{"completely different domain", "gitlab.example.com", "https", "https://okta.com/login", true},
 
-		// Port handling
-		{"same host different port", "127.0.0.1:8080", "http://127.0.0.1:9090/callback", true},
-		{"same host same port", "127.0.0.1:8080", "http://127.0.0.1:8080/callback", false},
-		{"host with port to host without", "gitlab.example.com:443", "https://gitlab.example.com/callback", true},
+		// Port handling - with scheme, default ports are normalized
+		{"same host different port", "127.0.0.1:8080", "http", "http://127.0.0.1:9090/callback", true},
+		{"same host same port", "127.0.0.1:8080", "http", "http://127.0.0.1:8080/callback", false},
+		{"https host with 443 to host without port", "gitlab.example.com:443", "https", "https://gitlab.example.com/callback", false},
+		{"http host with 80 to host without port", "gitlab.example.com:80", "http", "http://gitlab.example.com/callback", false},
+		{"host without port to host with default port", "gitlab.example.com", "https", "https://gitlab.example.com:443/callback", false},
+		{"different port non-default", "gitlab.example.com:8443", "https", "https://gitlab.example.com/callback", true},
 
 		// Edge cases
-		{"location with fragment", "gitlab.example.com", "https://idp.example.com/auth#state", true},
-		{"location with query and fragment", "gitlab.example.com", "https://idp.example.com/auth?a=1#state", true},
+		{"location with fragment", "gitlab.example.com", "https", "https://idp.example.com/auth#state", true},
+		{"location with query and fragment", "gitlab.example.com", "https", "https://idp.example.com/auth?a=1#state", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isSSORedirect(tt.originalHost, tt.locationHeader); got != tt.want {
-				t.Errorf("isSSORedirect(%q, %q) = %v, want %v", tt.originalHost, tt.locationHeader, got, tt.want)
+			if got := isSSORedirect(tt.originalHost, tt.originalScheme, tt.locationHeader); got != tt.want {
+				t.Errorf("isSSORedirect(%q, %q, %q) = %v, want %v", tt.originalHost, tt.originalScheme, tt.locationHeader, got, tt.want)
 			}
 		})
 	}
@@ -223,8 +227,9 @@ func TestIsLocalhost(t *testing.T) {
 
 		// Edge cases
 		{"", false},
-		{"localhost.localdomain", false}, // Not the same as "localhost"
-		{"::2", false},                   // Not loopback
+		// Note: localhost.localdomain is not tested because it may resolve to
+		// loopback on some systems (via /etc/hosts) but not others.
+		{"::2", false}, // Not loopback
 	}
 
 	for _, tt := range tests {
@@ -271,8 +276,8 @@ func TestSSOTransport_HTTPSEnforcement(t *testing.T) {
 		if !strings.Contains(err.Error(), "SSO redirect rejected") {
 			t.Errorf("expected 'SSO redirect rejected' error, got: %v", err)
 		}
-		if !strings.Contains(err.Error(), "expected HTTPS") {
-			t.Errorf("expected 'expected HTTPS' in error, got: %v", err)
+		if !strings.Contains(err.Error(), "HTTPS required") {
+			t.Errorf("expected 'HTTPS required' in error, got: %v", err)
 		}
 	})
 
