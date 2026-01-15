@@ -17,31 +17,7 @@ import (
 	git_testing "gitlab.com/gitlab-org/cli/internal/git/testing"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
-	"gitlab.com/gitlab-org/cli/test"
 )
-
-func runCommand(t *testing.T, mockCmd git.GitRunner, args string, responder ...*huhtest.Responder) (*test.CmdOut, error) {
-	t.Helper()
-
-	// When using responder, we need to use SetupCmdForTest pattern
-	if len(responder) > 0 && responder[0] != nil {
-		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
-			return NewCmdCreateStack(f, mockCmd)
-		}, true,
-			cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, nil, "", glinstance.DefaultHostname).Lab()),
-			cmdtest.WithResponder(t, responder[0]),
-		)
-		return exec(args)
-	}
-
-	// Original path for non-responder tests
-	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
-	factory := cmdtest.NewTestFactory(ios,
-		cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, nil, "", glinstance.DefaultHostname).Lab()),
-	)
-	cmd := NewCmdCreateStack(factory, mockCmd)
-	return cmdtest.ExecuteCommand(cmd, args, stdout, stderr)
-}
 
 func TestCreateNewStack(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
@@ -91,16 +67,20 @@ func TestCreateNewStack(t *testing.T) {
 			mockCmd := git_testing.NewMockGitRunner(ctrl)
 			mockCmd.EXPECT().Git([]string{"symbolic-ref", "--quiet", "--short", "HEAD"}).Return(tc.baseBranch, nil)
 
-			var output *test.CmdOut
-			var err error
-
+			opts := []cmdtest.FactoryOption{
+				cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, nil, "", glinstance.DefaultHostname).Lab()),
+			}
 			if tc.needsResponder {
 				responder := huhtest.NewResponder()
 				responder.AddResponse("New stack title?", tc.responderInput)
-				output, err = runCommand(t, mockCmd, tc.branch, responder)
-			} else {
-				output, err = runCommand(t, mockCmd, tc.branch)
+				opts = append(opts, cmdtest.WithResponder(t, responder))
 			}
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdCreateStack(f, mockCmd)
+			}, true, opts...)
+
+			output, err := exec(tc.branch)
 
 			require.Nil(t, err)
 

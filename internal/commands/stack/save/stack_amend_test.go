@@ -6,9 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/git"
+	git_testing "gitlab.com/gitlab-org/cli/internal/git/testing"
 	"gitlab.com/gitlab-org/cli/internal/run"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
@@ -78,7 +82,16 @@ func Test_stackAmendCmd(t *testing.T) {
 			saveArgs = append(saveArgs, tc.args...)
 
 			getText := getMockEditor(tc.editorMessage, &[]string{})
-			_, err = runSaveCommand(t, nil, getText, true, strings.Join(saveArgs, " "))
+
+			ctrl := gomock.NewController(t)
+			mockCmd := git_testing.NewMockGitRunner(ctrl)
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdSaveStack(f, mockCmd, getText)
+			}, true,
+				cmdtest.WithGitLabClient(cmdtest.NewTestApiClient(t, nil, "", "gitlab.com").Lab()),
+			)
+			_, err = exec(strings.Join(saveArgs, " "))
 			require.Nil(t, err)
 
 			createTemporaryFiles(t, dir, tc.amendedFiles)
