@@ -64,9 +64,9 @@ func requiresMethodPreservation(statusCode int) bool {
 }
 
 // isSSORedirect returns true if the redirect is to a different host (IdP).
-// Known limitation: cannot normalize original host's port without knowing its scheme,
-// so gitlab.example.com:443 would be treated as different from gitlab.example.com.
-func isSSORedirect(originalHost, locationHeader string) bool {
+// It properly normalizes hosts by stripping default ports for the given scheme
+// (e.g., gitlab.example.com:443 equals gitlab.example.com for HTTPS).
+func isSSORedirect(originalHost, originalScheme, locationHeader string) bool {
 	if locationHeader == "" {
 		return false
 	}
@@ -84,7 +84,7 @@ func isSSORedirect(originalHost, locationHeader string) bool {
 	}
 
 	// Compare normalized hosts (hostname without default ports)
-	return normalizeHost(redirectURL.Host, redirectURL.Scheme) != normalizeHost(originalHost, "")
+	return normalizeHost(redirectURL.Host, redirectURL.Scheme) != normalizeHost(originalHost, originalScheme)
 }
 
 // normalizeHost removes default ports from a host string for comparison.
@@ -107,15 +107,33 @@ func normalizeHost(host, scheme string) string {
 }
 
 // isLocalhost returns true if the hostname is a localhost/loopback address.
-// This handles "localhost", IPv4 loopback (127.0.0.0/8), and IPv6 loopback (::1).
-// Known limitation: does not perform DNS resolution, so hostnames like "myhost.local"
-// that resolve to 127.0.0.1 are not detected as localhost.
+// This handles "localhost", IPv4 loopback (127.0.0.0/8), IPv6 loopback (::1),
+// and hostnames that resolve to loopback addresses via DNS.
 func isLocalhost(hostname string) bool {
 	if hostname == "localhost" {
 		return true
 	}
+
+	// Check if it's a literal IP address
 	ip := net.ParseIP(hostname)
-	return ip != nil && ip.IsLoopback()
+	if ip != nil {
+		return ip.IsLoopback()
+	}
+
+	// Try to resolve the hostname to IP addresses
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return false
+	}
+
+	// Check if any resolved IP is a loopback address
+	for _, ip := range ips {
+		if ip.IsLoopback() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // RoundTrip implements http.RoundTripper.
@@ -150,7 +168,7 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	dbg.Debugf("ssoTransport: %s %s received %d redirect to %s", req.Method, req.URL, resp.StatusCode, location)
 
 	// Handle cross-host SSO redirects
-	if isSSORedirect(req.URL.Host, location) {
+	if isSSORedirect(req.URL.Host, req.URL.Scheme, location) {
 		dbg.Debugf("ssoTransport: detected SSO redirect (cross-host)")
 		return t.handleSSORedirect(req, resp, location, bodyBytes)
 	}
@@ -180,7 +198,7 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 	// Enforce HTTPS for SSO redirects to prevent cookie theft via MITM.
 	// Allow HTTP only for localhost (used in tests and development).
 	if redirectURL.Scheme != "https" && !isLocalhost(redirectURL.Hostname()) {
-		return nil, fmt.Errorf("SSO redirect rejected: expected HTTPS but got %s (URL: %s)", redirectURL.Scheme, redirectURL.Host)
+		return nil, fmt.Errorf("SSO redirect rejected: refusing non-HTTPS redirect to %s://%s (HTTPS required for security)", redirectURL.Scheme, redirectURL.Host)
 	}
 
 	// Check if the IdP domain is pre-approved in config
@@ -249,7 +267,7 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 		}
 
 		// Check if this redirect goes to a different host (SSO)
-		if isSSORedirect(req.URL.Host, redirectURL.String()) {
+		if isSSORedirect(req.URL.Host, req.URL.Scheme, redirectURL.String()) {
 			// This is now an SSO redirect - handle it
 			return t.handleSSORedirect(req, nil, redirectURL.String(), bodyBytes)
 		}
