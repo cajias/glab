@@ -25,7 +25,7 @@ func RemoteURL(project *gitlab.Project, protocol string) string {
 	return project.HTTPURLToRepo
 }
 
-// FullName returns the the repo with its namespace (like profclems/glab). Respects group and subgroups names
+// FullName returns the repo with its namespace (like profclems/glab). Respects group and subgroups names
 func FullNameFromURL(remoteURL string) (string, error) {
 	parts := strings.Split(remoteURL, "//")
 

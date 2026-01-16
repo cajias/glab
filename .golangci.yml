@@ -7,6 +7,7 @@ linters:
     default: none
     enable:
         - depguard
+        - dupword
         - errcheck
         - govet
         - ineffassign
@@ -25,6 +26,10 @@ linters:
           - common-false-positives
           - legacy
           - std-error-handling
+      rules:
+        - path: _test\.go
+          linters:
+            - dupword
     settings:
       govet:
         enable-all: true

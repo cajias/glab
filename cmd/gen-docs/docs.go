@@ -234,7 +234,7 @@ func fatal(err error) {
 }
 
 // adapted from: github.com/spf13/cobra/blob/main/doc/md_docs.go
-// GenMarkdownTreeCustom is the the same as GenMarkdownTree, but
+// GenMarkdownTreeCustom is the same as GenMarkdownTree, but
 // with custom filePrepender and linkHandler.
 func GenMarkdownTreeCustom(cmd *cobra.Command, dir string) error {
 	for _, c := range cmd.Commands() {

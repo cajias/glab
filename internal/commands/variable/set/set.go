@@ -117,7 +117,7 @@ func (o *options) run() error {
 	c := o.io.Color()
 
 	// NOTE: this command can not only be used for projects,
-	// so we have to manually check for the base repo, it it doesn't exist,
+	// so we have to manually check for the base repo, if it doesn't exist,
 	// we bootstrap the client with the default hostname.
 	var repoHost string
 	if baseRepo, err := o.baseRepo(); err == nil {

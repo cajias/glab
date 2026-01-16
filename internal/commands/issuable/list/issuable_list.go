@@ -190,7 +190,7 @@ func NewCmdList(f cmdutils.Factory, runE func(opts *ListOptions) error, issueTyp
 
 func listRun(opts *ListOptions) error {
 	// NOTE: this command can not only be used for projects,
-	// so we have to manually check for the base repo, it it doesn't exist,
+	// so we have to manually check for the base repo, if it doesn't exist,
 	// we bootstrap the client with the default hostname.
 	var repoHost string
 	if baseRepo, err := opts.BaseRepo(); err == nil {
