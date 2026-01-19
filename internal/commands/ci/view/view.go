@@ -944,7 +944,7 @@ func link(
 	if dx != 0 {
 		hline(screen, x1+w, y2+h/2, dx-w)
 		if dy != 0 {
-			// dy != 0 means the last stage had multple jobs
+			// dy != 0 means the last stage had multiple jobs
 			screen.SetContent(x1+w+p-1, y2+h/2, '╦', nil, tcell.StyleDefault)
 		}
 		return

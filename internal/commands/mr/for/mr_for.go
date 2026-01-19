@@ -124,7 +124,7 @@ func NewCmdFor(f cmdutils.Factory) *cobra.Command {
 			if removeSource, _ := cmd.Flags().GetBool("remove-source-branch"); removeSource {
 				l.RemoveSourceBranch = gitlab.Ptr(true)
 			}
-			if withLables, _ := cmd.Flags().GetBool("with-labels"); withLables {
+			if withLabels, _ := cmd.Flags().GetBool("with-labels"); withLabels {
 				l.Labels = (*gitlab.LabelOptions)(&issue.Labels)
 			}
 

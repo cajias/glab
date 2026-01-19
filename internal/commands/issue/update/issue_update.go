@@ -82,7 +82,7 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 				l.DiscussionLocked = gitlab.Ptr(m)
 			}
 			if m, _ := cmd.Flags().GetBool("unlock-discussion"); m {
-				actions = append(actions, "unlocked dicussion")
+				actions = append(actions, "unlocked discussion")
 				l.DiscussionLocked = gitlab.Ptr(false)
 			}
 			if cmd.Flags().Changed("weight") {

@@ -142,7 +142,7 @@ func createUnauthenticatedClient(userAgent string, options ...api.ClientOption) 
 }
 
 // Don't CheckUpdate if previous command is CheckUpdate
-// or it's Completion, so it doesn't take a noticably long time
+// or it's Completion, so it doesn't take a noticeably long time
 // to start new shells and we don't encourage users setting
 // `check_update` to false in the config.
 // Also skip for git-credential to avoid interfering with Git operations.
