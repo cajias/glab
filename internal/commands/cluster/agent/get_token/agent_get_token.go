@@ -9,9 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -70,10 +68,7 @@ You might receive an email from your GitLab instance that a new personal access 
 			if err := opts.validate(); err != nil {
 				return err
 			}
-			// Intercept OS signals so that we can clean up the lock file.
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			return opts.run(ctx)
+			return opts.run(cmd.Context())
 		},
 	}
 	fl := agentGetTokenCmd.Flags()
