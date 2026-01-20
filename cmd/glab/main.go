@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"syscall"
 
 	"github.com/charmbracelet/fang"
 	"github.com/charmbracelet/lipgloss/v2"
@@ -181,6 +182,7 @@ func main() {
 		fang.WithoutManpage(),
 		fang.WithColorSchemeFunc(gitLabColorScheme),
 		fang.WithErrorHandler(cmdutils.GitLabErrorHandler),
+		fang.WithNotifySignal(os.Interrupt, syscall.SIGTERM),
 	); err != nil {
 		var exitError *cmdutils.ExitError
 		if errors.As(err, &exitError) {

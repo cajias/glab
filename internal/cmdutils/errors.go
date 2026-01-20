@@ -1,6 +1,7 @@
 package cmdutils
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,17 +25,26 @@ func (fe FlagError) Unwrap() error {
 	return fe.Err
 }
 
-// SilentError is an error that triggers exit Code 1 without any error messaging
-var SilentError = errors.New("SilentError")
+var (
+	// SilentError is an error that triggers exit Code 1 without any error messaging
+	SilentError = errors.New("SilentError")
+
+	errCommandInterrupted = errors.New("the command execution has been interrupted")
+)
 
 // GitLabErrorHandler is a custom error handler for fang that handles GitLab CLI specific errors
 func GitLabErrorHandler(w io.Writer, styles fang.Styles, err error) {
-	// Ignore SilentError - it should not produce any output
-	if errors.Is(err, SilentError) {
+	switch {
+	case errors.Is(err, context.Canceled):
+		fang.DefaultErrorHandler(w, styles, errCommandInterrupted)
 		return
+	case errors.Is(err, SilentError):
+		// Ignore SilentError - it should not produce any output
+		return
+	default:
+		// Delegate everything else to Fang's default handler
+		fang.DefaultErrorHandler(w, styles, err)
 	}
-	// Delegate everything else to Fang's default handler
-	fang.DefaultErrorHandler(w, styles, err)
 }
 
 type ExitError struct {
