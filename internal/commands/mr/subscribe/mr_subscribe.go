@@ -49,7 +49,7 @@ func NewCmdSubscribe(f cmdutils.Factory) *cobra.Command {
 				return err
 			}
 
-			mrs, repo, err := mrutils.MRsFromArgs(f, args, "any")
+			mrs, repo, err := mrutils.MRsFromArgs(cmd.Context(), f, args, "any")
 			if err != nil {
 				return err
 			}

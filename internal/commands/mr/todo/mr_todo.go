@@ -33,7 +33,7 @@ func NewCmdTodo(f cmdutils.Factory) *cobra.Command {
 				return err
 			}
 
-			mr, repo, err := mrutils.MRFromArgs(f, args, "any")
+			mr, repo, err := mrutils.MRFromArgs(cmd.Context(), f, args, "any")
 			if err != nil {
 				return err
 			}

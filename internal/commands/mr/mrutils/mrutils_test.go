@@ -3,6 +3,7 @@
 package mrutils
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -372,7 +373,7 @@ func Test_getMRForBranchFails(t *testing.T) {
 			return nil, errors.New("API call failed")
 		}
 
-		got, err := GetMRForBranch(nil, &gitlab.Client{}, MrOptions{baseRepo, "foo", "opened", true})
+		got, err := GetMRForBranch(t.Context(), nil, &gitlab.Client{}, MrOptions{baseRepo, "foo", "opened", true})
 		assert.Nil(t, got)
 		assert.EqualError(t, err, `failed to get open merge request for "foo": API call failed`)
 	})
@@ -382,7 +383,7 @@ func Test_getMRForBranchFails(t *testing.T) {
 			return []*gitlab.BasicMergeRequest{}, nil
 		}
 
-		got, err := GetMRForBranch(nil, &gitlab.Client{}, MrOptions{baseRepo, "foo", "opened", true})
+		got, err := GetMRForBranch(t.Context(), nil, &gitlab.Client{}, MrOptions{baseRepo, "foo", "opened", true})
 		assert.Nil(t, got)
 		assert.EqualError(t, err, `no open merge request available for "foo"`)
 	})
@@ -405,7 +406,7 @@ func Test_getMRForBranchFails(t *testing.T) {
 			}, nil
 		}
 
-		got, err := GetMRForBranch(nil, &gitlab.Client{}, MrOptions{baseRepo, "zemzale:foo", "opened", true})
+		got, err := GetMRForBranch(t.Context(), nil, &gitlab.Client{}, MrOptions{baseRepo, "zemzale:foo", "opened", true})
 		assert.Nil(t, got)
 		assert.EqualError(t, err, `no open merge request available for "foo" owned by @zemzale`)
 	})
@@ -472,7 +473,7 @@ func Test_getMRForBranch(t *testing.T) {
 				return tC.mrs, nil
 			}
 
-			got, err := GetMRForBranch(nil, &gitlab.Client{}, MrOptions{baseRepo, tC.input, "opened", true})
+			got, err := GetMRForBranch(t.Context(), nil, &gitlab.Client{}, MrOptions{baseRepo, tC.input, "opened", true})
 			assert.NoError(t, err)
 
 			assert.Equal(t, tC.expect.IID, got.IID)
@@ -508,7 +509,7 @@ func Test_getMRForBranchPrompt(t *testing.T) {
 
 	ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true))
 
-	got, err := GetMRForBranch(ios, &gitlab.Client{}, MrOptions{baseRepo, "foo", "opened", true})
+	got, err := GetMRForBranch(t.Context(), ios, &gitlab.Client{}, MrOptions{baseRepo, "foo", "opened", true})
 	assert.NoError(t, err)
 
 	assert.Equal(t, int64(1), got.IID)
@@ -542,7 +543,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				t.Skipf("failed to get base repo: %s", err)
 			}
 
-			gotMR, gotRepo, err := MRFromArgs(baseFactory, []string{"2"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), baseFactory, []string{"2"}, "")
 			assert.NoError(t, err)
 
 			assert.Equal(t, expectedRepo.FullName(), gotRepo.FullName())
@@ -552,7 +553,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 			assert.Equal(t, "main", gotMR.SourceBranch)
 		})
 		t.Run("via-name", func(t *testing.T) {
-			GetMRForBranch = func(_ *iostreams.IOStreams, apiClient *gitlab.Client, mrOpts MrOptions) (*gitlab.BasicMergeRequest, error) {
+			GetMRForBranch = func(_ context.Context, _ *iostreams.IOStreams, apiClient *gitlab.Client, mrOpts MrOptions) (*gitlab.BasicMergeRequest, error) {
 				return &gitlab.BasicMergeRequest{
 					IID:          2,
 					Title:        "test mr",
@@ -575,7 +576,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				t.Skipf("failed to get base repo: %s", err)
 			}
 
-			gotMR, gotRepo, err := MRFromArgs(baseFactory, []string{"foo"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), baseFactory, []string{"foo"}, "")
 			assert.NoError(t, err)
 
 			assert.Equal(t, expectedRepo.FullName(), gotRepo.FullName())
@@ -597,7 +598,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				}, nil
 			}
 
-			gotMR, gotRepo, err := MRFromArgs(baseFactory, []string{"https://gitlab.com/gitlab-org/cli/-/merge_requests/1234"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), baseFactory, []string{"https://gitlab.com/gitlab-org/cli/-/merge_requests/1234"}, "")
 			assert.NoError(t, err)
 
 			// The repository should be extracted from the URL
@@ -626,7 +627,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				cmdtest.WithBranch("main"),
 			)
 
-			gotMR, gotRepo, err := MRFromArgs(f, []string{"https://invent.kde.org/kde/krita/-/merge_requests/42"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), f, []string{"https://invent.kde.org/kde/krita/-/merge_requests/42"}, "")
 			assert.NoError(t, err)
 
 			// The repository should be extracted from the URL
@@ -657,7 +658,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				cmdtest.WithBranch("main"),
 			)
 
-			gotMR, gotRepo, err := MRFromArgs(f, []string{"https://invent.kde.org/kde/krita/-/merge_requests/42"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), f, []string{"https://invent.kde.org/kde/krita/-/merge_requests/42"}, "")
 			assert.NoError(t, err)
 
 			// The repository should be extracted from the URL (different from base repo)
@@ -694,7 +695,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				return originalApiClient(repoHost) // Call original implementation
 			}
 
-			gotMR, gotRepo, err := MRFromArgs(f, []string{"https://custom.gitlab.com/user/repo/-/merge_requests/42"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), f, []string{"https://custom.gitlab.com/user/repo/-/merge_requests/42"}, "")
 			assert.NoError(t, err)
 
 			// Verify that ApiClient was called with the correct hostname from URL
@@ -713,7 +714,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				cmdtest.WithBranch("main"),
 			)
 
-			gotMR, gotRepo, err := MRFromArgs(f, []string{}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), f, []string{}, "")
 			assert.Nil(t, gotMR)
 			assert.Nil(t, gotRepo)
 			assert.EqualError(t, err, "failed to create HttpClient")
@@ -724,7 +725,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				cmdtest.WithBranch("main"),
 			)
 
-			gotMR, gotRepo, err := MRFromArgs(f, []string{}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), f, []string{}, "")
 			assert.Nil(t, gotMR)
 			assert.Nil(t, gotRepo)
 			assert.EqualError(t, err, "failed to create glrepo.Interface")
@@ -735,23 +736,23 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				cmdtest.WithBranchError(errors.New("failed to get branch")),
 			)
 
-			gotMR, gotRepo, err := MRFromArgs(f, []string{}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), f, []string{}, "")
 			assert.Nil(t, gotMR)
 			assert.Nil(t, gotRepo)
 			assert.EqualError(t, err, "failed to get branch")
 		})
 		t.Run("Invalid-MR-ID", func(t *testing.T) {
-			gotMR, gotRepo, err := MRFromArgs(baseFactory, []string{"0"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), baseFactory, []string{"0"}, "")
 			assert.Nil(t, gotMR)
 			assert.Nil(t, gotRepo)
 			assert.EqualError(t, err, "invalid merge request ID provided.")
 		})
 		t.Run("invalid-name", func(t *testing.T) {
-			GetMRForBranch = func(_ *iostreams.IOStreams, _ *gitlab.Client, mrOpts MrOptions) (*gitlab.BasicMergeRequest, error) {
+			GetMRForBranch = func(_ context.Context, _ *iostreams.IOStreams, _ *gitlab.Client, mrOpts MrOptions) (*gitlab.BasicMergeRequest, error) {
 				return nil, fmt.Errorf("no merge requests from branch %q", mrOpts.Branch)
 			}
 
-			gotMR, gotRepo, err := MRFromArgs(baseFactory, []string{"foo"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), baseFactory, []string{"foo"}, "")
 			assert.Nil(t, gotMR)
 			assert.Nil(t, gotRepo)
 			assert.EqualError(t, err, `no merge requests from branch "foo"`)
@@ -761,7 +762,7 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				return nil, errors.New("API call failed")
 			}
 
-			gotMR, gotRepo, err := MRFromArgs(baseFactory, []string{"2"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), baseFactory, []string{"2"}, "")
 			assert.Nil(t, gotMR)
 			assert.Nil(t, gotRepo)
 			assert.EqualError(t, err, "failed to get merge request 2: API call failed")
@@ -773,18 +774,18 @@ func Test_MRFromArgsWithOpts(t *testing.T) {
 				return nil, errors.New("API call failed for URL MR")
 			}
 
-			gotMR, gotRepo, err := MRFromArgs(baseFactory, []string{"https://gitlab.com/gitlab-org/cli/-/merge_requests/1234"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), baseFactory, []string{"https://gitlab.com/gitlab-org/cli/-/merge_requests/1234"}, "")
 			assert.Nil(t, gotMR)
 			assert.Nil(t, gotRepo)
 			assert.EqualError(t, err, "failed to get merge request 1234: API call failed for URL MR")
 		})
 		t.Run("URL-without-scheme", func(t *testing.T) {
 			// Test that a URL without a scheme (http/https) fails to parse and falls back to branch lookup
-			GetMRForBranch = func(_ *iostreams.IOStreams, _ *gitlab.Client, mrOpts MrOptions) (*gitlab.BasicMergeRequest, error) {
+			GetMRForBranch = func(_ context.Context, _ *iostreams.IOStreams, _ *gitlab.Client, mrOpts MrOptions) (*gitlab.BasicMergeRequest, error) {
 				return nil, fmt.Errorf("no merge requests from branch %q", mrOpts.Branch)
 			}
 
-			gotMR, gotRepo, err := MRFromArgs(baseFactory, []string{"gitlab.com/gitlab-org/cli/-/merge_requests/1234"}, "")
+			gotMR, gotRepo, err := MRFromArgs(t.Context(), baseFactory, []string{"gitlab.com/gitlab-org/cli/-/merge_requests/1234"}, "")
 			assert.Nil(t, gotMR)
 			assert.Nil(t, gotRepo)
 			assert.EqualError(t, err, `no merge requests from branch "gitlab.com/gitlab-org/cli/-/merge_requests/1234"`)

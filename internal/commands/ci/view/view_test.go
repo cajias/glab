@@ -538,7 +538,7 @@ func Test_jobsView(t *testing.T) {
 		jobsCh <- jobs
 	}()
 	root.Box.Focus(nil)
-	jobsView(nil, jobsCh, inputCh, root, nil, "", "")
+	jobsView(t.Context(), nil, jobsCh, inputCh, root, nil, "", "")
 	root.Focus(func(p tview.Primitive) { p.Focus(nil) })
 	root.Draw(screen)
 	linkJobsView(nil)(screen)
@@ -1231,7 +1231,7 @@ func TestCIView(t *testing.T) {
 			cli:  "--web --branch foo",
 			setupMock: func(tc *gitlabtesting.TestClient) {
 				tc.MockPipelines.EXPECT().
-					GetLatestPipeline("OWNER/REPO", gomock.Any()).
+					GetLatestPipeline("OWNER/REPO", gomock.Any(), gomock.Any()).
 					Return(&gitlab.Pipeline{
 						ID:        8,
 						Ref:       "foo",

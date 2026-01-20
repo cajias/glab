@@ -39,7 +39,7 @@ func NewCmdApprove(f cmdutils.Factory) *cobra.Command {
 				return err
 			}
 
-			mrs, repo, err := mrutils.MRsFromArgs(f, args, "opened")
+			mrs, repo, err := mrutils.MRsFromArgs(cmd.Context(), f, args, "opened")
 			if err != nil {
 				return err
 			}

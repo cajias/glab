@@ -103,7 +103,7 @@ func (o *options) run(ctx context.Context, f cmdutils.Factory, getText cmdutils.
 	}
 	o.labClient = client
 
-	err = updateMRs(f, updatedStack, stack)
+	err = updateMRs(ctx, f, updatedStack, stack)
 	if err != nil {
 		return fmt.Errorf("error updating merge requests: %v", err)
 	}
@@ -183,7 +183,7 @@ func matchBranchesToStack(stack git.Stack, branches []string) (git.Stack, error)
 	return newStack, nil
 }
 
-func updateMRs(f cmdutils.Factory, newStack git.Stack, oldStack git.Stack) error {
+func updateMRs(ctx context.Context, f cmdutils.Factory, newStack git.Stack, oldStack git.Stack) error {
 	for _, ref := range newStack.Iter2() {
 		// if there is already an MR and the order has been adjusted
 		if ref.MR != "" &&
@@ -195,7 +195,7 @@ func updateMRs(f cmdutils.Factory, newStack git.Stack, oldStack git.Stack) error
 				return fmt.Errorf("error connecting to GitLab: %v", err)
 			}
 
-			mr, _, err := mrutils.MRFromArgsWithOpts(f, []string{ref.Branch}, nil, "opened")
+			mr, _, err := mrutils.MRFromArgsWithOpts(ctx, f, []string{ref.Branch}, nil, "opened")
 			if err != nil {
 				return fmt.Errorf("error getting merge request from GitLab: %v", err)
 			}

@@ -396,7 +396,7 @@ func Test_updateMRs(t *testing.T) {
 
 			factory := setupTestFactoryForReorder(t, testClient)
 
-			err = updateMRs(factory, tt.args.newStack, tt.args.oldStack)
+			err = updateMRs(t.Context(), factory, tt.args.newStack, tt.args.oldStack)
 
 			require.NoError(t, err)
 		})

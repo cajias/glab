@@ -1,6 +1,7 @@
 package cmdutils
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -148,7 +149,7 @@ func (f *DefaultFactory) BaseRepo() (glrepo.Interface, error) {
 		return cachedBaseRepo, nil
 	}
 
-	baseRepo, err := f.resolveBaseRepoFromRemotes()
+	baseRepo, err := f.resolveBaseRepoFromRemotes(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +159,7 @@ func (f *DefaultFactory) BaseRepo() (glrepo.Interface, error) {
 	return f.cachedBaseRepo, nil
 }
 
-func (f *DefaultFactory) resolveBaseRepoFromRemotes() (glrepo.Interface, error) {
+func (f *DefaultFactory) resolveBaseRepoFromRemotes(ctx context.Context) (glrepo.Interface, error) {
 	remotes, err := f.Remotes()
 	if err != nil {
 		return nil, err
@@ -178,7 +179,7 @@ func (f *DefaultFactory) resolveBaseRepoFromRemotes() (glrepo.Interface, error) 
 		return nil, err
 	}
 
-	baseRepo, err := repoContext.BaseRepo(f.io)
+	baseRepo, err := repoContext.BaseRepo(ctx, f.io)
 	if err != nil {
 		return nil, err
 	}

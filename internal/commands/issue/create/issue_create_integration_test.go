@@ -3,6 +3,7 @@
 package create
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -125,7 +126,7 @@ func Test_IssueCreate_With_Recover_Integration(t *testing.T) {
 	oldCreateRun := createRun
 
 	// Force createRun to throw error
-	createRun = func(opts *options) error {
+	createRun = func(_ context.Context, opts *options) error {
 		return errors.New("fail on purpose")
 	}
 

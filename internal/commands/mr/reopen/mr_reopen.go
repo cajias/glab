@@ -39,7 +39,7 @@ func NewCmdReopen(f cmdutils.Factory) *cobra.Command {
 				return err
 			}
 
-			mrs, repo, err := mrutils.MRsFromArgs(f, args, "closed")
+			mrs, repo, err := mrutils.MRsFromArgs(cmd.Context(), f, args, "closed")
 			if err != nil {
 				return err
 			}

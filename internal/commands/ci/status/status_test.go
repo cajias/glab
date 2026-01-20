@@ -31,12 +31,12 @@ func Test_getPipelineWithFallback(t *testing.T) {
 			branch: "main",
 			setupMocks: func(tc *gitlabtesting.TestClient) {
 				tc.MockPipelines.EXPECT().
-					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("main")}).
+					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("main")}, gomock.Any()).
 					Return(&gitlab.Pipeline{ID: 1, Status: "success"}, nil, nil)
 
 				// Mock job check to verify pipeline has jobs
 				tc.MockJobs.EXPECT().
-					ListPipelineJobs("OWNER/REPO", int64(1), gomock.Any()).
+					ListPipelineJobs("OWNER/REPO", int64(1), gomock.Any(), gomock.Any()).
 					Return([]*gitlab.Job{{ID: 1, Name: "test"}}, nil, nil)
 			},
 			wantPipeline: &gitlab.Pipeline{ID: 1, Status: "success"},
@@ -48,12 +48,12 @@ func Test_getPipelineWithFallback(t *testing.T) {
 			setupMocks: func(tc *gitlabtesting.TestClient) {
 				// Latest pipeline found but has no jobs (e.g., external pipeline)
 				tc.MockPipelines.EXPECT().
-					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("feature")}).
+					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("feature")}, gomock.Any()).
 					Return(&gitlab.Pipeline{ID: 1, Status: "success"}, nil, nil)
 
 				// Mock job check returns empty list
 				tc.MockJobs.EXPECT().
-					ListPipelineJobs("OWNER/REPO", int64(1), gomock.Any()).
+					ListPipelineJobs("OWNER/REPO", int64(1), gomock.Any(), gomock.Any()).
 					Return([]*gitlab.Job{}, nil, nil)
 
 				// Find and get MR
@@ -84,7 +84,7 @@ func Test_getPipelineWithFallback(t *testing.T) {
 			setupMocks: func(tc *gitlabtesting.TestClient) {
 				// Latest pipeline not found
 				tc.MockPipelines.EXPECT().
-					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("feature")}).
+					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("feature")}, gomock.Any()).
 					Return(nil, nil, errors.New("not found"))
 
 				// Find and get MR
@@ -115,7 +115,7 @@ func Test_getPipelineWithFallback(t *testing.T) {
 			setupMocks: func(tc *gitlabtesting.TestClient) {
 				// Latest pipeline not found
 				tc.MockPipelines.EXPECT().
-					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("feature")}).
+					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("feature")}, gomock.Any()).
 					Return(nil, nil, errors.New("not found"))
 
 				// No MRs found
@@ -133,7 +133,7 @@ func Test_getPipelineWithFallback(t *testing.T) {
 			setupMocks: func(tc *gitlabtesting.TestClient) {
 				// Latest pipeline not found
 				tc.MockPipelines.EXPECT().
-					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("feature")}).
+					GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("feature")}, gomock.Any()).
 					Return(nil, nil, errors.New("not found"))
 
 				// Find MR but no pipeline
@@ -160,7 +160,7 @@ func Test_getPipelineWithFallback(t *testing.T) {
 			// Create test IO streams
 			ios, _, _, _ := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(false))
 
-			pipeline, err := ciutils.GetPipelineWithFallback(tc.Client, "OWNER/REPO", tt.branch, ios)
+			pipeline, err := ciutils.GetPipelineWithFallback(t.Context(), tc.Client, "OWNER/REPO", tt.branch, ios)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -187,7 +187,7 @@ func TestCiStatusCommand_NoPrompt(t *testing.T) {
 	gomock.InOrder(
 		// Mock a finished pipeline so the command doesn't loop
 		tc.MockPipelines.EXPECT().
-			GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("main")}).
+			GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("main")}, gomock.Any()).
 			Return(&gitlab.Pipeline{ID: 1, Status: "success"}, nil, nil),
 
 		// Mock job check in GetPipelineWithFallback
@@ -226,7 +226,7 @@ func TestCiStatusCommand_WithPromptsEnabled_FinishedPipeline(t *testing.T) {
 	gomock.InOrder(
 		// Mock a finished pipeline
 		tc.MockPipelines.EXPECT().
-			GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("main")}).
+			GetLatestPipeline("OWNER/REPO", &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr("main")}, gomock.Any()).
 			Return(&gitlab.Pipeline{ID: 1, Status: "success"}, nil, nil),
 
 		// Mock job check in GetPipelineWithFallback

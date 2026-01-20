@@ -65,7 +65,7 @@ func IssueState(c *iostreams.ColorPalette, i *gitlab.Issue) string {
 	}
 }
 
-func IssuesFromArgs(apiClientFunc func(repoHost string) (*api.Client, error), gitlabClient *gitlab.Client, baseRepoFn func() (glrepo.Interface, error), defaultHostname string, args []string) ([]*gitlab.Issue, glrepo.Interface, error) {
+func IssuesFromArgs(ctx context.Context, apiClientFunc func(repoHost string) (*api.Client, error), gitlabClient *gitlab.Client, baseRepoFn func() (glrepo.Interface, error), defaultHostname string, args []string) ([]*gitlab.Issue, glrepo.Interface, error) {
 	var baseRepo glrepo.Interface
 
 	if len(args) <= 1 {
@@ -82,7 +82,7 @@ func IssuesFromArgs(apiClientFunc func(repoHost string) (*api.Client, error), gi
 		}
 	}
 
-	errGroup, _ := errgroup.WithContext(context.Background())
+	errGroup, _ := errgroup.WithContext(ctx)
 	issues := make([]*gitlab.Issue, len(args))
 	for i, arg := range args {
 		errGroup.Go(func() error {

@@ -63,7 +63,7 @@ type ResolvedRemotes struct {
 	defaultHostname string
 }
 
-func (r *ResolvedRemotes) BaseRepo(ios *iostreams.IOStreams) (Interface, error) {
+func (r *ResolvedRemotes) BaseRepo(ctx context.Context, ios *iostreams.IOStreams) (Interface, error) {
 	// if any of the remotes already has a resolution, respect that
 	for _, remote := range r.remotes {
 		if remote.Resolved == "base" {
@@ -126,7 +126,7 @@ func (r *ResolvedRemotes) BaseRepo(ios *iostreams.IOStreams) (Interface, error) 
 
 	baseName := repoNames[0]
 	if len(repoNames) > 1 {
-		err := ios.Select(context.Background(), &baseName, resolverBaseRepoQuestion, repoNames)
+		err := ios.Select(ctx, &baseName, resolverBaseRepoQuestion, repoNames)
 		if err != nil {
 			return nil, err
 		}
@@ -155,7 +155,7 @@ func (r *ResolvedRemotes) BaseRepo(ios *iostreams.IOStreams) (Interface, error) 
 	return finalRepo, err
 }
 
-func (r *ResolvedRemotes) HeadRepo(ios *iostreams.IOStreams) (Interface, error) {
+func (r *ResolvedRemotes) HeadRepo(ctx context.Context, ios *iostreams.IOStreams) (Interface, error) {
 	// if any of the remotes already has a resolution, respect that
 	for _, remote := range r.remotes {
 		if remote.Resolved == "head" {
@@ -213,7 +213,7 @@ func (r *ResolvedRemotes) HeadRepo(ios *iostreams.IOStreams) (Interface, error) 
 			return r.remotes[0], nil
 		}
 
-		err := ios.Select(context.Background(), &headName, resolverHeadRepoQuestion, repoNames)
+		err := ios.Select(ctx, &headName, resolverHeadRepoQuestion, repoNames)
 		if err != nil {
 			return nil, err
 		}

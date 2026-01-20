@@ -81,7 +81,7 @@ func NewCmdTransfer(f cmdutils.Factory) *cobra.Command {
 			`), c.Yellow(repo.FullName()), c.Yellow(targetNamespace))
 
 			if !dontPromptForConfirmation {
-				err = confirmTransfer(f.IO())
+				err = confirmTransfer(cmd.Context(), f.IO())
 				if err != nil {
 					return fmt.Errorf("unable to confirm: %w", err)
 				}
@@ -110,7 +110,7 @@ func NewCmdTransfer(f cmdutils.Factory) *cobra.Command {
 	return repoTransferCmd
 }
 
-func confirmTransfer(ios *iostreams.IOStreams) error {
+func confirmTransfer(ctx context.Context, ios *iostreams.IOStreams) error {
 	const (
 		performTransferLabel = "Confirm repository transfer"
 		abortTransferLabel   = "Abort repository transfer"
@@ -119,7 +119,7 @@ func confirmTransfer(ios *iostreams.IOStreams) error {
 	options := []string{abortTransferLabel, performTransferLabel}
 
 	var confirmTransfer string
-	err := ios.Select(context.Background(), &confirmTransfer, "Continue with the repository transfer?", options)
+	err := ios.Select(ctx, &confirmTransfer, "Continue with the repository transfer?", options)
 	if err != nil {
 		return fmt.Errorf("could not prompt: %w", err)
 	}

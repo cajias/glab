@@ -115,7 +115,7 @@ func (o *options) run(x cmdutils.Factory, cmd *cobra.Command, args []string) err
 		return err
 	}
 
-	mr, repo, err := mrutils.MRFromArgs(x, args, "opened")
+	mr, repo, err := mrutils.MRFromArgs(cmd.Context(), x, args, "opened")
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (o *options) run(x cmdutils.Factory, cmd *cobra.Command, args []string) err
 
 	if o.io.IsOutputTTY() && !o.skipPrompts {
 		if !o.squashBeforeMerge && !o.rebaseBeforeMerge && o.mergeCommitMessage == "" {
-			o.mergeMethod, err = mergeMethodSurvey(o.io)
+			o.mergeMethod, err = mergeMethodSurvey(cmd.Context(), o.io)
 			if err != nil {
 				return err
 			}
@@ -297,7 +297,7 @@ func (o *options) run(x cmdutils.Factory, cmd *cobra.Command, args []string) err
 	return nil
 }
 
-func mergeMethodSurvey(io *iostreams.IOStreams) (MRMergeMethod, error) {
+func mergeMethodSurvey(ctx context.Context, io *iostreams.IOStreams) (MRMergeMethod, error) {
 	type mergeOption struct {
 		title  string
 		method MRMergeMethod
@@ -315,7 +315,7 @@ func mergeMethodSurvey(io *iostreams.IOStreams) (MRMergeMethod, error) {
 	}
 
 	var selectedTitle string
-	err := io.Select(context.Background(), &selectedTitle, "What merge method do you want to use?", options)
+	err := io.Select(ctx, &selectedTitle, "What merge method do you want to use?", options)
 	if err != nil {
 		return MRMergeMethodMerge, err
 	}

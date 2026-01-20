@@ -933,7 +933,7 @@ func Test_MilestonesPrompt(t *testing.T) {
 			ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true))
 
 			var got int64
-			err := MilestonesPrompt(&got, &gitlab.Client{}, repoRemote, ios)
+			err := MilestonesPrompt(t.Context(), &got, &gitlab.Client{}, repoRemote, ios)
 			if err != nil {
 				t.Errorf("MilestonesPrompt() unexpected error = %s", err)
 			}
@@ -967,7 +967,7 @@ func Test_MilestonesPromptNoPrompts(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	io := iostreams.New(iostreams.WithStderr(stderr, false))
 
-	err := MilestonesPrompt(&got, &gitlab.Client{}, repoRemote, io)
+	err := MilestonesPrompt(t.Context(), &got, &gitlab.Client{}, repoRemote, io)
 	if err != nil {
 		t.Errorf("MilestonesPrompt() unexpected error = %s", err)
 	}
@@ -995,7 +995,7 @@ func TestMilestonesPromptFailures(t *testing.T) {
 	var got int64
 	io := iostreams.New()
 
-	err := MilestonesPrompt(&got, &gitlab.Client{}, repoRemote, io)
+	err := MilestonesPrompt(t.Context(), &got, &gitlab.Client{}, repoRemote, io)
 	if err == nil {
 		t.Error("MilestonesPrompt() expected error")
 	}
@@ -1295,7 +1295,7 @@ func Test_ConfirmSubmission(t *testing.T) {
 
 				ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true))
 
-				got, err := ConfirmSubmission(ios, tC.allowAddMetadata)
+				got, err := ConfirmSubmission(t.Context(), ios, tC.allowAddMetadata)
 				assert.NoError(t, err)
 				assert.Equal(t, tC.output, got)
 			})

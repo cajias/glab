@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -73,7 +74,7 @@ func createPipeline(cmd *cobra.Command, c *gitlab.CreatePipelineOptions, f cmdut
 		return nil, err
 	}
 	if mr {
-		pipe, err := createMrPipeline(branch, f, apiClient, repo)
+		pipe, err := createMrPipeline(cmd.Context(), branch, f, apiClient, repo)
 		if err != nil {
 			return nil, fmt.Errorf("could not create mr pipeline for branch %s: %v", branch, err)
 		}
@@ -128,8 +129,9 @@ func resolveBranch(cmd *cobra.Command, f cmdutils.Factory) (string, error) {
 	return branch, nil
 }
 
-func createMrPipeline(branch string, f cmdutils.Factory, apiClient *gitlab.Client, repo glrepo.Interface) (*gitlab.PipelineInfo, error) {
+func createMrPipeline(ctx context.Context, branch string, f cmdutils.Factory, apiClient *gitlab.Client, repo glrepo.Interface) (*gitlab.PipelineInfo, error) {
 	mr, err := mrutils.GetMRForBranch(
+		ctx,
 		f.IO(),
 		apiClient,
 		mrutils.MrOptions{

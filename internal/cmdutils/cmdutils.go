@@ -189,7 +189,7 @@ func LabelsPrompt(ctx context.Context, ios *iostreams.IOStreams, response *[]str
 	return nil
 }
 
-func MilestonesPrompt(response *int64, apiClient *gitlab.Client, repoRemote *glrepo.Remote, ios *iostreams.IOStreams) error {
+func MilestonesPrompt(ctx context.Context, response *int64, apiClient *gitlab.Client, repoRemote *glrepo.Remote, ios *iostreams.IOStreams) error {
 	var milestoneOptions []string
 	milestoneMap := map[string]int64{}
 
@@ -213,7 +213,7 @@ func MilestonesPrompt(response *int64, apiClient *gitlab.Client, repoRemote *glr
 	}
 
 	var selectedMilestone string
-	err = ios.Select(context.Background(), &selectedMilestone, "Select milestone", milestoneOptions)
+	err = ios.Select(ctx, &selectedMilestone, "Select milestone", milestoneOptions)
 	if err != nil {
 		return err
 	}
@@ -288,7 +288,7 @@ const (
 	EditCommitMessageAction
 )
 
-func ConfirmSubmission(ios *iostreams.IOStreams, allowAddMetadata bool) (Action, error) {
+func ConfirmSubmission(ctx context.Context, ios *iostreams.IOStreams, allowAddMetadata bool) (Action, error) {
 	const (
 		submitLabel      = "Submit"
 		previewLabel     = "Continue in browser"
@@ -303,7 +303,7 @@ func ConfirmSubmission(ios *iostreams.IOStreams, allowAddMetadata bool) (Action,
 	options = append(options, cancelLabel)
 
 	var confirmAnswer string
-	err := ios.Select(context.Background(), &confirmAnswer, "What's next?", options)
+	err := ios.Select(ctx, &confirmAnswer, "What's next?", options)
 	if err != nil {
 		return -1, fmt.Errorf("could not prompt: %w", err)
 	}

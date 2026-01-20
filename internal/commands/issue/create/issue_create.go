@@ -132,7 +132,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 				return cmdutils.SilentError
 			}
 
-			if err := createRun(opts); err != nil {
+			if err := createRun(cmd.Context(), opts); err != nil {
 				// always save options to file
 				recoverErr := createRecoverSaveFile(repo.FullName(), opts)
 				if recoverErr != nil {
@@ -167,7 +167,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 	return issueCreateCmd
 }
 
-var createRun = func(opts *options) error {
+var createRun = func(ctx context.Context, opts *options) error {
 	apiClient, err := opts.gitlabClient()
 	if err != nil {
 		return err
@@ -213,7 +213,7 @@ var createRun = func(opts *options) error {
 			templateNames = append(templateNames, blankIssueOption)
 
 			var selectedTemplate string
-			if err := opts.io.Select(context.Background(), &selectedTemplate, "Choose a template", templateNames); err != nil {
+			if err := opts.io.Select(ctx, &selectedTemplate, "Choose a template", templateNames); err != nil {
 				return fmt.Errorf("could not prompt: %w", err)
 			}
 
@@ -281,7 +281,7 @@ var createRun = func(opts *options) error {
 
 			// Run the combined form
 			if len(fields) > 0 {
-				err = opts.io.RunForm(context.Background(), fields...)
+				err = opts.io.RunForm(ctx, fields...)
 				if err != nil {
 					return err
 				}
@@ -303,7 +303,7 @@ var createRun = func(opts *options) error {
 	}
 
 	if action == cmdutils.NoAction {
-		action, err = cmdutils.ConfirmSubmission(opts.io, true)
+		action, err = cmdutils.ConfirmSubmission(ctx, opts.io, true)
 		if err != nil {
 			return fmt.Errorf("unable to confirm: %w", err)
 		}
@@ -312,7 +312,7 @@ var createRun = func(opts *options) error {
 	if action == cmdutils.AddMetadataAction {
 		var metadataActions []cmdutils.Action
 
-		metadataActions, err = cmdutils.PickMetadata(context.Background(), opts.io)
+		metadataActions, err = cmdutils.PickMetadata(ctx, opts.io)
 		if err != nil {
 			return fmt.Errorf("failed to pick metadata to add: %w", err)
 		}
@@ -333,7 +333,7 @@ var createRun = func(opts *options) error {
 
 		for _, x := range metadataActions {
 			if x == cmdutils.AddLabelAction {
-				err = cmdutils.LabelsPrompt(context.Background(), opts.io, &opts.Labels, apiClient, repoRemote)
+				err = cmdutils.LabelsPrompt(ctx, opts.io, &opts.Labels, apiClient, repoRemote)
 				if err != nil {
 					return err
 				}
@@ -342,13 +342,13 @@ var createRun = func(opts *options) error {
 			if x == cmdutils.AddAssigneeAction {
 				// Involve only reporters and up, in the future this might be expanded to `guests`
 				// but that might hit the `100` limit for projects with large amounts of collaborators
-				err = cmdutils.UsersPrompt(context.Background(), &opts.Assignees, apiClient, repoRemote, opts.io, 20, "assignees")
+				err = cmdutils.UsersPrompt(ctx, &opts.Assignees, apiClient, repoRemote, opts.io, 20, "assignees")
 				if err != nil {
 					return err
 				}
 			}
 			if x == cmdutils.AddMilestoneAction {
-				err = cmdutils.MilestonesPrompt(&opts.Milestone, apiClient, repoRemote, opts.io)
+				err = cmdutils.MilestonesPrompt(ctx, &opts.Milestone, apiClient, repoRemote, opts.io)
 				if err != nil {
 					return err
 				}
@@ -357,7 +357,7 @@ var createRun = func(opts *options) error {
 		}
 
 		// Ask the user again but don't permit AddMetadata a second time
-		action, err = cmdutils.ConfirmSubmission(opts.io, false)
+		action, err = cmdutils.ConfirmSubmission(ctx, opts.io, false)
 		if err != nil {
 			return err
 		}
