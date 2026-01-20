@@ -265,7 +265,7 @@ func Test_BaseRepo(t *testing.T) {
 		// Set a base resolution
 		localRem.remotes[0].Resolved = "base"
 
-		got, err := localRem.BaseRepo(iostreams.New())
+		got, err := localRem.BaseRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, localRem.remotes[0].FullName(), got.FullName())
@@ -280,7 +280,7 @@ func Test_BaseRepo(t *testing.T) {
 		// Set a base resolution
 		localRem.remotes[0].Resolved = "base: gitlab.com/maxice8/glab"
 
-		got, err := localRem.BaseRepo(iostreams.New())
+		got, err := localRem.BaseRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, expectedResolution.FullName(), got.FullName())
@@ -293,7 +293,7 @@ func Test_BaseRepo(t *testing.T) {
 		// Set a base resolution
 		localRem.remotes[0].Resolved = "base:NotAnActualValidValue"
 
-		got, err := localRem.BaseRepo(iostreams.New())
+		got, err := localRem.BaseRepo(t.Context(), iostreams.New())
 		assert.Nil(t, got)
 		assert.EqualError(t, err, `expected the "[HOST/]OWNER/[NAMESPACE/]REPO" format, got "NotAnActualValidValue"`)
 	})
@@ -306,7 +306,7 @@ func Test_BaseRepo(t *testing.T) {
 		// Set a base resolution
 		localRem.remotes[0].Resolved = "gitlab.com/maxice8/glab"
 
-		got, err := localRem.BaseRepo(iostreams.New())
+		got, err := localRem.BaseRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, expectedResolution.FullName(), got.FullName())
@@ -319,7 +319,7 @@ func Test_BaseRepo(t *testing.T) {
 		// Set a base resolution
 		localRem.remotes[0].Resolved = "NotAnActualValidValue"
 
-		got, err := localRem.BaseRepo(iostreams.New())
+		got, err := localRem.BaseRepo(t.Context(), iostreams.New())
 		assert.Nil(t, got)
 		assert.EqualError(t, err, `expected the "[HOST/]OWNER/[NAMESPACE/]REPO" format, got "NotAnActualValidValue"`)
 	})
@@ -327,7 +327,7 @@ func Test_BaseRepo(t *testing.T) {
 	t.Run("Prompt==false", func(t *testing.T) {
 		localRem := rem()
 
-		got, err := localRem.BaseRepo(iostreams.New())
+		got, err := localRem.BaseRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, localRem.remotes[0].FullName(), got.FullName())
@@ -338,7 +338,7 @@ func Test_BaseRepo(t *testing.T) {
 		localRem := rem()
 
 		// Prompt must be true otherwise we won't reach the code we want to test
-		got, err := localRem.BaseRepo(iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
+		got, err := localRem.BaseRepo(t.Context(), iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
 		assert.NoError(t, err)
 
 		assert.Equal(t, localRem.remotes[0].FullName(), got.FullName())
@@ -352,7 +352,7 @@ func Test_BaseRepo(t *testing.T) {
 		localRem.remotes = Remotes{}
 		localRem.network = nil
 
-		_, err := localRem.BaseRepo(iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
+		_, err := localRem.BaseRepo(t.Context(), iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
 		assert.EqualError(t, err, "no GitLab Projects found from remotes")
 	})
 
@@ -381,7 +381,7 @@ func Test_BaseRepo(t *testing.T) {
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
 
-		got, err := localRem.BaseRepo(ios)
+		got, err := localRem.BaseRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		assert.Equal(t, originRemote.Repo.FullName(), got.FullName())
@@ -413,7 +413,7 @@ func Test_BaseRepo(t *testing.T) {
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
 
-		got, err := localRem.BaseRepo(ios)
+		got, err := localRem.BaseRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		assert.Equal(t, localRem.remotes[0].Repo.FullName(), got.FullName())
@@ -450,7 +450,7 @@ func Test_BaseRepo(t *testing.T) {
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
 
-		got, err := localRem.BaseRepo(ios)
+		got, err := localRem.BaseRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		assert.Equal(t, originRemote.Repo.FullName(), got.FullName())
@@ -487,7 +487,7 @@ func Test_BaseRepo(t *testing.T) {
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
 
-		got, err := localRem.BaseRepo(ios)
+		got, err := localRem.BaseRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		assert.Equal(t, "profclems/glab", got.FullName())
@@ -514,7 +514,7 @@ func Test_BaseRepo(t *testing.T) {
 		localRem.network = nil
 
 		// Prompt must be true otherwise we won't reach the code we want to test
-		_, err := localRem.BaseRepo(iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
+		_, err := localRem.BaseRepo(t.Context(), iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
 		multierr := err.(*multierror.Error)
 		assert.Len(t, multierr.Errors, 2)
 		assert.True(t, errors.Is(err, assert.AnError), "Unexpected error type")
@@ -547,7 +547,7 @@ func Test_BaseRepo(t *testing.T) {
 		localRem.network = nil
 
 		// Prompt must be true otherwise we won't reach the code we want to test
-		_, err := localRem.BaseRepo(iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
+		_, err := localRem.BaseRepo(t.Context(), iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
 		assert.NoError(t, err)
 	})
 
@@ -604,7 +604,7 @@ func Test_BaseRepo(t *testing.T) {
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
 
-		got, err := localRem.BaseRepo(ios)
+		got, err := localRem.BaseRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		// The fix should ensure we use the git remote host, not the API host
@@ -670,7 +670,7 @@ func Test_HeadRepo(t *testing.T) {
 		// Set a head resolution
 		localRem.remotes[0].Resolved = "head"
 
-		got, err := localRem.HeadRepo(iostreams.New())
+		got, err := localRem.HeadRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, localRem.remotes[0].FullName(), got.FullName())
@@ -685,7 +685,7 @@ func Test_HeadRepo(t *testing.T) {
 		// Set a base resolution
 		localRem.remotes[0].Resolved = "head: gitlab.com/maxice8/glab"
 
-		got, err := localRem.HeadRepo(iostreams.New())
+		got, err := localRem.HeadRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, expectedResolution.FullName(), got.FullName())
@@ -698,7 +698,7 @@ func Test_HeadRepo(t *testing.T) {
 		// Set a base resolution
 		localRem.remotes[0].Resolved = "head:NotAnActualValidValue"
 
-		got, err := localRem.HeadRepo(iostreams.New())
+		got, err := localRem.HeadRepo(t.Context(), iostreams.New())
 		assert.Nil(t, got)
 		assert.EqualError(t, err, `expected the "[HOST/]OWNER/[NAMESPACE/]REPO" format, got "NotAnActualValidValue"`)
 	})
@@ -706,7 +706,7 @@ func Test_HeadRepo(t *testing.T) {
 	t.Run("Prompt==false", func(t *testing.T) {
 		localRem := rem()
 
-		got, err := localRem.HeadRepo(iostreams.New())
+		got, err := localRem.HeadRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, localRem.remotes[0].FullName(), got.FullName())
@@ -716,7 +716,7 @@ func Test_HeadRepo(t *testing.T) {
 		localRem := rem()
 
 		// Prompt must be true otherwise we won't reach the code we want to test
-		got, err := localRem.HeadRepo(iostreams.New())
+		got, err := localRem.HeadRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, got.FullName(), localRem.remotes[0].FullName())
@@ -744,7 +744,7 @@ func Test_HeadRepo(t *testing.T) {
 		localRem.remotes = Remotes{originRemote}
 		localRem.network = []gitlab.Project{originNetwork}
 
-		got, err := localRem.HeadRepo(iostreams.New())
+		got, err := localRem.HeadRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, "maxice8/glab", got.FullName())
@@ -767,7 +767,7 @@ func Test_HeadRepo(t *testing.T) {
 		localRem.remotes = append(localRem.remotes, originRemote)
 		localRem.network = append(localRem.network, originNetwork)
 
-		got, err := localRem.HeadRepo(iostreams.New())
+		got, err := localRem.HeadRepo(t.Context(), iostreams.New())
 		assert.NoError(t, err)
 
 		assert.Equal(t, "profclems/glab", got.FullName())
@@ -780,7 +780,7 @@ func Test_HeadRepo(t *testing.T) {
 		localRem.remotes = Remotes{}
 		localRem.network = nil
 
-		_, err := localRem.HeadRepo(iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
+		_, err := localRem.HeadRepo(t.Context(), iostreams.New(iostreams.WithStdout(nil, true), iostreams.WithStderr(nil, true)))
 		assert.EqualError(t, err, "no GitLab Projects found from remotes")
 	})
 
@@ -808,7 +808,7 @@ func Test_HeadRepo(t *testing.T) {
 		t.Cleanup(cancel)
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
-		got, err := localRem.HeadRepo(ios)
+		got, err := localRem.HeadRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		assert.Equal(t, originRemote.Repo.FullName(), got.FullName())
@@ -839,7 +839,7 @@ func Test_HeadRepo(t *testing.T) {
 		t.Cleanup(cancel)
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
-		got, err := localRem.HeadRepo(ios)
+		got, err := localRem.HeadRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		assert.Equal(t, localRem.remotes[0].Repo.FullName(), got.FullName())
@@ -875,7 +875,7 @@ func Test_HeadRepo(t *testing.T) {
 		t.Cleanup(cancel)
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
-		got, err := localRem.HeadRepo(ios)
+		got, err := localRem.HeadRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		assert.Equal(t, originRemote.Repo.FullName(), got.FullName())
@@ -911,7 +911,7 @@ func Test_HeadRepo(t *testing.T) {
 		t.Cleanup(cancel)
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
-		got, err := localRem.HeadRepo(ios)
+		got, err := localRem.HeadRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		assert.Equal(t, "profclems/glab", got.FullName())
@@ -970,7 +970,7 @@ func Test_HeadRepo(t *testing.T) {
 		t.Cleanup(cancel)
 
 		ios := iostreams.New(iostreams.WithStdin(stdin, true), iostreams.WithStdout(stdout, true), iostreams.WithStderr(nil, true))
-		got, err := localRem.HeadRepo(ios)
+		got, err := localRem.HeadRepo(t.Context(), ios)
 		assert.NoError(t, err)
 
 		// The fix should ensure we use the git remote host, not the API host

@@ -27,9 +27,9 @@ func makeHyperlink(s *iostreams.IOStreams, pipeline *gitlab.PipelineInfo) string
 
 // GetPipelineWithFallback gets the latest pipeline for a branch, falling back to MR head pipeline
 // for merged results pipelines where the direct branch lookup may fail or returns a pipeline with no jobs.
-func GetPipelineWithFallback(client *gitlab.Client, repoName, branch string, ios *iostreams.IOStreams) (*gitlab.Pipeline, error) {
+func GetPipelineWithFallback(ctx context.Context, client *gitlab.Client, repoName, branch string, ios *iostreams.IOStreams) (*gitlab.Pipeline, error) {
 	// First try: Get pipeline by branch name
-	pipeline, _, err := client.Pipelines.GetLatestPipeline(repoName, &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr(branch)})
+	pipeline, _, err := client.Pipelines.GetLatestPipeline(repoName, &gitlab.GetLatestPipelineOptions{Ref: gitlab.Ptr(branch)}, gitlab.WithContext(ctx))
 	if err == nil {
 		// Check if the pipeline has jobs - some pipelines (e.g., external pipelines) may have no jobs
 		jobs, _, jobsErr := client.Jobs.ListPipelineJobs(repoName, pipeline.ID, &gitlab.ListJobsOptions{
@@ -43,7 +43,7 @@ func GetPipelineWithFallback(client *gitlab.Client, repoName, branch string, ios
 	}
 
 	// Fallback: Look for MR pipeline (for merged results pipelines or when branch pipeline has no jobs)
-	mr, mrErr := getMRForBranch(client, repoName, branch, ios)
+	mr, mrErr := getMRForBranch(ctx, client, repoName, branch, ios)
 	if mrErr != nil {
 		// If we had a pipeline from the branch lookup (even with no jobs), return it
 		if pipeline != nil {
@@ -61,7 +61,7 @@ func GetPipelineWithFallback(client *gitlab.Client, repoName, branch string, ios
 	}
 
 	// Get the full pipeline details using the MR's head pipeline ID
-	mrPipeline, _, pipelineErr := client.Pipelines.GetPipeline(repoName, mr.HeadPipeline.ID)
+	mrPipeline, _, pipelineErr := client.Pipelines.GetPipeline(repoName, mr.HeadPipeline.ID, gitlab.WithContext(ctx))
 	if pipelineErr != nil {
 		// If we had a pipeline from the branch lookup, return it as fallback
 		if pipeline != nil {
@@ -74,7 +74,7 @@ func GetPipelineWithFallback(client *gitlab.Client, repoName, branch string, ios
 }
 
 // getMRForBranch finds a merge request for the given branch
-func getMRForBranch(client *gitlab.Client, repoName, branch string, ios *iostreams.IOStreams) (*gitlab.MergeRequest, error) {
+func getMRForBranch(ctx context.Context, client *gitlab.Client, repoName, branch string, ios *iostreams.IOStreams) (*gitlab.MergeRequest, error) {
 	opts := &gitlab.ListProjectMergeRequestsOptions{
 		SourceBranch: gitlab.Ptr(branch),
 	}
@@ -114,7 +114,7 @@ func getMRForBranch(client *gitlab.Client, repoName, branch string, ios *iostrea
 		}
 
 		pickedMR := mrNames[0]
-		err = ios.Select(context.Background(), &pickedMR, "Multiple merge requests exist for this branch. Select one:", mrNames)
+		err = ios.Select(ctx, &pickedMR, "Multiple merge requests exist for this branch. Select one:", mrNames)
 		if err != nil {
 			return nil, fmt.Errorf("you must select a merge request: %w", err)
 		}

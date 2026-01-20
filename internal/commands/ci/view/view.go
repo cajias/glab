@@ -148,7 +148,7 @@ func NewCmdView(f cmdutils.Factory) *cobra.Command {
 				return err
 			}
 
-			return opts.run()
+			return opts.run(cmd.Context())
 		},
 	}
 
@@ -177,7 +177,7 @@ func (o *options) complete(args []string) error {
 	return nil
 }
 
-func (o *options) run() error {
+func (o *options) run(ctx context.Context) error {
 	client, err := o.gitlabClient()
 	if err != nil {
 		return err
@@ -211,7 +211,7 @@ func (o *options) run() error {
 		}
 	} else {
 		// Get pipeline by branch reference (not by commit's LastPipeline)
-		pipeline, err := ciutils.GetPipelineWithFallback(client, projectID, o.refName, o.io)
+		pipeline, err := ciutils.GetPipelineWithFallback(ctx, client, projectID, o.refName, o.io)
 		if err != nil {
 			return err
 		}
@@ -266,13 +266,13 @@ func (o *options) run() error {
 	defer recoverPanic(app)
 
 	var navi navigator
-	app.SetInputCapture(inputCapture(app, root, navi, inputCh, forceUpdateCh, o, client, projectID, commitSHA))
+	app.SetInputCapture(inputCapture(ctx, app, root, navi, inputCh, forceUpdateCh, o, client, projectID, commitSHA))
 	go updateJobs(app, jobsCh, forceUpdateCh, client, commit)
 	go func() {
 		defer recoverPanic(app)
 		for {
 			app.SetFocus(root)
-			jobsView(app, jobsCh, inputCh, root, client, projectID, commitSHA)
+			jobsView(ctx, app, jobsCh, inputCh, root, client, projectID, commitSHA)
 			app.Draw()
 		}
 	}()
@@ -283,6 +283,7 @@ func (o *options) run() error {
 }
 
 func inputCapture(
+	ctx context.Context,
 	app *tview.Application,
 	root *tview.Pages,
 	navi navigator,
@@ -418,7 +419,7 @@ func inputCapture(
 			}
 		case tcell.KeyCtrlSpace:
 			app.Suspend(func() {
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(ctx)
 				go func() {
 					err := ciutils.RunTraceSha(
 						ctx,
@@ -624,6 +625,7 @@ func adjacentStages(jobs []*ViewJob, s string) (string, string) {
 }
 
 func jobsView(
+	ctx context.Context,
 	app *tview.Application,
 	jobsCh <-chan []*ViewJob,
 	inputCh <-chan struct{},
@@ -674,7 +676,7 @@ func jobsView(
 				bracketWriter := &bracketEscaper{Writer: vtcleanWriter}
 
 				err := ciutils.RunTraceSha(
-					context.Background(),
+					ctx,
 					apiClient,
 					bracketWriter,
 					projectID,

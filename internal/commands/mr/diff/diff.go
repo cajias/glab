@@ -4,6 +4,7 @@ package diff
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -62,7 +63,7 @@ func NewCmdDiff(f cmdutils.Factory, runF func(*options) error) *cobra.Command {
 			if runF != nil {
 				return runF(opts)
 			}
-			return opts.run()
+			return opts.run(cmd.Context())
 		},
 	}
 
@@ -94,12 +95,12 @@ func (o *options) validate(cmd *cobra.Command) error {
 	return nil
 }
 
-func (o *options) run() error {
+func (o *options) run(ctx context.Context) error {
 	client, err := o.factory.GitLabClient()
 	if err != nil {
 		return err
 	}
-	mr, baseRepo, err := mrutils.MRFromArgs(o.factory, o.args, "any")
+	mr, baseRepo, err := mrutils.MRFromArgs(ctx, o.factory, o.args, "any")
 	if err != nil {
 		return err
 	}

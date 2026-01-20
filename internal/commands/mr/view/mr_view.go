@@ -1,6 +1,7 @@
 package view
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,7 +70,7 @@ func NewCmdView(f cmdutils.Factory) *cobra.Command {
 			mcpannotations.Safe: "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return opts.run(f, args)
+			return opts.run(cmd.Context(), f, args)
 		},
 	}
 
@@ -83,13 +84,13 @@ func NewCmdView(f cmdutils.Factory) *cobra.Command {
 	return mrViewCmd
 }
 
-func (o *options) run(f cmdutils.Factory, args []string) error {
+func (o *options) run(ctx context.Context, f cmdutils.Factory, args []string) error {
 	client, err := o.gitlabClient()
 	if err != nil {
 		return err
 	}
 
-	mr, baseRepo, err := mrutils.MRFromArgsWithOpts(f, args, &gitlab.GetMergeRequestsOptions{
+	mr, baseRepo, err := mrutils.MRFromArgsWithOpts(ctx, f, args, &gitlab.GetMergeRequestsOptions{
 		IncludeDivergedCommitsCount: gitlab.Ptr(true),
 		RenderHTML:                  gitlab.Ptr(true),
 		IncludeRebaseInProgress:     gitlab.Ptr(true),

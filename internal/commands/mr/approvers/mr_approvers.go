@@ -28,7 +28,7 @@ func NewCmdApprovers(f cmdutils.Factory) *cobra.Command {
 
 			// Obtain the MR from the positional arguments, but allow users to find approvers for
 			// merge requests in any valid state
-			mr, repo, err := mrutils.MRFromArgs(f, args, "any")
+			mr, repo, err := mrutils.MRFromArgs(cmd.Context(), f, args, "any")
 			if err != nil {
 				return err
 			}

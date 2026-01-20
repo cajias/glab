@@ -442,7 +442,7 @@ func Test_stackSync(t *testing.T) {
 				mockCmd.EXPECT().Git(command)
 			}
 
-			err = opts.run(f, mockCmd)
+			err = opts.run(t.Context(), f, mockCmd)
 
 			if tc.wantErr {
 				require.Error(t, err)

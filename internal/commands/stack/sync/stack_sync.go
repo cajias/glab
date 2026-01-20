@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -74,14 +75,14 @@ func NewCmdSyncStack(f cmdutils.Factory, gr git.GitRunner) *cobra.Command {
 
 			var gr git.StandardGitCommand
 
-			return opts.run(f, gr)
+			return opts.run(cmd.Context(), f, gr)
 		},
 	}
 
 	return stackSaveCmd
 }
 
-func (o *options) run(f cmdutils.Factory, gr git.GitRunner) error {
+func (o *options) run(ctx context.Context, f cmdutils.Factory, gr git.GitRunner) error {
 	client, err := auth.GetAuthenticatedClient(f.Config(), f.GitLabClient, f.IO())
 	if err != nil {
 		return fmt.Errorf("error authorizing with GitLab: %v", err)
@@ -97,7 +98,7 @@ func (o *options) run(f cmdutils.Factory, gr git.GitRunner) error {
 
 	// This prompts the user for the head repo if they're in a fork,
 	// allowing them to choose between their fork and the original repository
-	source, err := create.ResolvedHeadRepo(f)()
+	source, err := create.ResolvedHeadRepo(ctx, f)()
 	if err != nil {
 		return fmt.Errorf("error determining head repo: %v", err)
 	}
@@ -160,7 +161,7 @@ func (o *options) run(f cmdutils.Factory, gr git.GitRunner) error {
 			}
 		} else {
 			// we found an MR. let's get the status:
-			mr, _, err := mrutils.MRFromArgsWithOpts(f, []string{ref.Branch}, nil, "any")
+			mr, _, err := mrutils.MRFromArgsWithOpts(ctx, f, []string{ref.Branch}, nil, "any")
 			if err != nil {
 				return fmt.Errorf("error getting merge request from branch: %v. Does it still exist?", err)
 			}

@@ -69,7 +69,7 @@ func NewCmdCheckout(f cmdutils.Factory) *cobra.Command {
 				return err
 			}
 
-			mr, _, err := mrutils.MRFromArgs(f, args, "any")
+			mr, _, err := mrutils.MRFromArgs(cmd.Context(), f, args, "any")
 			if err != nil {
 				return err
 			}

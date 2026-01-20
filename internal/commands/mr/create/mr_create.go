@@ -88,7 +88,6 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 		gitlabClient:    f.GitLabClient,
 		config:          f.Config,
 		baseRepo:        f.BaseRepo,
-		headRepo:        ResolvedHeadRepo(f),
 		apiClient:       f.ApiClient,
 		defaultHostname: f.DefaultHostname(),
 	}
@@ -107,6 +106,8 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 		`),
 		Args: cobra.ExactArgs(0),
 		PreRun: func(cmd *cobra.Command, args []string) {
+			opts.headRepo = ResolvedHeadRepo(cmd.Context(), f)
+
 			repoOverride, _ := cmd.Flags().GetString("head")
 			if repoFromEnv := os.Getenv("GITLAB_HEAD_REPO"); repoOverride == "" && repoFromEnv != "" {
 				repoOverride = repoFromEnv
@@ -124,7 +125,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 			if err := opts.validate(cmd); err != nil {
 				return err
 			}
-			if err := opts.run(); err != nil {
+			if err := opts.run(cmd.Context()); err != nil {
 				// always save options to file
 				recoverErr := createRecoverSaveFile(opts)
 				if recoverErr != nil {
@@ -218,7 +219,7 @@ func parseIssue(apiClientFunc func(repoHost string) (*api.Client, error), gitlab
 	return issue, nil
 }
 
-func (o *options) run() error {
+func (o *options) run(ctx context.Context) error {
 	out := o.io.StdOut
 	c := o.io.Color()
 	mrCreateOpts := &gitlab.CreateMergeRequestOptions{}
@@ -389,7 +390,7 @@ func (o *options) run() error {
 			var templateContents string
 			if o.Description == "" {
 				if o.noEditor {
-					err = o.io.Multiline(context.Background(), &o.Description, "Description:", "")
+					err = o.io.Multiline(ctx, &o.Description, "Description:", "")
 					if err != nil {
 						return err
 					}
@@ -405,7 +406,7 @@ func (o *options) run() error {
 					templateNames = append(templateNames, mrWithCommitsTemplate)
 					templateNames = append(templateNames, mrEmptyTemplate)
 
-					if err := o.io.Select(context.Background(), &templateName, "Choose a template:", templateNames); err != nil {
+					if err := o.io.Select(ctx, &templateName, "Choose a template:", templateNames); err != nil {
 						return fmt.Errorf("could not prompt: %w", err)
 					}
 					switch templateName {
@@ -486,7 +487,7 @@ func (o *options) run() error {
 
 			// Run the combined form
 			if len(fields) > 0 {
-				err = o.io.RunForm(context.Background(), fields...)
+				err = o.io.RunForm(ctx, fields...)
 				if err != nil {
 					return err
 				}
@@ -552,7 +553,7 @@ func (o *options) run() error {
 	}
 
 	if action == cmdutils.NoAction {
-		action, err = cmdutils.ConfirmSubmission(o.io, true)
+		action, err = cmdutils.ConfirmSubmission(ctx, o.io, true)
 		if err != nil {
 			return fmt.Errorf("unable to confirm: %w", err)
 		}
@@ -567,14 +568,14 @@ func (o *options) run() error {
 		}
 		var metadataActions []string
 
-		err := o.io.MultiSelect(context.Background(), &metadataActions, "Which metadata types to add?", metadataOptions)
+		err := o.io.MultiSelect(ctx, &metadataActions, "Which metadata types to add?", metadataOptions)
 		if err != nil {
 			return fmt.Errorf("failed to pick the metadata to add: %w", err)
 		}
 
 		for _, x := range metadataActions {
 			if x == "labels" {
-				err = cmdutils.LabelsPrompt(context.Background(), o.io, &o.Labels, client, baseRepoRemote)
+				err = cmdutils.LabelsPrompt(ctx, o.io, &o.Labels, client, baseRepoRemote)
 				if err != nil {
 					return err
 				}
@@ -582,13 +583,13 @@ func (o *options) run() error {
 			if x == "assignees" {
 				// Use minimum permission level 30 (Maintainer) as it is the minimum level
 				// to accept a merge request
-				err = cmdutils.UsersPrompt(context.Background(), &o.Assignees, client, baseRepoRemote, o.io, 30, x)
+				err = cmdutils.UsersPrompt(ctx, &o.Assignees, client, baseRepoRemote, o.io, 30, x)
 				if err != nil {
 					return err
 				}
 			}
 			if x == "milestones" {
-				err = cmdutils.MilestonesPrompt(&o.Milestone, client, baseRepoRemote, o.io)
+				err = cmdutils.MilestonesPrompt(ctx, &o.Milestone, client, baseRepoRemote, o.io)
 				if err != nil {
 					return err
 				}
@@ -596,7 +597,7 @@ func (o *options) run() error {
 			if x == "reviewers" {
 				// Use minimum permission level 30 (Maintainer) as it is the minimum level
 				// to accept a merge request
-				err = cmdutils.UsersPrompt(context.Background(), &o.Reviewers, client, baseRepoRemote, o.io, 30, x)
+				err = cmdutils.UsersPrompt(ctx, &o.Reviewers, client, baseRepoRemote, o.io, 30, x)
 				if err != nil {
 					return err
 				}
@@ -604,7 +605,7 @@ func (o *options) run() error {
 		}
 
 		// Ask the user again but don't permit AddMetadata a second time
-		action, err = cmdutils.ConfirmSubmission(o.io, false)
+		action, err = cmdutils.ConfirmSubmission(ctx, o.io, false)
 		if err != nil {
 			return err
 		}
@@ -799,7 +800,7 @@ func generateMRCompareURL(opts *options) (string, error) {
 	return u.String(), nil
 }
 
-func ResolvedHeadRepo(f cmdutils.Factory) func() (glrepo.Interface, error) {
+func ResolvedHeadRepo(ctx context.Context, f cmdutils.Factory) func() (glrepo.Interface, error) {
 	return func() (glrepo.Interface, error) {
 		client, err := f.GitLabClient()
 		if err != nil {
@@ -813,7 +814,7 @@ func ResolvedHeadRepo(f cmdutils.Factory) func() (glrepo.Interface, error) {
 		if err != nil {
 			return nil, err
 		}
-		headRepo, err := repoContext.HeadRepo(f.IO())
+		headRepo, err := repoContext.HeadRepo(ctx, f.IO())
 		if err != nil {
 			return nil, err
 		}

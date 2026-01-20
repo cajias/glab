@@ -78,7 +78,7 @@ func NewCmdGet(f cmdutils.Factory) *cobra.Command {
 				// The latest commit on the branch won't work with a merged
 				// result pipeline
 				if commit.LastPipeline == nil {
-					mr, _, err := mrutils.MRFromArgs(f, args, "any")
+					mr, _, err := mrutils.MRFromArgs(cmd.Context(), f, args, "any")
 					if err != nil {
 						return err
 					}

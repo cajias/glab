@@ -1,6 +1,8 @@
 package rebase
 
 import (
+	"context"
+
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
 
@@ -53,7 +55,7 @@ func NewCmdRebase(f cmdutils.Factory) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.complete(args)
 
-			return opts.run()
+			return opts.run(cmd.Context())
 		},
 	}
 	mrRebaseCmd.Flags().BoolVarP(&opts.SkipCI, "skip-ci", "", false, "Rebase merge request while skipping CI/CD pipeline.")
@@ -65,13 +67,13 @@ func (o *options) complete(args []string) {
 	o.args = args
 }
 
-func (o *options) run() error {
+func (o *options) run(ctx context.Context) error {
 	client, err := o.gitlabClient()
 	if err != nil {
 		return err
 	}
 
-	mr, repo, err := mrutils.MRFromArgs(o.f, o.args, "opened")
+	mr, repo, err := mrutils.MRFromArgs(ctx, o.f, o.args, "opened")
 	if err != nil {
 		return err
 	}

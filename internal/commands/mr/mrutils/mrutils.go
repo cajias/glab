@@ -142,12 +142,13 @@ func DisplayAllMRs(streams *iostreams.IOStreams, mrs []*gitlab.BasicMergeRequest
 }
 
 // MRFromArgs is wrapper around MRFromArgsWithOpts without any custom options
-func MRFromArgs(f cmdutils.Factory, args []string, state string) (*gitlab.MergeRequest, glrepo.Interface, error) {
-	return MRFromArgsWithOpts(f, args, &gitlab.GetMergeRequestsOptions{}, state)
+func MRFromArgs(ctx context.Context, f cmdutils.Factory, args []string, state string) (*gitlab.MergeRequest, glrepo.Interface, error) {
+	return MRFromArgsWithOpts(ctx, f, args, &gitlab.GetMergeRequestsOptions{}, state)
 }
 
 // MRFromArgsWithOpts gets MR with custom request options passed down to it
 func MRFromArgsWithOpts(
+	ctx context.Context,
 	f cmdutils.Factory,
 	args []string,
 	opts *gitlab.GetMergeRequestsOptions,
@@ -200,7 +201,7 @@ func MRFromArgsWithOpts(
 	}
 
 	if mrID == 0 {
-		basicMR, err := GetMRForBranch(f.IO(), client, MrOptions{baseRepo, branch, state, f.IO().PromptEnabled()})
+		basicMR, err := GetMRForBranch(ctx, f.IO(), client, MrOptions{baseRepo, branch, state, f.IO().PromptEnabled()})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -214,7 +215,7 @@ func MRFromArgsWithOpts(
 	return mr, baseRepo, nil
 }
 
-func MRsFromArgs(f cmdutils.Factory, args []string, state string) ([]*gitlab.MergeRequest, glrepo.Interface, error) {
+func MRsFromArgs(ctx context.Context, f cmdutils.Factory, args []string, state string) ([]*gitlab.MergeRequest, glrepo.Interface, error) {
 	if len(args) <= 1 {
 		var arrIDs []string
 		if len(args) == 1 {
@@ -222,7 +223,7 @@ func MRsFromArgs(f cmdutils.Factory, args []string, state string) ([]*gitlab.Mer
 		}
 		if len(arrIDs) <= 1 {
 			// If there are no args then try to auto-detect from the branch name
-			mr, baseRepo, err := MRFromArgs(f, args, state)
+			mr, baseRepo, err := MRFromArgs(ctx, f, args, state)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -236,13 +237,13 @@ func MRsFromArgs(f cmdutils.Factory, args []string, state string) ([]*gitlab.Mer
 		return nil, nil, err
 	}
 
-	errGroup, _ := errgroup.WithContext(context.Background())
+	errGroup, ctx := errgroup.WithContext(ctx)
 	mrs := make([]*gitlab.MergeRequest, len(args))
 	for i, arg := range args {
 		errGroup.Go(func() error {
 			// fetching multiple MRs does not return many major params in the payload
 			// so we fetch again using the single mr endpoint
-			mr, _, err := MRFromArgs(f, []string{arg}, state)
+			mr, _, err := MRFromArgs(ctx, f, []string{arg}, state)
 			if err != nil {
 				return err
 			}
@@ -267,7 +268,7 @@ func resolveOwnerAndBranch(potentialBranch string) (string, string) {
 	return owner, branch
 }
 
-var GetMRForBranch = func(ios *iostreams.IOStreams, apiClient *gitlab.Client, mrOpts MrOptions) (*gitlab.BasicMergeRequest, error) {
+var GetMRForBranch = func(ctx context.Context, ios *iostreams.IOStreams, apiClient *gitlab.Client, mrOpts MrOptions) (*gitlab.BasicMergeRequest, error) {
 	owner, currentBranch := resolveOwnerAndBranch(mrOpts.Branch)
 
 	opts := gitlab.ListProjectMergeRequestsOptions{
@@ -320,7 +321,7 @@ var GetMRForBranch = func(ios *iostreams.IOStreams, apiClient *gitlab.Client, mr
 		// NO_PROMPT environment variable is set. Skip prompt and return error when multiple merge requests exist for branch.
 		err = fmt.Errorf("merge request ID number required. Possible matches:\n\n%s", strings.Join(mrNames, "\n"))
 	} else {
-		err = ios.Select(context.Background(), &pickedMR, multipleMRSelectQuestion, mrNames)
+		err = ios.Select(ctx, &pickedMR, multipleMRSelectQuestion, mrNames)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("you must select a merge request: %w", err)
