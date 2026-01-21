@@ -51,7 +51,7 @@ type Client struct {
 	// cookie file for IdP/SSO authentication
 	cookieFile string
 	// ssoAllowedDomains are pre-approved SSO domains (loaded from config)
-	ssoAllowedDomains map[string]bool
+	ssoAllowedDomains map[string]struct{}
 
 	baseURL    string
 	authSource gitlab.AuthSource
@@ -377,7 +377,7 @@ func WithCookieFile(cookieFile string) ClientOption {
 
 // WithSSOAllowedDomains configures pre-approved SSO domains (typically loaded from config).
 // Redirects to these domains will not prompt for consent.
-func WithSSOAllowedDomains(domains map[string]bool) ClientOption {
+func WithSSOAllowedDomains(domains map[string]struct{}) ClientOption {
 	return func(c *Client) error {
 		c.ssoAllowedDomains = domains
 		return nil
@@ -496,7 +496,7 @@ func NewClientFromConfigWithIO(repoHost string, cfg config.Config, isGraphQL boo
 		// Load pre-approved SSO domain from config
 		ssoDomain := getConfigValue(cfg, repoHost, "sso_domain")
 		if ssoDomain != "" {
-			options = append(options, WithSSOAllowedDomains(map[string]bool{ssoDomain: true}))
+			options = append(options, WithSSOAllowedDomains(map[string]struct{}{ssoDomain: {}}))
 		}
 
 	}
