@@ -3,6 +3,7 @@ package list
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
@@ -33,17 +34,19 @@ var defaultSortByOrder = map[string]string{
 
 type options struct {
 	// metadata
-	assignee     []string
-	reviewer     []string
-	author       string
-	labels       []string
-	notLabels    []string
-	milestone    string
-	sourceBranch string
-	targetBranch string
-	search       string
-	mine         bool
-	group        string
+	assignee      []string
+	reviewer      []string
+	author        string
+	labels        []string
+	notLabels     []string
+	milestone     string
+	sourceBranch  string
+	targetBranch  string
+	search        string
+	mine          bool
+	group         string
+	createdBefore time.Time
+	createdAfter  time.Time
 
 	// issue states
 	state    string
@@ -134,6 +137,8 @@ func NewCmdList(f cmdutils.Factory, runE func(opts *options) error) *cobra.Comma
 	mrListCmd.Flags().StringSliceVarP(&opts.reviewer, "reviewer", "r", []string{}, "Get only merge requests with users as reviewer. Multiple users can be comma-separated or specified by repeating the flag.")
 	mrListCmd.Flags().StringVarP(&opts.sort, "sort", "S", "", "Sort merge requests by <field>. Sort options: asc, desc.")
 	mrListCmd.Flags().StringVarP(&opts.orderBy, "order", "o", "", "Order merge requests by <field>. Order options: created_at, updated_at, merged_at, title, priority, label_priority, milestone_due, and popularity.")
+	mrListCmd.Flags().TimeVar(&opts.createdAfter, "created-before", time.Time{}, []string{time.RFC3339}, "Filter merge requests created after a certain date (ISO 8601 format).")
+	mrListCmd.Flags().TimeVar(&opts.createdAfter, "created-after", time.Time{}, []string{time.RFC3339}, "Filter merge requests created after a certain date (ISO 8601 format).")
 
 	mrListCmd.Flags().BoolP("opened", "O", false, "Get only open merge requests.")
 	_ = mrListCmd.Flags().MarkHidden("opened")
@@ -301,6 +306,14 @@ func (o *options) run() error {
 		}
 	}
 	title := utils.NewListTitle(o.titleQualifier + " merge request")
+
+	if !o.createdBefore.IsZero() {
+		l.CreatedBefore = gitlab.Ptr(o.createdBefore)
+	}
+
+	if !o.createdAfter.IsZero() {
+		l.CreatedAfter = gitlab.Ptr(o.createdAfter)
+	}
 
 	if o.group != "" {
 		mergeRequests, err = api.ListGroupMRs(client, o.group, projectListMROptionsToGroup(l), api.WithMRAssignees(assigneeIds), api.WithMRReviewers(reviewerIds))
