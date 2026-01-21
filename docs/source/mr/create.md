@@ -40,7 +40,7 @@ $ glab mr create --fill --fill-commit-body --yes
   -a, --assignee usernames     Assign merge request to people by their usernames. Multiple usernames can be comma-separated or specified by repeating the flag.
       --copy-issue-labels      Copy labels from issue to the merge request. Used with --related-issue.
       --create-source-branch   Create a source branch if it does not exist.
-  -d, --description string     Supply a description for the merge request.
+  -d, --description string     Supply a description for the merge request. Set to "-" to open an editor.
       --draft                  Mark merge request as a draft.
   -f, --fill push              Do not prompt for title or description, and just use commit info. Sets push to `true`, and pushes the branch.
       --fill-commit-body       Fill description with each commit body when multiple commits. Can only be used with --fill.

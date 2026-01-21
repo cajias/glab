@@ -50,7 +50,7 @@ $ glab repo create <host>/path/to/repository
 
 ```plaintext
       --defaultBranch master   Default branch of the project. Defaults to master if not provided.
-  -d, --description string     Description of the new project.
+  -d, --description string     Description of the new project. Set to "-" to open an editor.
   -g, --group string           Namespace or group for the new project. Defaults to the current user's namespace.
       --internal               Make project internal: visible to any authenticated user. Default.
   -n, --name string            Name of the new project.
