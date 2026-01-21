@@ -15,9 +15,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSSOTransport_NoRedirect(t *testing.T) {
+	t.Parallel()
 	// Setup test server that returns success immediately
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -30,23 +34,18 @@ func TestSSOTransport_NoRedirect(t *testing.T) {
 		baseURL: server.URL,
 	}
 	err := client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v4/projects", bytes.NewBufferString(`{"name": "test"}`))
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestSSOTransport_WithSSOFlow(t *testing.T) {
+	t.Parallel()
 	// Track request counts
 	var gitlabRequestCount int32
 	var idpRequestCount int32
@@ -55,9 +54,7 @@ func TestSSOTransport_WithSSOFlow(t *testing.T) {
 	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&idpRequestCount, 1)
 		// IdP should only receive GET requests
-		if r.Method != http.MethodGet {
-			t.Errorf("IdP received %s request, expected GET", r.Method)
-		}
+		assert.Equal(t, http.MethodGet, r.Method, "IdP should only receive GET requests")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("SSO complete"))
 	}))
@@ -89,25 +86,20 @@ func TestSSOTransport_WithSSOFlow(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:           gitlabServer.URL,
 		cookieFile:        cookieFile,
-		ssoAllowedDomains: map[string]bool{"127.0.0.1": true},
+		ssoAllowedDomains: map[string]struct{}{"127.0.0.1": {}},
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Verify that ssoTransport is being used
-	if _, ok := client.httpClient.Transport.(*ssoTransport); !ok {
-		t.Fatal("expected ssoTransport to be used when cookie file is configured")
-	}
+	_, ok := client.httpClient.Transport.(*ssoTransport)
+	require.True(t, ok, "expected ssoTransport to be used when cookie file is configured")
 
 	// Make a POST request directly through the HTTP client (simulates gitlab.Client behavior)
 	body := `{"name": "test-project"}`
@@ -115,28 +107,21 @@ func TestSSOTransport_WithSSOFlow(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify we got the success response
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Verify IdP received a GET request (SSO flow)
-	if atomic.LoadInt32(&idpRequestCount) != 1 {
-		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
-	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&idpRequestCount), "expected 1 IdP request")
 
 	// Verify GitLab received 2 requests (initial + retry)
-	if atomic.LoadInt32(&gitlabRequestCount) != 2 {
-		t.Errorf("expected 2 GitLab requests, got %d", gitlabRequestCount)
-	}
+	assert.Equal(t, int32(2), atomic.LoadInt32(&gitlabRequestCount), "expected 2 GitLab requests")
 }
 
 func TestSSOTransport_PreservesRequestBody(t *testing.T) {
+	t.Parallel()
 	var receivedBodies []string
 
 	// Create GitLab server that captures request bodies
@@ -159,9 +144,7 @@ func TestSSOTransport_PreservesRequestBody(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    gitlabServer.URL,
@@ -169,9 +152,7 @@ func TestSSOTransport_PreservesRequestBody(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request with a body
 	expectedBody := `{"important": "data"}`
@@ -179,21 +160,16 @@ func TestSSOTransport_PreservesRequestBody(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify the body was received correctly
-	if len(receivedBodies) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(receivedBodies))
-	}
-	if receivedBodies[0] != expectedBody {
-		t.Errorf("expected body %q, got %q", expectedBody, receivedBodies[0])
-	}
+	require.Len(t, receivedBodies, 1, "expected 1 request")
+	assert.Equal(t, expectedBody, receivedBodies[0])
 }
 
 func TestSSOTransport_HeadersPreserved(t *testing.T) {
+	t.Parallel()
 	var receivedHeaders http.Header
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -213,9 +189,7 @@ func TestSSOTransport_HeadersPreserved(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -223,9 +197,7 @@ func TestSSOTransport_HeadersPreserved(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v4/projects", nil)
 	req.Header.Set("X-Custom-Header", "custom-value")
@@ -233,24 +205,17 @@ func TestSSOTransport_HeadersPreserved(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer token123")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify custom headers were preserved
-	if receivedHeaders.Get("X-Custom-Header") != "custom-value" {
-		t.Errorf("X-Custom-Header not preserved: got %q", receivedHeaders.Get("X-Custom-Header"))
-	}
-	if receivedHeaders.Get("Content-Type") != "application/json" {
-		t.Errorf("Content-Type not preserved: got %q", receivedHeaders.Get("Content-Type"))
-	}
-	if receivedHeaders.Get("Authorization") != "Bearer token123" {
-		t.Errorf("Authorization not preserved: got %q", receivedHeaders.Get("Authorization"))
-	}
+	assert.Equal(t, "custom-value", receivedHeaders.Get("X-Custom-Header"), "X-Custom-Header not preserved")
+	assert.Equal(t, "application/json", receivedHeaders.Get("Content-Type"), "Content-Type not preserved")
+	assert.Equal(t, "Bearer token123", receivedHeaders.Get("Authorization"), "Authorization not preserved")
 }
 
 func TestSSOTransport_GETRequestNotIntercepted(t *testing.T) {
+	t.Parallel()
 	// Track request counts
 	var requestCount int32
 
@@ -273,9 +238,7 @@ func TestSSOTransport_GETRequestNotIntercepted(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -283,47 +246,38 @@ func TestSSOTransport_GETRequestNotIntercepted(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a GET request
 	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v4/projects", nil)
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify only one request was made (no retry)
-	if atomic.LoadInt32(&requestCount) != 1 {
-		t.Errorf("expected 1 request for GET, got %d", requestCount)
-	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&requestCount), "expected 1 request for GET")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestSSOTransport_NotSetWithoutCookieFile(t *testing.T) {
+	t.Parallel()
 	client := &Client{
 		baseURL: "https://example.com/api/v4",
 		// No cookie file configured
 	}
 
 	err := client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// ssoTransport should NOT be used when no cookie file is configured
-	if _, ok := client.httpClient.Transport.(*ssoTransport); ok {
-		t.Error("ssoTransport should not be used when cookie file is not configured")
-	}
+	_, ok := client.httpClient.Transport.(*ssoTransport)
+	assert.False(t, ok, "ssoTransport should not be used when cookie file is not configured")
 }
 
 func TestSSOTransport_SSOFlowFails(t *testing.T) {
+	t.Parallel()
 	// Create IdP server that returns an error
 	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -349,20 +303,16 @@ func TestSSOTransport_SSOFlowFails(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:           gitlabServer.URL,
 		cookieFile:        cookieFile,
-		ssoAllowedDomains: map[string]bool{"127.0.0.1": true},
+		ssoAllowedDomains: map[string]struct{}{"127.0.0.1": {}},
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request - IdP returns 500, SSO flow should fail with clear error
 	body := `{"name": "test-project"}`
@@ -370,20 +320,15 @@ func TestSSOTransport_SSOFlowFails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	_, err = client.httpClient.Do(req)
-	if err == nil {
-		t.Fatal("expected error when IdP returns 500, got nil")
-	}
+	require.Error(t, err, "expected error when IdP returns 500")
 
 	// Verify the error message indicates SSO authentication failure
-	if !strings.Contains(err.Error(), "SSO authentication failed") {
-		t.Errorf("expected error to contain 'SSO authentication failed', got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("expected error to contain status code '500', got: %v", err)
-	}
+	assert.Contains(t, err.Error(), "SSO authentication failed")
+	assert.Contains(t, err.Error(), "500")
 }
 
 func TestSSOTransport_SSOFlowConnectionFails(t *testing.T) {
+	t.Parallel()
 	// Create GitLab server that redirects to a non-existent IdP
 	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Redirect to non-existent server
@@ -402,20 +347,16 @@ func TestSSOTransport_SSOFlowConnectionFails(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:           gitlabServer.URL,
 		cookieFile:        cookieFile,
-		ssoAllowedDomains: map[string]bool{"127.0.0.1": true},
+		ssoAllowedDomains: map[string]struct{}{"127.0.0.1": {}},
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request - SSO flow should fail because IdP is unreachable
 	body := `{"name": "test-project"}`
@@ -423,17 +364,14 @@ func TestSSOTransport_SSOFlowConnectionFails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	_, err = client.httpClient.Do(req)
-	if err == nil {
-		t.Fatal("expected error when SSO flow fails, got nil")
-	}
+	require.Error(t, err, "expected error when SSO flow fails")
 
 	// Verify the error message contains context about SSO flow failure
-	if !strings.Contains(err.Error(), "SSO flow request failed") {
-		t.Errorf("expected error to contain 'SSO flow request failed', got: %v", err)
-	}
+	assert.Contains(t, err.Error(), "SSO flow request failed")
 }
 
 func TestSSOTransport_SameHostRedirect_PreservesMethod(t *testing.T) {
+	t.Parallel()
 	// Track the method received at the final endpoint
 	var receivedMethod string
 	var receivedBody string
@@ -468,9 +406,7 @@ func TestSSOTransport_SameHostRedirect_PreservesMethod(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -478,9 +414,7 @@ func TestSSOTransport_SameHostRedirect_PreservesMethod(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that will be redirected
 	body := `{"body": "Test note"}`
@@ -488,33 +422,24 @@ func TestSSOTransport_SameHostRedirect_PreservesMethod(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify the final endpoint received POST (not GET)
-	if receivedMethod != http.MethodPost {
-		t.Errorf("expected method POST at final endpoint, got %s", receivedMethod)
-	}
+	assert.Equal(t, http.MethodPost, receivedMethod, "expected method POST at final endpoint")
 
 	// Verify the body was preserved
-	if receivedBody != body {
-		t.Errorf("expected body %q, got %q", body, receivedBody)
-	}
+	assert.Equal(t, body, receivedBody)
 
 	// Verify we got the success response
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Verify 2 requests were made (initial + follow redirect)
-	if requestCount != 2 {
-		t.Errorf("expected 2 requests, got %d", requestCount)
-	}
+	assert.Equal(t, 2, requestCount, "expected 2 requests")
 }
 
 func TestSSOTransport_SameHostRedirect_MultipleRedirects(t *testing.T) {
+	t.Parallel()
 	// Track requests
 	requestCount := 0
 
@@ -529,9 +454,7 @@ func TestSSOTransport_SameHostRedirect_MultipleRedirects(t *testing.T) {
 			http.Redirect(w, r, "/final", http.StatusSeeOther)
 		default:
 			// Verify POST method is preserved
-			if r.Method != http.MethodPost {
-				t.Errorf("expected POST at %s, got %s", r.URL.Path, r.Method)
-			}
+			assert.Equal(t, http.MethodPost, r.Method, "expected POST at %s", r.URL.Path)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status": "ok"}`))
 		}
@@ -547,9 +470,7 @@ func TestSSOTransport_SameHostRedirect_MultipleRedirects(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -557,31 +478,24 @@ func TestSSOTransport_SameHostRedirect_MultipleRedirects(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that will be redirected multiple times
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/redirect1", strings.NewReader(`{"test": "data"}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// 4 requests: initial + 3 redirects
-	if requestCount != 4 {
-		t.Errorf("expected 4 requests, got %d", requestCount)
-	}
+	assert.Equal(t, 4, requestCount, "expected 4 requests")
 }
 
 func TestSSOTransport_SameHostRedirect_MaxRedirectsExceeded(t *testing.T) {
+	t.Parallel()
 	// Create a server that always redirects
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/next", http.StatusFound)
@@ -597,9 +511,7 @@ func TestSSOTransport_SameHostRedirect_MaxRedirectsExceeded(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -607,25 +519,21 @@ func TestSSOTransport_SameHostRedirect_MaxRedirectsExceeded(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that will redirect forever
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/start", strings.NewReader(`{"test": "data"}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	_, err = client.httpClient.Do(req)
-	if err == nil {
-		t.Fatal("expected error for too many redirects, got nil")
-	}
+	require.Error(t, err, "expected error for too many redirects")
 
-	if !strings.Contains(err.Error(), "stopped after") && !strings.Contains(err.Error(), "redirects") {
-		t.Errorf("expected error about max redirects, got: %v", err)
-	}
+	assert.True(t, strings.Contains(err.Error(), "stopped after") || strings.Contains(err.Error(), "redirects"),
+		"expected error about max redirects, got: %v", err)
 }
 
 func TestSSOTransport_GETNotAffected(t *testing.T) {
+	t.Parallel()
 	// Verify that GET requests still work normally with redirects
 	var receivedMethod string
 	requestCount := 0
@@ -651,9 +559,7 @@ func TestSSOTransport_GETNotAffected(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -661,30 +567,23 @@ func TestSSOTransport_GETNotAffected(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a GET request that will be redirected
 	req, _ := http.NewRequest(http.MethodGet, server.URL+"/redirect", nil)
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// GET requests should work normally
-	if receivedMethod != http.MethodGet {
-		t.Errorf("expected GET at final endpoint, got %s", receivedMethod)
-	}
+	assert.Equal(t, http.MethodGet, receivedMethod, "expected GET at final endpoint")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestSSOTransport_SameHostToSSORedirect(t *testing.T) {
+	t.Parallel()
 	// Test the scenario where a same-host redirect leads to an SSO redirect
 	var gitlabRequestCount, idpRequestCount int32
 
@@ -692,9 +591,7 @@ func TestSSOTransport_SameHostToSSORedirect(t *testing.T) {
 	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&idpRequestCount, 1)
 		// IdP should receive GET request
-		if r.Method != http.MethodGet {
-			t.Errorf("IdP received %s request, expected GET", r.Method)
-		}
+		assert.Equal(t, http.MethodGet, r.Method, "IdP should receive GET request")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("SSO complete"))
 	}))
@@ -727,20 +624,16 @@ func TestSSOTransport_SameHostToSSORedirect(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:           gitlabServer.URL,
 		cookieFile:        cookieFile,
-		ssoAllowedDomains: map[string]bool{"127.0.0.1": true},
+		ssoAllowedDomains: map[string]struct{}{"127.0.0.1": {}},
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that goes through same-host redirect then SSO redirect
 	body := `{"body": "Test note"}`
@@ -748,28 +641,21 @@ func TestSSOTransport_SameHostToSSORedirect(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify we got the success response
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Verify IdP received exactly one GET request
-	if atomic.LoadInt32(&idpRequestCount) != 1 {
-		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
-	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&idpRequestCount), "expected 1 IdP request")
 
 	// Verify GitLab received 3 requests: initial, same-host redirect, and retry after SSO
-	if atomic.LoadInt32(&gitlabRequestCount) != 3 {
-		t.Errorf("expected 3 GitLab requests, got %d", gitlabRequestCount)
-	}
+	assert.Equal(t, int32(3), atomic.LoadInt32(&gitlabRequestCount), "expected 3 GitLab requests")
 }
 
 func TestSSOTransport_307Redirect_NotIntercepted(t *testing.T) {
+	t.Parallel()
 	// 307 Temporary Redirect already preserves method per HTTP spec,
 	// so we should NOT intercept it - let the standard client handle it.
 	requestCount := 0
@@ -783,9 +669,7 @@ func TestSSOTransport_307Redirect_NotIntercepted(t *testing.T) {
 			return
 		}
 		// The redirect should preserve the method
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST at %s, got %s", r.URL.Path, r.Method)
-		}
+		assert.Equal(t, http.MethodPost, r.Method, "expected POST at %s", r.URL.Path)
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"id": 123}`))
 	}))
@@ -800,9 +684,7 @@ func TestSSOTransport_307Redirect_NotIntercepted(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -810,9 +692,7 @@ func TestSSOTransport_307Redirect_NotIntercepted(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that gets a 307 redirect
 	body := `{"body": "Test note"}`
@@ -820,15 +700,11 @@ func TestSSOTransport_307Redirect_NotIntercepted(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify we got the success response
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
 // TestRegression_MergeRequestNotesEndpoint_PreservesPostMethod is a regression test
@@ -836,6 +712,7 @@ func TestSSOTransport_307Redirect_NotIntercepted(t *testing.T) {
 // instead of creating a note. The root cause was that same-host 302 redirects
 // were being handled by Go's default HTTP client which converts POST to GET.
 func TestRegression_MergeRequestNotesEndpoint_PreservesPostMethod(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Simulate GitLab redirecting the notes endpoint (common pattern)
 		if r.URL.Path == "/api/v4/projects/456/merge_requests/332/notes" && r.URL.RawQuery == "" {
@@ -871,9 +748,7 @@ func TestRegression_MergeRequestNotesEndpoint_PreservesPostMethod(t *testing.T) 
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -881,9 +756,7 @@ func TestRegression_MergeRequestNotesEndpoint_PreservesPostMethod(t *testing.T) 
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// POST to notes endpoint - this is the exact scenario from issue #14
 	body := `{"body": "Test comment"}`
@@ -893,30 +766,25 @@ func TestRegression_MergeRequestNotesEndpoint_PreservesPostMethod(t *testing.T) 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// CRITICAL: Verify we get 201 Created (not 200 OK with array)
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("regression: expected status %d (Created), got %d - POST may have been converted to GET",
-			http.StatusCreated, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusCreated, resp.StatusCode,
+		"regression: POST may have been converted to GET")
 
 	// Verify response is a single object, not an array
 	respBody, _ := io.ReadAll(resp.Body)
-	if bytes.HasPrefix(respBody, []byte("[")) {
-		t.Error("regression: received array response, POST was likely converted to GET")
-	}
+	assert.False(t, bytes.HasPrefix(respBody, []byte("[")),
+		"regression: received array response, POST was likely converted to GET")
 
 	// Verify we got the expected note response
-	if !bytes.Contains(respBody, []byte(`"id": 12345`)) {
-		t.Errorf("regression: unexpected response body: %s", string(respBody))
-	}
+	assert.Contains(t, string(respBody), `"id": 12345`,
+		"regression: unexpected response body")
 }
 
 func TestSSOTransport_ConsentRequired(t *testing.T) {
+	t.Parallel()
 	// Create IdP server
 	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -939,9 +807,7 @@ func TestSSOTransport_ConsentRequired(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	// Client without ssoPrompt - should fail with consent required error
 	client := &Client{
@@ -951,9 +817,7 @@ func TestSSOTransport_ConsentRequired(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that triggers SSO redirect
 	body := `{"name": "test-project"}`
@@ -961,16 +825,13 @@ func TestSSOTransport_ConsentRequired(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	_, err = client.httpClient.Do(req)
-	if err == nil {
-		t.Fatal("expected error when no consent callback is set, got nil")
-	}
+	require.Error(t, err, "expected error when no consent callback is set")
 
-	if !strings.Contains(err.Error(), "requires consent") {
-		t.Errorf("expected error about consent required, got: %v", err)
-	}
+	assert.Contains(t, err.Error(), "requires consent")
 }
 
 func TestSSOTransport_ConsentGranted(t *testing.T) {
+	t.Parallel()
 	var idpRequestCount int32
 	var gitlabRequestCount int32
 
@@ -1005,21 +866,17 @@ func TestSSOTransport_ConsentGranted(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	// Client with ssoPrompt that approves
 	client := &Client{
 		baseURL:           gitlabServer.URL,
 		cookieFile:        cookieFile,
-		ssoAllowedDomains: map[string]bool{"127.0.0.1": true},
+		ssoAllowedDomains: map[string]struct{}{"127.0.0.1": {}},
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that triggers SSO redirect
 	body := `{"name": "test-project"}`
@@ -1027,15 +884,11 @@ func TestSSOTransport_ConsentGranted(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify IdP was reached (consent was granted)
-	if atomic.LoadInt32(&idpRequestCount) != 1 {
-		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
-	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&idpRequestCount), "expected 1 IdP request")
 }
 
 // TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar tests that when following
@@ -1044,6 +897,7 @@ func TestSSOTransport_ConsentGranted(t *testing.T) {
 // directly, which bypasses the cookie jar. PUT/POST requests would fail with 401 because
 // the authentication cookies were not included in the redirected request.
 func TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar(t *testing.T) {
+	t.Parallel()
 	// Track cookies received at each endpoint
 	var initialCookies, redirectedCookies []*http.Cookie
 
@@ -1091,9 +945,7 @@ func TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:    server.URL,
@@ -1101,9 +953,7 @@ func TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar(t *testing.T) {
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a PUT request (mutating method) that will be redirected
 	body := `{"body": "Test update"}`
@@ -1111,22 +961,16 @@ func TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify initial request had cookies
-	if len(initialCookies) == 0 {
-		t.Error("initial request should have cookies from jar")
-	}
+	assert.NotEmpty(t, initialCookies, "initial request should have cookies from jar")
 
 	// CRITICAL: Verify redirected request ALSO has cookies from the jar
 	// This is the bug: handleSameHostRedirect() uses t.rt.RoundTrip() which
 	// doesn't consult the cookie jar, so redirected requests lose cookies.
-	if len(redirectedCookies) == 0 {
-		t.Error("redirected request should include cookies from jar, but got none")
-	}
+	assert.NotEmpty(t, redirectedCookies, "redirected request should include cookies from jar")
 
 	// Find the session cookie in redirected request
 	var foundSessionCookie bool
@@ -1136,16 +980,15 @@ func TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar(t *testing.T) {
 			break
 		}
 	}
-	if !foundSessionCookie {
-		t.Errorf("redirected request should include session cookie from jar; got cookies: %v", redirectedCookies)
-	}
+	assert.True(t, foundSessionCookie,
+		"redirected request should include session cookie from jar; got cookies: %v", redirectedCookies)
 
 	// CRITICAL: Verify we get 201 Created, not 401 Unauthorized
 	// If the bug is present, we'll get 401 because the cookie is missing
 	if resp.StatusCode != http.StatusCreated {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		t.Errorf("expected status %d (Created), got %d - cookies may not have been included in redirect; body: %s",
-			http.StatusCreated, resp.StatusCode, string(bodyBytes))
+		assert.Equal(t, http.StatusCreated, resp.StatusCode,
+			"cookies may not have been included in redirect; body: %s", string(bodyBytes))
 	}
 }
 
@@ -1154,6 +997,7 @@ func TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar(t *testing.T) {
 // RoundTrip() doesn't automatically store cookies - only http.Client.Do() does that.
 // Without this fix, GitLab's session/OAuth state cookies would be lost during SSO flows.
 func TestSSOTransport_StoresCookiesFromRedirectResponse(t *testing.T) {
+	t.Parallel()
 	var gitlabRequestCount int32
 	var idpRequestCount int32
 
@@ -1199,20 +1043,16 @@ func TestSSOTransport_StoresCookiesFromRedirectResponse(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	client := &Client{
 		baseURL:           gitlabServer.URL,
 		cookieFile:        cookieFile,
-		ssoAllowedDomains: map[string]bool{"127.0.0.1": true},
+		ssoAllowedDomains: map[string]struct{}{"127.0.0.1": {}},
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that will trigger SSO redirect
 	body := `{"name": "test-project"}`
@@ -1220,27 +1060,19 @@ func TestSSOTransport_StoresCookiesFromRedirectResponse(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	defer resp.Body.Close()
 
 	// Verify we got success
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Verify the SSO flow completed
-	if atomic.LoadInt32(&idpRequestCount) != 1 {
-		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
-	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&idpRequestCount), "expected 1 IdP request")
 
 	// CRITICAL: Verify the cookies from the redirect response are now in the jar
 	// Get the ssoTransport to access the cookie jar
 	transport, ok := client.httpClient.Transport.(*ssoTransport)
-	if !ok {
-		t.Fatal("expected ssoTransport")
-	}
+	require.True(t, ok, "expected ssoTransport")
 
 	// Parse the GitLab server URL to check cookies
 	gitlabURL, _ := url.Parse(gitlabServer.URL)
@@ -1257,15 +1089,14 @@ func TestSSOTransport_StoresCookiesFromRedirectResponse(t *testing.T) {
 		}
 	}
 
-	if !foundSession {
-		t.Errorf("_gitlab_session cookie from redirect response not stored in jar; cookies in jar: %v", jarCookies)
-	}
-	if !foundOAuthState {
-		t.Errorf("oauth_state cookie from redirect response not stored in jar; cookies in jar: %v", jarCookies)
-	}
+	assert.True(t, foundSession,
+		"_gitlab_session cookie from redirect response not stored in jar; cookies in jar: %v", jarCookies)
+	assert.True(t, foundOAuthState,
+		"oauth_state cookie from redirect response not stored in jar; cookies in jar: %v", jarCookies)
 }
 
 func TestSSOTransport_PreApprovedDomain(t *testing.T) {
+	t.Parallel()
 	var idpRequestCount int32
 
 	// Create IdP server
@@ -1302,21 +1133,17 @@ func TestSSOTransport_PreApprovedDomain(t *testing.T) {
 `, futureTimestamp)
 
 	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
-	if err != nil {
-		t.Fatalf("failed to create test cookie file: %v", err)
-	}
+	require.NoError(t, err, "failed to create test cookie file")
 
 	// Client with pre-approved domain
 	client := &Client{
 		baseURL:           gitlabServer.URL,
 		cookieFile:        cookieFile,
-		ssoAllowedDomains: map[string]bool{idpHost: true},
+		ssoAllowedDomains: map[string]struct{}{idpHost: {}},
 	}
 
 	err = client.initializeHTTPClient()
-	if err != nil {
-		t.Fatalf("failed to initialize HTTP client: %v", err)
-	}
+	require.NoError(t, err, "failed to initialize HTTP client")
 
 	// Make a POST request that triggers SSO redirect
 	body := `{"name": "test-project"}`
@@ -1324,16 +1151,10 @@ func TestSSOTransport_PreApprovedDomain(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	require.NoError(t, err, "request failed")
 	resp.Body.Close()
 
 	// Verify SSO flow completed (IdP was reached)
-	if atomic.LoadInt32(&idpRequestCount) != 1 {
-		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
-	}
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
-	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&idpRequestCount), "expected 1 IdP request")
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 }

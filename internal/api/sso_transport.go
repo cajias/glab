@@ -39,7 +39,7 @@ type ssoTransport struct {
 	// mu protects allowedDomains from concurrent access
 	mu sync.RWMutex
 	// allowedDomains tracks domains the user has approved (from config).
-	allowedDomains map[string]bool
+	allowedDomains map[string]struct{}
 }
 
 // maxRedirects is the maximum number of redirects to follow for same-host redirects.
@@ -327,10 +327,12 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		},
 	}
 
+	dbg.Debugf("ssoTransport: retrying original request %s %s", req.Method, req.URL)
 	retryResp, err := retryClient.Do(retryReq)
 	if err != nil {
 		return nil, fmt.Errorf("retry %s %s failed after SSO authentication: %w", req.Method, req.URL, err)
 	}
+	dbg.Debugf("ssoTransport: retry response status %d", retryResp.StatusCode)
 
 	// Handle retry response, following any redirects while preserving the method.
 	// This is a self-contained loop that doesn't call handleSameHostRedirect() to avoid
@@ -341,6 +343,7 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 	for redirectCount := range maxRedirects {
 		// If we got a success or error response, return it
 		if currentResp.StatusCode < 300 || currentResp.StatusCode >= 400 {
+			dbg.Debugf("ssoTransport: retry completed with status %d", currentResp.StatusCode)
 			return currentResp, nil
 		}
 
@@ -403,6 +406,8 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 // handleSameHostRedirect handles same-host redirects while preserving the HTTP method and body.
 // This prevents the default HTTP client behavior of converting POST to GET for 302/303 redirects.
 func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Response, location string, bodyBytes []byte) (*http.Response, error) {
+	dbg.Debugf("ssoTransport: handling same-host redirect: %s %s -> %s (status %d)", req.Method, req.URL, location, resp.StatusCode)
+
 	// Close the redirect response body first
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -411,7 +416,7 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 	currentURL := req.URL
 
 	// Follow redirects, preserving the method
-	for range maxRedirects {
+	for redirectCount := range maxRedirects {
 		// Resolve the redirect URL
 		redirectURL, err := currentURL.Parse(location)
 		if err != nil {
@@ -450,10 +455,12 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 		}
 
 		// Perform the redirect request
+		dbg.Debugf("ssoTransport: same-host redirect #%d: %s %s", redirectCount+1, req.Method, redirectURL)
 		resp, err = t.rt.RoundTrip(redirectReq)
 		if err != nil {
 			return nil, fmt.Errorf("same-host redirect to %s failed: %w", redirectReq.URL, err)
 		}
+		dbg.Debugf("ssoTransport: same-host redirect #%d response: %d", redirectCount+1, resp.StatusCode)
 
 		// Store cookies from the redirect response.
 		// We must do this manually because RoundTrip() doesn't store cookies in the jar.
@@ -465,6 +472,7 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 
 		// Check if we need to follow another redirect (only for 301/302/303)
 		if !requiresMethodPreservation(resp.StatusCode) {
+			dbg.Debugf("ssoTransport: same-host redirect complete, final status %d", resp.StatusCode)
 			return resp, nil
 		}
 
@@ -502,5 +510,6 @@ func isMutatingMethod(method string) bool {
 func (t *ssoTransport) isDomainAllowed(domain string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.allowedDomains[domain]
+	_, ok := t.allowedDomains[domain]
+	return ok
 }

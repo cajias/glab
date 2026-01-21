@@ -6,9 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadCookieFile(t *testing.T) {
+	t.Parallel()
 	// Create a temporary directory
 	tmpDir := t.TempDir()
 
@@ -28,18 +32,10 @@ func TestLoadCookieFile(t *testing.T) {
 			expectedLen: 1,
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
 				t.Helper()
-				if cookies[0].Name != "session_id" {
-					t.Errorf("expected cookie name 'session_id', got '%s'", cookies[0].Name)
-				}
-				if cookies[0].Value != "abc123" {
-					t.Errorf("expected cookie value 'abc123', got '%s'", cookies[0].Value)
-				}
-				if cookies[0].Domain != ".example.com" {
-					t.Errorf("expected domain '.example.com', got '%s'", cookies[0].Domain)
-				}
-				if !cookies[0].Secure {
-					t.Error("expected secure to be true")
-				}
+				assert.Equal(t, "session_id", cookies[0].Name)
+				assert.Equal(t, "abc123", cookies[0].Value)
+				assert.Equal(t, ".example.com", cookies[0].Domain)
+				assert.True(t, cookies[0].Secure)
 			},
 		},
 		{
@@ -52,18 +48,10 @@ gitlab.com	FALSE	/api	TRUE	0	api_token	token456
 			expectedLen: 3,
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
 				t.Helper()
-				if cookies[0].Name != "_gitlab_session" {
-					t.Errorf("expected first cookie name '_gitlab_session', got '%s'", cookies[0].Name)
-				}
-				if cookies[1].Name != "known_sign_in" {
-					t.Errorf("expected second cookie name 'known_sign_in', got '%s'", cookies[1].Name)
-				}
-				if cookies[2].Name != "api_token" {
-					t.Errorf("expected third cookie name 'api_token', got '%s'", cookies[2].Name)
-				}
-				if cookies[2].Path != "/api" {
-					t.Errorf("expected third cookie path '/api', got '%s'", cookies[2].Path)
-				}
+				assert.Equal(t, "_gitlab_session", cookies[0].Name)
+				assert.Equal(t, "known_sign_in", cookies[1].Name)
+				assert.Equal(t, "api_token", cookies[2].Name)
+				assert.Equal(t, "/api", cookies[2].Path)
 			},
 		},
 		{
@@ -94,9 +82,7 @@ malformed line without enough fields
 			expectedLen: 1,
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
 				t.Helper()
-				if !cookies[0].Expires.IsZero() {
-					t.Error("expected session cookie with zero expiration")
-				}
+				assert.True(t, cookies[0].Expires.IsZero(), "expected session cookie with zero expiration")
 			},
 		},
 		{
@@ -106,10 +92,7 @@ malformed line without enough fields
 			expectedLen: 1,
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
 				t.Helper()
-				expected := "val%20ue%3D%26test"
-				if cookies[0].Value != expected {
-					t.Errorf("expected value '%s', got '%s'", expected, cookies[0].Value)
-				}
+				assert.Equal(t, "val%20ue%3D%26test", cookies[0].Value)
 			},
 		},
 		{
@@ -122,22 +105,12 @@ malformed line without enough fields
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
 				t.Helper()
 				// First cookie should have HttpOnly flag set
-				if cookies[0].Name != "session_id" {
-					t.Errorf("expected first cookie name 'session_id', got '%s'", cookies[0].Name)
-				}
-				if !cookies[0].HttpOnly {
-					t.Error("expected first cookie to have HttpOnly flag set")
-				}
-				if cookies[0].Domain != ".example.com" {
-					t.Errorf("expected domain '.example.com', got '%s'", cookies[0].Domain)
-				}
+				assert.Equal(t, "session_id", cookies[0].Name)
+				assert.True(t, cookies[0].HttpOnly, "expected first cookie to have HttpOnly flag set")
+				assert.Equal(t, ".example.com", cookies[0].Domain)
 				// Second cookie should NOT have HttpOnly flag
-				if cookies[1].Name != "regular_cookie" {
-					t.Errorf("expected second cookie name 'regular_cookie', got '%s'", cookies[1].Name)
-				}
-				if cookies[1].HttpOnly {
-					t.Error("expected second cookie to NOT have HttpOnly flag set")
-				}
+				assert.Equal(t, "regular_cookie", cookies[1].Name)
+				assert.False(t, cookies[1].HttpOnly, "expected second cookie to NOT have HttpOnly flag set")
 			},
 		},
 		{
@@ -151,38 +124,30 @@ malformed line without enough fields
 			checkCookie: func(t *testing.T, cookies []*http.Cookie) {
 				t.Helper()
 				// First and second cookies should have HttpOnly flag
-				if !cookies[0].HttpOnly {
-					t.Error("expected first cookie to have HttpOnly flag set")
-				}
-				if !cookies[1].HttpOnly {
-					t.Error("expected second cookie to have HttpOnly flag set")
-				}
+				assert.True(t, cookies[0].HttpOnly, "expected first cookie to have HttpOnly flag set")
+				assert.True(t, cookies[1].HttpOnly, "expected second cookie to have HttpOnly flag set")
 				// Third cookie should NOT have HttpOnly flag
-				if cookies[2].HttpOnly {
-					t.Error("expected third cookie to NOT have HttpOnly flag set")
-				}
+				assert.False(t, cookies[2].HttpOnly, "expected third cookie to NOT have HttpOnly flag set")
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Create temp file
 			cookieFile := filepath.Join(tmpDir, tt.name+".txt")
 			err := os.WriteFile(cookieFile, []byte(tt.content), 0o600)
-			if err != nil {
-				t.Fatalf("failed to create test file: %v", err)
-			}
+			require.NoError(t, err, "failed to create test file")
 
 			cookies, err := LoadCookieFile(cookieFile)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("LoadCookieFile() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				assert.Error(t, err)
 				return
 			}
+			require.NoError(t, err)
 
-			if len(cookies) != tt.expectedLen {
-				t.Errorf("expected %d cookies, got %d", tt.expectedLen, len(cookies))
-			}
+			assert.Len(t, cookies, tt.expectedLen)
 
 			if tt.checkCookie != nil && len(cookies) > 0 {
 				tt.checkCookie(t, cookies)
@@ -192,10 +157,9 @@ malformed line without enough fields
 }
 
 func TestLoadCookieFile_NonExistent(t *testing.T) {
+	t.Parallel()
 	_, err := LoadCookieFile("/nonexistent/path/cookies.txt")
-	if err == nil {
-		t.Error("expected error for non-existent file")
-	}
+	assert.Error(t, err, "expected error for non-existent file")
 }
 
 func Test_expandPath(t *testing.T) {
@@ -233,17 +197,14 @@ func Test_expandPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := expandPath(tt.input)
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-			if result != tt.expected {
-				t.Errorf("expected '%s', got '%s'", tt.expected, result)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
 func TestParseCookieLine(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		line     string
@@ -307,33 +268,20 @@ func TestParseCookieLine(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := parseCookieLine(tt.line, tt.httpOnly)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseCookieLine() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
 			if tt.wantErr {
+				assert.Error(t, err)
 				return
 			}
+			require.NoError(t, err)
 
-			if got.Name != tt.want.Name {
-				t.Errorf("Name = %s, want %s", got.Name, tt.want.Name)
-			}
-			if got.Value != tt.want.Value {
-				t.Errorf("Value = %s, want %s", got.Value, tt.want.Value)
-			}
-			if got.Domain != tt.want.Domain {
-				t.Errorf("Domain = %s, want %s", got.Domain, tt.want.Domain)
-			}
-			if got.Path != tt.want.Path {
-				t.Errorf("Path = %s, want %s", got.Path, tt.want.Path)
-			}
-			if got.Secure != tt.want.Secure {
-				t.Errorf("Secure = %v, want %v", got.Secure, tt.want.Secure)
-			}
-			if got.HttpOnly != tt.want.HttpOnly {
-				t.Errorf("HttpOnly = %v, want %v", got.HttpOnly, tt.want.HttpOnly)
-			}
+			assert.Equal(t, tt.want.Name, got.Name)
+			assert.Equal(t, tt.want.Value, got.Value)
+			assert.Equal(t, tt.want.Domain, got.Domain)
+			assert.Equal(t, tt.want.Path, got.Path)
+			assert.Equal(t, tt.want.Secure, got.Secure)
+			assert.Equal(t, tt.want.HttpOnly, got.HttpOnly)
 		})
 	}
 }
