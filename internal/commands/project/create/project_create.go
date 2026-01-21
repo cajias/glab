@@ -88,7 +88,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 
 	projectCreateCmd.Flags().StringP("name", "n", "", "Name of the new project.")
 	projectCreateCmd.Flags().StringP("group", "g", "", "Namespace or group for the new project. Defaults to the current user's namespace.")
-	projectCreateCmd.Flags().StringP("description", "d", "", "Description of the new project.")
+	projectCreateCmd.Flags().StringP("description", "d", "", "Description of the new project. Set to \"-\" to open an editor.")
 	projectCreateCmd.Flags().String("defaultBranch", "", "Default branch of the project. Defaults to `master` if not provided.")
 	projectCreateCmd.Flags().String("remoteName", "origin", "Remote name for the Git repository you're in. Defaults to `origin` if not provided.")
 	projectCreateCmd.Flags().StringArrayP("tag", "t", []string{}, "The list of tags for the project.")
@@ -212,6 +212,20 @@ func runCreateProject(cmd *cobra.Command, args []string, f cmdutils.Factory) err
 	}
 
 	description, _ := cmd.Flags().GetString("description")
+
+	// Handle -d- flag to directly open external editor
+	if description == "-" {
+		editor, err := cmdutils.GetEditor(f.Config)
+		if err != nil {
+			return err
+		}
+
+		description = ""
+		err = f.IO().DirectEditor(cmd.Context(), &description, "", editor)
+		if err != nil {
+			return err
+		}
+	}
 
 	if internal, _ := cmd.Flags().GetBool("internal"); internal {
 		visibility = gitlab.InternalVisibility

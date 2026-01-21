@@ -146,7 +146,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 		},
 	}
 	issueCreateCmd.Flags().StringVarP(&opts.Title, "title", "t", "", "Issue title.")
-	issueCreateCmd.Flags().StringVarP(&opts.Description, "description", "d", "", "Issue description.")
+	issueCreateCmd.Flags().StringVarP(&opts.Description, "description", "d", "", "Issue description. Set to \"-\" to open an editor.")
 	issueCreateCmd.Flags().StringSliceVarP(&opts.Labels, "label", "l", []string{}, "Add label by name. Multiple labels can be comma-separated or specified by repeating the flag.")
 	issueCreateCmd.Flags().StringSliceVarP(&opts.Assignees, "assignee", "a", []string{}, "Assign issue to people by their `usernames`. Multiple usernames can be comma-separated or specified by repeating the flag.")
 	issueCreateCmd.Flags().StringVarP(&opts.MilestoneFlag, "milestone", "m", "", "The global ID or title of a milestone to assign.")
@@ -198,6 +198,20 @@ var createRun = func(ctx context.Context, opts *options) error {
 			}
 		} else {
 			fmt.Fprintln(opts.io.StdOut, "Recovered create options from file.")
+		}
+	}
+
+	// Handle -d- flag to directly open external editor
+	if opts.Description == "-" {
+		editor, err := cmdutils.GetEditor(opts.config)
+		if err != nil {
+			return err
+		}
+
+		opts.Description = ""
+		err = opts.io.DirectEditor(ctx, &opts.Description, "", editor)
+		if err != nil {
+			return err
 		}
 	}
 

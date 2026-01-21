@@ -1,6 +1,7 @@
 package create
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
@@ -29,6 +31,7 @@ type options struct {
 	files []*gitlab.CreateSnippetFileOptions
 
 	io           *iostreams.IOStreams
+	config       func() config.Config
 	gitlabClient func() (*gitlab.Client, error)
 	baseRepo     func() (glrepo.Interface, error)
 }
@@ -52,6 +55,7 @@ func hasStdIn() bool {
 func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 	opts := &options{
 		io:           f.IO(),
+		config:       f.Config,
 		gitlabClient: f.GitLabClient,
 		baseRepo:     f.BaseRepo,
 	}
@@ -80,13 +84,13 @@ glab snippet create [flags] -t <title> -f <filename>  # reads from stdin`,
 				return err
 			}
 
-			return opts.run()
+			return opts.run(cmd.Context())
 		},
 	}
 
 	snippetCreateCmd.Flags().StringVarP(&opts.title, "title", "t", "", "(required) Title of the snippet.")
 	snippetCreateCmd.Flags().StringVarP(&opts.displayFilename, "filename", "f", "", "Filename of the snippet in GitLab.")
-	snippetCreateCmd.Flags().StringVarP(&opts.description, "description", "d", "", "Description of the snippet.")
+	snippetCreateCmd.Flags().StringVarP(&opts.description, "description", "d", "", "Description of the snippet. Set to \"-\" to open an editor.")
 	snippetCreateCmd.Flags().StringVarP(&opts.visibility, "visibility", "v", "private", "Limit by visibility: 'public', 'internal', or 'private'")
 	snippetCreateCmd.Flags().BoolVarP(&opts.personal, "personal", "p", false, "Create a personal snippet.")
 
@@ -137,7 +141,21 @@ func (o *options) validate() error {
 	return nil
 }
 
-func (o *options) run() error {
+func (o *options) run(ctx context.Context) error {
+	// Handle -d- flag to directly open external editor
+	if o.description == "-" {
+		editor, err := cmdutils.GetEditor(o.config)
+		if err != nil {
+			return err
+		}
+
+		o.description = ""
+		err = o.io.DirectEditor(ctx, &o.description, "", editor)
+		if err != nil {
+			return err
+		}
+	}
+
 	client, err := o.gitlabClient()
 	if err != nil {
 		return err

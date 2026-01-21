@@ -144,7 +144,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 	mrCreateCmd.Flags().BoolVarP(&opts.IsWIP, "wip", "", false, "Mark merge request as a draft. Alternative to --draft.")
 	mrCreateCmd.Flags().BoolVarP(&opts.ShouldPush, "push", "", false, "Push committed changes after creating merge request. Make sure you have committed changes.")
 	mrCreateCmd.Flags().StringVarP(&opts.Title, "title", "t", "", "Supply a title for the merge request.")
-	mrCreateCmd.Flags().StringVarP(&opts.Description, "description", "d", "", "Supply a description for the merge request.")
+	mrCreateCmd.Flags().StringVarP(&opts.Description, "description", "d", "", "Supply a description for the merge request. Set to \"-\" to open an editor.")
 	mrCreateCmd.Flags().StringSliceVarP(&opts.Labels, "label", "l", []string{}, "Add label by name. Multiple labels can be comma-separated or specified by repeating the flag.")
 	mrCreateCmd.Flags().StringSliceVarP(&opts.Assignees, "assignee", "a", []string{}, "Assign merge request to people by their `usernames`. Multiple usernames can be comma-separated or specified by repeating the flag.")
 	mrCreateCmd.Flags().StringSliceVarP(&opts.Reviewers, "reviewer", "", []string{}, "Request review from users by their `usernames`. Multiple usernames can be comma-separated or specified by repeating the flag.")
@@ -372,6 +372,20 @@ func (o *options) run(ctx context.Context) error {
 		if o.SourceBranch == o.TargetBranch && glrepo.IsSame(baseRepo, headRepo) {
 			fmt.Fprintf(o.io.StdErr, "You must be on a different branch other than %q\n", o.TargetBranch)
 			return cmdutils.SilentError
+		}
+
+		// Handle -d- flag to directly open external editor
+		if o.Description == "-" {
+			editor, err := cmdutils.GetEditor(o.config)
+			if err != nil {
+				return err
+			}
+
+			o.Description = ""
+			err = o.io.DirectEditor(ctx, &o.Description, "", editor)
+			if err != nil {
+				return err
+			}
 		}
 
 		if o.Autofill {
