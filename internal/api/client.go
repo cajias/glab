@@ -255,6 +255,7 @@ func (c *Client) initializeHTTPClient() error {
 			ssoClient:      ssoClient,
 			allowedDomains: c.ssoAllowedDomains,
 		}
+		dbg.Debugf("ssoTransport: initialized with cookie file %q and %d pre-approved SSO domains", c.cookieFile, len(c.ssoAllowedDomains))
 	}
 
 	return nil
