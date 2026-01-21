@@ -47,6 +47,8 @@ $ glab mr list --not-draft
   -a, --assignee strings       Get only merge requests assigned to users. Multiple users can be comma-separated or specified by repeating the flag.
       --author string          Filter merge request by author <username>.
   -c, --closed                 Get only closed merge requests.
+      --created-after time     Filter merge requests created after a certain date (ISO 8601 format).
+      --created-before time    Filter merge requests created after a certain date (ISO 8601 format).
   -d, --draft                  Filter by draft merge requests.
   -g, --group string           Select a group/subgroup. This option is ignored if a repo argument is set.
   -l, --label strings          Filter merge request by label <name>. Multiple labels can be comma-separated or specified by repeating the flag.
