@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1034,6 +1035,233 @@ func TestSSOTransport_ConsentGranted(t *testing.T) {
 	// Verify IdP was reached (consent was granted)
 	if atomic.LoadInt32(&idpRequestCount) != 1 {
 		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
+	}
+}
+
+// TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar tests that when following
+// same-host redirects, cookies from the cookie jar are included in the redirected request.
+// This is a regression test for a bug where handleSameHostRedirect() called t.rt.RoundTrip()
+// directly, which bypasses the cookie jar. PUT/POST requests would fail with 401 because
+// the authentication cookies were not included in the redirected request.
+func TestSSOTransport_SameHostRedirect_IncludesCookiesFromJar(t *testing.T) {
+	// Track cookies received at each endpoint
+	var initialCookies, redirectedCookies []*http.Cookie
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			// Capture cookies from initial request
+			initialCookies = r.Cookies()
+			// Redirect to final endpoint (same host)
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		// Final endpoint - capture cookies from redirected request
+		redirectedCookies = r.Cookies()
+
+		// If no session cookie, return 401 (simulating authentication failure)
+		hasCookie := false
+		for _, c := range r.Cookies() {
+			if c.Name == "session" {
+				hasCookie = true
+				break
+			}
+		}
+		if !hasCookie {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error": "Unauthorized - missing session cookie"}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer server.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	// Use a future timestamp
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+
+	// Create cookie file with session cookie for 127.0.0.1 (httptest server address)
+	// Using 127.0.0.1 instead of localhost because httptest servers bind to 127.0.0.1
+	// and Go's cookiejar matches by exact hostname
+	cookieContent := fmt.Sprintf(`127.0.0.1	FALSE	/	FALSE	%d	session	secret-session-value
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:    server.URL,
+		cookieFile: cookieFile,
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a PUT request (mutating method) that will be redirected
+	body := `{"body": "Test update"}`
+	req, _ := http.NewRequest(http.MethodPut, server.URL+"/redirect", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify initial request had cookies
+	if len(initialCookies) == 0 {
+		t.Error("initial request should have cookies from jar")
+	}
+
+	// CRITICAL: Verify redirected request ALSO has cookies from the jar
+	// This is the bug: handleSameHostRedirect() uses t.rt.RoundTrip() which
+	// doesn't consult the cookie jar, so redirected requests lose cookies.
+	if len(redirectedCookies) == 0 {
+		t.Error("redirected request should include cookies from jar, but got none")
+	}
+
+	// Find the session cookie in redirected request
+	var foundSessionCookie bool
+	for _, c := range redirectedCookies {
+		if c.Name == "session" && c.Value == "secret-session-value" {
+			foundSessionCookie = true
+			break
+		}
+	}
+	if !foundSessionCookie {
+		t.Errorf("redirected request should include session cookie from jar; got cookies: %v", redirectedCookies)
+	}
+
+	// CRITICAL: Verify we get 201 Created, not 401 Unauthorized
+	// If the bug is present, we'll get 401 because the cookie is missing
+	if resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected status %d (Created), got %d - cookies may not have been included in redirect; body: %s",
+			http.StatusCreated, resp.StatusCode, string(bodyBytes))
+	}
+}
+
+// TestSSOTransport_StoresCookiesFromRedirectResponse verifies that Set-Cookie headers
+// from a 302 redirect response are stored in the cookie jar. This is critical because
+// RoundTrip() doesn't automatically store cookies - only http.Client.Do() does that.
+// Without this fix, GitLab's session/OAuth state cookies would be lost during SSO flows.
+func TestSSOTransport_StoresCookiesFromRedirectResponse(t *testing.T) {
+	var gitlabRequestCount int32
+	var idpRequestCount int32
+
+	// Create IdP server
+	idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&idpRequestCount, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SSO complete"))
+	}))
+	defer idpServer.Close()
+
+	// Create GitLab server that sets cookies in the redirect response
+	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&gitlabRequestCount, 1)
+		if count == 1 {
+			// First request: redirect to IdP with Set-Cookie header
+			// These cookies simulate OAuth state cookies that GitLab sets
+			http.SetCookie(w, &http.Cookie{
+				Name:  "_gitlab_session",
+				Value: "session-token-abc123",
+				Path:  "/",
+			})
+			http.SetCookie(w, &http.Cookie{
+				Name:  "oauth_state",
+				Value: "state-xyz789",
+				Path:  "/",
+			})
+			http.Redirect(w, r, idpServer.URL+"/oauth/authorize", http.StatusFound)
+			return
+		}
+		// Second request (retry after SSO): success
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 123}`))
+	}))
+	defer gitlabServer.Close()
+
+	// Create a temporary directory for the test cookie file
+	tmpDir := t.TempDir()
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(`127.0.0.1	FALSE	/	FALSE	%d	existing_cookie	existing_value
+`, futureTimestamp)
+
+	err := os.WriteFile(cookieFile, []byte(cookieContent), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test cookie file: %v", err)
+	}
+
+	client := &Client{
+		baseURL:           gitlabServer.URL,
+		cookieFile:        cookieFile,
+		ssoAllowedDomains: map[string]bool{"127.0.0.1": true},
+	}
+
+	err = client.initializeHTTPClient()
+	if err != nil {
+		t.Fatalf("failed to initialize HTTP client: %v", err)
+	}
+
+	// Make a POST request that will trigger SSO redirect
+	body := `{"name": "test-project"}`
+	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify we got success
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("expected status %d, got %d", http.StatusCreated, resp.StatusCode)
+	}
+
+	// Verify the SSO flow completed
+	if atomic.LoadInt32(&idpRequestCount) != 1 {
+		t.Errorf("expected 1 IdP request, got %d", idpRequestCount)
+	}
+
+	// CRITICAL: Verify the cookies from the redirect response are now in the jar
+	// Get the ssoTransport to access the cookie jar
+	transport, ok := client.httpClient.Transport.(*ssoTransport)
+	if !ok {
+		t.Fatal("expected ssoTransport")
+	}
+
+	// Parse the GitLab server URL to check cookies
+	gitlabURL, _ := url.Parse(gitlabServer.URL)
+	jarCookies := transport.ssoClient.Jar.Cookies(gitlabURL)
+
+	// Find the cookies that were set by the redirect response
+	var foundSession, foundOAuthState bool
+	for _, c := range jarCookies {
+		if c.Name == "_gitlab_session" && c.Value == "session-token-abc123" {
+			foundSession = true
+		}
+		if c.Name == "oauth_state" && c.Value == "state-xyz789" {
+			foundOAuthState = true
+		}
+	}
+
+	if !foundSession {
+		t.Errorf("_gitlab_session cookie from redirect response not stored in jar; cookies in jar: %v", jarCookies)
+	}
+	if !foundOAuthState {
+		t.Errorf("oauth_state cookie from redirect response not stored in jar; cookies in jar: %v", jarCookies)
 	}
 }
 
