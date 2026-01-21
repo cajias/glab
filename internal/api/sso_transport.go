@@ -75,6 +75,7 @@ func isSSORedirect(originalHost, originalScheme, locationHeader string) bool {
 	redirectURL, err := url.Parse(locationHeader)
 	if err != nil {
 		// If we can't parse it, treat it as relative (same host)
+		dbg.Debugf("ssoTransport: failed to parse Location header %q: %v, treating as same-host", locationHeader, err)
 		return false
 	}
 
@@ -164,6 +165,16 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 
+	// Store cookies from the redirect response.
+	// We must do this manually because RoundTrip() doesn't store cookies in the jar.
+	// This is critical for SSO flows where GitLab sets session/OAuth state cookies
+	// in the redirect response that are needed for subsequent requests.
+	if t.ssoClient != nil && t.ssoClient.Jar != nil {
+		if cookies := resp.Cookies(); len(cookies) > 0 {
+			t.ssoClient.Jar.SetCookies(req.URL, cookies)
+		}
+	}
+
 	location := resp.Header.Get("Location")
 	dbg.Debugf("ssoTransport: %s %s received %d redirect to %s", req.Method, req.URL, resp.StatusCode, location)
 
@@ -198,7 +209,7 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 	// Enforce HTTPS for SSO redirects to prevent cookie theft via MITM.
 	// Allow HTTP only for localhost (used in tests and development).
 	if redirectURL.Scheme != "https" && !isLocalhost(redirectURL.Hostname()) {
-		return nil, fmt.Errorf("SSO redirect rejected: refusing non-HTTPS redirect to %s://%s (HTTPS required for security)", redirectURL.Scheme, redirectURL.Host)
+		return nil, fmt.Errorf("SSO redirect rejected: refusing non-HTTPS redirect to %s://%s (HTTPS required for security; HTTP is only allowed for localhost)", redirectURL.Scheme, redirectURL.Host)
 	}
 
 	// Check if the IdP domain is pre-approved in config
@@ -214,8 +225,38 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		return nil, fmt.Errorf("failed to create SSO request: %w", err)
 	}
 
+	// Create a client that follows all SSO redirects, including the OAuth callback on GitLab.
+	// We only stop when the redirect target matches the original API request URL.
+	// This ensures the OAuth callback (/oauth2/idpresponse) is called and sets the session cookie.
+	originalHost := normalizeHost(req.URL.Host, req.URL.Scheme)
+	originalPath := req.URL.Path
+	ssoFlowClient := &http.Client{
+		Transport: t.ssoClient.Transport,
+		Jar:       t.ssoClient.Jar,
+		Timeout:   t.ssoClient.Timeout,
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			redirectHost := normalizeHost(r.URL.Host, r.URL.Scheme)
+
+			// Stop if we're being redirected to the exact original API path on the original host.
+			// This happens after the OAuth callback completes and GitLab redirects to the original URL.
+			if redirectHost == originalHost && r.URL.Path == originalPath {
+				dbg.Debugf("ssoTransport: SSO flow complete, stopping redirect to original API path %s", originalPath)
+				return http.ErrUseLastResponse
+			}
+
+			// Continue following other redirects (OAuth callback, etc.)
+			dbg.Debugf("ssoTransport: following SSO redirect to %s%s", redirectHost, r.URL.Path)
+
+			// Follow other redirects (up to the default limit)
+			if len(via) >= maxRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxRedirects)
+			}
+			return nil
+		},
+	}
+
 	dbg.Debugf("completing SSO flow: GET %s", redirectURL.String())
-	ssoResp, err := t.ssoClient.Do(ssoReq)
+	ssoResp, err := ssoFlowClient.Do(ssoReq)
 	if err != nil {
 		return nil, fmt.Errorf("SSO flow request failed: %w", err)
 	}
@@ -225,10 +266,37 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		ssoResp.Body.Close()
 	}()
 
-	// Validate SSO response - if IdP returned an error, the SSO flow failed
+	// Store cookies from the final redirect response.
+	// http.Client doesn't store cookies when CheckRedirect returns ErrUseLastResponse,
+	// so we need to manually store any Set-Cookie headers from the redirect response.
+	// These cookies (like session tokens) are critical for the retry request.
+	if t.ssoClient.Jar != nil {
+		if cookies := ssoResp.Cookies(); len(cookies) > 0 {
+			// Determine the correct URL for storing cookies
+			cookieURL := req.URL
+			if locationHeader := ssoResp.Header.Get("Location"); locationHeader != "" {
+				if parsedLocation, err := url.Parse(locationHeader); err != nil {
+					dbg.Debugf("ssoTransport: failed to parse Location header for cookie storage: %v, using original URL", err)
+				} else if parsedLocation.Host == "" {
+					dbg.Debugf("ssoTransport: Location header has no host, using original URL for cookie storage")
+				} else {
+					cookieURL = parsedLocation
+				}
+			}
+			t.ssoClient.Jar.SetCookies(cookieURL, cookies)
+			dbg.Debugf("ssoTransport: stored %d cookies from SSO redirect response for %s", len(cookies), cookieURL.Host)
+		}
+	}
+
+	// After the SSO flow, we expect either:
+	// 1. A redirect (3xx) back to the original host (we stopped following it)
+	// 2. A success response (2xx) if the IdP doesn't redirect back
+	// Any 4xx/5xx response indicates the SSO flow failed at the IdP.
 	if ssoResp.StatusCode >= http.StatusBadRequest {
 		return nil, fmt.Errorf("SSO authentication failed: IdP returned status %d; cookies may be expired or invalid", ssoResp.StatusCode)
 	}
+
+	dbg.Debugf("ssoTransport: SSO flow completed with status %d, retrying original %s request", ssoResp.StatusCode, req.Method)
 
 	// Retry the original request with fresh cookies from the jar.
 	// CRITICAL: Do NOT copy the original Cookie header - let the cookie jar provide
@@ -245,7 +313,91 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		}
 	}
 
-	return t.ssoClient.Do(retryReq)
+	// Create a retry client that doesn't follow redirects automatically.
+	// This is necessary because if the retry POST gets a redirect (e.g., from GitLab
+	// setting a session cookie), the default http.Client would follow it as a GET,
+	// losing our POST method and body. By stopping at redirects, we can handle them
+	// through our ssoTransport which preserves the HTTP method.
+	retryClient := &http.Client{
+		Transport: t.ssoClient.Transport,
+		Jar:       t.ssoClient.Jar,
+		Timeout:   t.ssoClient.Timeout,
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	retryResp, err := retryClient.Do(retryReq)
+	if err != nil {
+		return nil, fmt.Errorf("retry %s %s failed after SSO authentication: %w", req.Method, req.URL, err)
+	}
+
+	// Handle retry response, following any redirects while preserving the method.
+	// This is a self-contained loop that doesn't call handleSameHostRedirect() to avoid
+	// infinite recursion (since handleSameHostRedirect can detect SSO and call us back).
+	currentResp := retryResp
+	currentURL := retryReq.URL
+
+	for redirectCount := range maxRedirects {
+		// If we got a success or error response, return it
+		if currentResp.StatusCode < 300 || currentResp.StatusCode >= 400 {
+			return currentResp, nil
+		}
+
+		// Get redirect location
+		location := currentResp.Header.Get("Location")
+		if location == "" {
+			return currentResp, nil
+		}
+
+		dbg.Debugf("ssoTransport: retry redirect #%d: %d to %s", redirectCount+1, currentResp.StatusCode, location)
+
+		// Store cookies from the redirect response
+		if t.ssoClient.Jar != nil {
+			if cookies := currentResp.Cookies(); len(cookies) > 0 {
+				t.ssoClient.Jar.SetCookies(currentURL, cookies)
+			}
+		}
+
+		// Close the response body before following redirect
+		_, _ = io.Copy(io.Discard, currentResp.Body)
+		currentResp.Body.Close()
+
+		// Parse redirect URL
+		redirectURL, err := currentURL.Parse(location)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse redirect URL: %w", err)
+		}
+
+		// Check if this redirect goes to a different host (would be SSO again)
+		// If so, we've hit an unexpected case - return an error to avoid infinite loops
+		if isSSORedirect(currentURL.Host, currentURL.Scheme, redirectURL.String()) {
+			return nil, fmt.Errorf("unexpected SSO redirect from %s to %s during retry; your session may have expired, try 'glab auth login' to re-authenticate", currentURL.Host, redirectURL.Host)
+		}
+
+		// Create a new request with the same method and body
+		nextReq, err := http.NewRequestWithContext(ctx, req.Method, redirectURL.String(), bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create redirect request: %w", err)
+		}
+
+		// Copy headers, excluding Cookie (will be added from jar) and Content-Length
+		for key, values := range req.Header {
+			if !shouldExcludeHeader(key) {
+				nextReq.Header[key] = values
+			}
+		}
+
+		// Make the request (using retryClient which doesn't follow redirects)
+		currentResp, err = retryClient.Do(nextReq)
+		if err != nil {
+			return nil, fmt.Errorf("redirect #%d to %s failed: %w", redirectCount+1, redirectURL, err)
+		}
+
+		currentURL = redirectURL
+	}
+
+	return nil, fmt.Errorf("stopped after %d redirects during retry", maxRedirects)
 }
 
 // handleSameHostRedirect handles same-host redirects while preserving the HTTP method and body.
@@ -280,8 +432,8 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 			return nil, fmt.Errorf("failed to create redirect request: %w", err)
 		}
 
-		// Copy headers, excluding those that should be managed by the HTTP client:
-		// - Cookie: let the cookie jar handle it
+		// Copy headers, excluding those that should be managed separately:
+		// - Cookie: added from jar below (RoundTrip doesn't consult the jar)
 		// - Content-Length: will be recalculated based on the body
 		for key, values := range req.Header {
 			if !shouldExcludeHeader(key) {
@@ -289,10 +441,26 @@ func (t *ssoTransport) handleSameHostRedirect(req *http.Request, resp *http.Resp
 			}
 		}
 
+		// Add cookies from the jar to the request.
+		// We must do this manually because RoundTrip() doesn't consult the cookie jar.
+		if t.ssoClient.Jar != nil {
+			for _, cookie := range t.ssoClient.Jar.Cookies(redirectReq.URL) {
+				redirectReq.AddCookie(cookie)
+			}
+		}
+
 		// Perform the redirect request
 		resp, err = t.rt.RoundTrip(redirectReq)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("same-host redirect to %s failed: %w", redirectReq.URL, err)
+		}
+
+		// Store cookies from the redirect response.
+		// We must do this manually because RoundTrip() doesn't store cookies in the jar.
+		if t.ssoClient != nil && t.ssoClient.Jar != nil {
+			if cookies := resp.Cookies(); len(cookies) > 0 {
+				t.ssoClient.Jar.SetCookies(redirectReq.URL, cookies)
+			}
 		}
 
 		// Check if we need to follow another redirect (only for 301/302/303)
