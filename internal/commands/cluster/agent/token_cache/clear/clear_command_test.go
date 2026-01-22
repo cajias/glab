@@ -110,7 +110,7 @@ func TestClear_WithRevoke_ActiveToken(t *testing.T) {
 	cacheDir := t.TempDir()
 	setUserCacheDir(t, cacheDir)
 
-	expires := gitlab.Ptr(gitlab.ISOTime(time.Now().Add(24 * time.Hour)))
+	expires := gitlab.Ptr(gitlab.ISOTime(time.Now().UTC().Add(24 * time.Hour)))
 	pat := &gitlab.PersonalAccessToken{ID: 456, Name: "active-token", ExpiresAt: expires, Revoked: false}
 	writeFSToken(t, tc.Client.BaseURL().String(), 10, pat)
 
