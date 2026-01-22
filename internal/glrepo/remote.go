@@ -28,7 +28,7 @@ func (r Remotes) FindByName(names ...string) (*Remote, error) {
 // UniqueHosts returns a string of unique hostnames
 func (r Remotes) UniqueHosts() string {
 	unique := make(map[string]bool, r.Len())
-	uniqueHosts := make([]string, len(unique))
+	var uniqueHosts []string
 	for _, remote := range r {
 		if !unique[remote.RepoHost()] {
 			uniqueHosts = append(uniqueHosts, remote.RepoHost())

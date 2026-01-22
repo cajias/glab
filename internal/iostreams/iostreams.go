@@ -453,7 +453,7 @@ func (s *IOStreams) DirectEditor(ctx context.Context, result *string, defaultCon
 
 	// Write the default content to the temp file
 	if defaultContent != "" {
-		if _, err := tmpFile.Write([]byte(defaultContent)); err != nil {
+		if _, err := tmpFile.WriteString(defaultContent); err != nil {
 			_ = tmpFile.Close() // Best effort cleanup
 			return fmt.Errorf("failed to write to temp file: %w", err)
 		}

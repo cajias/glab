@@ -244,7 +244,7 @@ func (opts *opts) executeCommand(ctx context.Context, cmd string) error {
 		return nil
 	}
 
-	if opts.IO.StartPager() != nil {
+	if err := opts.IO.StartPager(); err != nil {
 		return fmt.Errorf("failed to start pager: %q", err)
 	}
 	defer opts.IO.StopPager()
