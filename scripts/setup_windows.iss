@@ -73,25 +73,180 @@ Source: "bin\{#ExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#ExeName}"
 
 [Code]
-function NeedsAddPath(Param: string): boolean;
-var
-  OrigPath: string;
-  RegPathKey: string;
+function BoolToStr(B: Boolean; const TrueStr, FalseStr: string): string;
 begin
-  if IsAdminInstallMode then
-    RegPathKey := 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+  if B then
+    Result := TrueStr
   else
-    RegPathKey := 'Environment';
-
-  if not RegQueryStringValue(HKA, RegPathKey, 'Path', OrigPath) then begin
-    Result := True;
-    exit;
-  end;
-  // look for the path with leading and trailing semicolon
-  // Pos() returns 0 if not found
-  Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+    Result := FalseStr;
 end;
 
-[Registry]
-Root: HKA; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: IsAdminInstallMode and NeedsAddPath(ExpandConstant('{app}'))
-Root: HKA; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: not IsAdminInstallMode and NeedsAddPath(ExpandConstant('{app}'))
+procedure GetRegPath(var RegRootKey: Integer; var RegRootKeyStr, RegSubkeyPath: string);
+begin
+  if IsAdminInstallMode then
+    begin
+      RegRootKey := HKEY_LOCAL_MACHINE;
+      RegRootKeyStr := 'HKEY_LOCAL_MACHINE';
+      RegSubkeyPath := 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+    end
+  else
+    begin
+      RegRootKey := HKEY_CURRENT_USER;
+      RegRootKeyStr := 'HKEY_CURRENT_USER';
+      RegSubkeyPath := 'Environment';
+    end;
+end;
+
+function PosIgnoreCase(SubStr, S: AnyString): Integer;
+begin
+  Result := Pos(AnsiUppercase(SubStr), AnsiUppercase(S));
+end;
+
+function QuotePathIfNeeded(const Path: string): string;
+begin
+  // If path contains semicolon, enclose it in double quotes
+  if Pos(';', Path) > 0 then
+    Result := '"' + Path + '"'
+  else
+    Result := Path;
+end;
+
+procedure AddPath;
+var
+  Existed: Boolean;
+  AppPath: string;
+  OrigPath: string;
+  NewPath: string;
+  RegRootKey: Integer;
+  RegRootKeyStr: string;
+  RegSubkeyPath: string;
+begin
+  AppPath := QuotePathIfNeeded(ExpandConstant('{app}'));
+  GetRegPath(RegRootKey, RegRootKeyStr, RegSubkeyPath);
+
+  LogFmt('Adding application path %s to %s PATH', [AppPath, BoolToStr(IsAdminInstallMode, 'system', 'user')]);
+
+  // Read existing PATH value, use empty value if it doesn't exist
+  Existed := RegValueExists(RegRootKey, RegSubkeyPath, 'Path');
+  if Existed then
+    begin
+      if not RegQueryStringValue(RegRootKey, RegSubkeyPath, 'Path', OrigPath) then begin
+        LogFmt('[ERROR] Failed to read registry key %s\%s\Path', [RegRootKeyStr, RegSubkeyPath]);
+        MsgBox('Failed to read PATH environment variable from registry. ' +
+               'You may need to manually add: ' + AppPath, mbError, MB_OK);
+        exit;
+      end;
+    end
+  else
+    begin
+      OrigPath := '';
+    end;
+
+  // Check if path already contains the application path
+  if PosIgnoreCase(';' + AppPath + ';', ';' + OrigPath + ';') > 0 then begin
+    LogFmt('Application path already in registry key %s\%s\Path, skipping update', [RegRootKeyStr, RegSubkeyPath]);
+    exit;
+  end;
+
+  if Length(OrigPath) = 0 then
+    NewPath := AppPath
+  else
+    begin
+      if Copy(OrigPath, Length(OrigPath), 1) = ';' then
+        NewPath := OrigPath + AppPath
+      else
+        NewPath := OrigPath + ';' + AppPath;
+    end;
+
+  if RegWriteExpandStringValue(RegRootKey, RegSubkeyPath, 'Path', NewPath) then
+    begin
+      if Existed then
+        LogFmt('Registry key %s\%s\Path updated successfully', [RegRootKeyStr, RegSubkeyPath])
+      else
+        LogFmt('Registry key %s\%s\Path created successfully', [RegRootKeyStr, RegSubkeyPath]);
+    end
+  else
+    begin
+      LogFmt('[ERROR] Failed to write to registry key %s\%s\Path', [RegRootKeyStr, RegSubkeyPath])
+      MsgBox('Failed to update PATH environment variable. ' +
+             'You may need to manually add: ' + AppPath, mbError, MB_OK);
+    end;
+end;
+
+procedure RemovePath;
+var
+  AppPathSemicolons: string;
+  AppPath: string;
+  OrigPath: string;
+  NewPath: string;
+  RegRootKey: Integer;
+  RegRootKeyStr: string;
+  RegSubkeyPath: string;
+  Index: Integer;
+begin
+  AppPath := QuotePathIfNeeded(ExpandConstant('{app}'));
+  AppPathSemicolons := ';' + AppPath + ';';
+  GetRegPath(RegRootKey, RegRootKeyStr, RegSubkeyPath);
+
+  LogFmt('Removing application path %s from %s PATH', [AppPath, BoolToStr(IsAdminInstallMode, 'system', 'user')]);
+
+  if not RegQueryStringValue(RegRootKey, RegSubkeyPath, 'Path', OrigPath) then begin
+    LogFmt('[ERROR] Failed to read registry key %s\%s\Path', [RegRootKeyStr, RegSubkeyPath]);
+    exit;
+  end;
+
+  NewPath := ';' + OrigPath + ';';
+  Index := PosIgnoreCase(AppPathSemicolons, NewPath);
+
+  if Index > 0 then
+    begin
+      // The PATH contains application path, remove it with surrounding semicolons
+      Delete(NewPath, Index, Length(AppPathSemicolons));
+
+      // Re-balance semicolons in the PATH after deleting ";{app};" from ";PATH;"
+      if Index = 1 then
+        begin
+          // Removed app path from the beginning, so remove only trailing
+          // semicolon, our leading one has been removed already
+          if Length(NewPath) > 0 then Delete(NewPath, Length(NewPath), 1);
+        end
+      else if (Index > 1) and (Index < Length(NewPath)) then
+        begin
+          // Removed app path from the middle of the string, so re-insert now
+          // missing semicolon and remove both the leading and trailing semicolons
+          Insert(';', NewPath, Index);
+          Delete(NewPath, Length(NewPath), 1);
+          Delete(NewPath, 1, 1);
+        end
+      else
+        begin
+          // Removed app path from the end, so remove only the leading semicolon
+          Delete(NewPath, 1, 1);
+        end;
+
+      if RegWriteExpandStringValue(RegRootKey, RegSubkeyPath, 'Path', NewPath) then
+        LogFmt('Registry key %s\%s\Path updated successfully', [RegRootKeyStr, RegSubkeyPath])
+      else
+        begin
+          LogFmt('[ERROR] Failed to write registry key %s\%s\Path', [RegRootKeyStr, RegSubkeyPath]);
+          MsgBox('Failed to update PATH environment variable during uninstallation. ' +
+                 'You may need to manually remove: ' + AppPath, mbError, MB_OK);
+        end;
+    end
+  else
+    LogFmt('Application path not found in registry key %s\%s\Path, no cleanup needed', [RegRootKeyStr, RegSubkeyPath]);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then begin
+    AddPath();
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then begin
+    RemovePath();
+  end;
+end;
