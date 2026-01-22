@@ -102,8 +102,6 @@ prepare_go_cache:
       prefix: prepare
   script:
     - go mod download
-    # Pre-compile standard library and common packages to warm up GOCACHE
-    - go build -o /dev/null ./...
 
 .documentation:
   stage: documentation
