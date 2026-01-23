@@ -41,7 +41,7 @@ $ glab mr merge
   -m, --message string          Custom merge commit message.
   -r, --rebase                  Rebase the commits onto the base branch.
   -d, --remove-source-branch    Remove source branch on merge.
-      --sha string              Merge commit SHA.
+      --sha string              Merge only if the HEAD of the source branch matches this SHA. Use to ensure that only reviewed commits are merged.
   -s, --squash                  Squash commits on merge.
       --squash-message string   Custom squash commit message.
   -y, --yes                     Skip submission confirmation prompt.
