@@ -83,7 +83,7 @@ func NewCmdMerge(f cmdutils.Factory) *cobra.Command {
 		},
 	}
 
-	mrMergeCmd.Flags().StringVarP(&opts.sha, "sha", "", "", "Merge commit SHA.")
+	mrMergeCmd.Flags().StringVarP(&opts.sha, "sha", "", "", "Merge only if the HEAD of the source branch matches this SHA. Use to ensure that only reviewed commits are merged.")
 	mrMergeCmd.Flags().BoolVarP(&opts.removeSourceBranch, "remove-source-branch", "d", false, "Remove source branch on merge.")
 	mrMergeCmd.Flags().BoolVarP(&opts.setAutoMerge, "auto-merge", "", true, "Set auto-merge.")
 	mrMergeCmd.Flags().StringVarP(&opts.mergeCommitMessage, "message", "m", "", "Custom merge commit message.")
