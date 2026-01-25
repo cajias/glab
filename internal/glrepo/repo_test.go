@@ -137,7 +137,14 @@ hosts:
 			name:   "GDK with api_host",
 			input:  "https://gdk.test:3443/one/two",
 			result: "one/two",
-			host:   "gdk.test",
+			host:   "gdk.test:3443",
+			err:    nil,
+		},
+		{
+			name:   "non-standard port without api_host",
+			input:  "https://example.com:8443/owner/repo",
+			result: "owner/repo",
+			host:   "example.com:8443",
 			err:    nil,
 		},
 		{
