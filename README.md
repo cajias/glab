@@ -164,13 +164,14 @@ If a supported binary for your OS is not found at the [releases page](https://gi
 
 To build from source:
 
-1. Run the command `go version` to verify that you have the minimum required Go version.
-   If `go` is not installed, follow instructions on [the Go website](https://go.dev/doc/install).
-1. Run the `go install gitlab.com/gitlab-org/cli/cmd/glab@main` to install `glab` cmd in `$GOPATH/bin`.
-1. The sources of `glab` will be in `$GOPATH/src/gitlab.com/gitlab-org/cli`.
-1. If you do not have `$GOPATH/bin` or `$GOBIN` in your `$PATH`, run `export PATH=$PWD/bin:$PATH`
-   to update your PATH with the newly compiled project.
-1. Run `glab version` to confirm that it worked.
+1. Run `go version` to verify that you have the minimum required Go version.
+   If Go is not installed, see [Download and install](https://go.dev/doc/install).
+1. Clone the repository: `git clone https://gitlab.com/gitlab-org/cli.git`
+1. Build the binary: `make build`
+1. Install `glab` in `$GOPATH/bin`: `make install`
+1. Optional. If `$GOPATH/bin` or `$GOBIN` is not in your `$PATH`,
+   run `export PATH=$PWD/bin:$PATH`.
+1. Confirm the installation: `glab version`
 
 ## Authentication
 
