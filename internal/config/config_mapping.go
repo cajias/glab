@@ -98,6 +98,8 @@ func EnvKeyEquivalence(key string) []string {
 		return []string{"GIT_REMOTE_URL_VAR", "GIT_REMOTE_ALIAS", "REMOTE_ALIAS", "REMOTE_NICKNAME", "GIT_REMOTE_NICKNAME"}
 	case "client_id":
 		return []string{"GITLAB_CLIENT_ID"}
+	case "is_oauth2":
+		return []string{"GLAB_IS_OAUTH2"}
 	default:
 		return []string{strings.ToUpper(key)}
 	}
