@@ -170,7 +170,7 @@ func NewCmdList(f cmdutils.Factory, runE func(opts *ListOptions) error, issueTyp
 	issueListCmd.Flags().IntVarP(&opts.Epic, "epic", "e", 0, "List issues belonging to a given epic (requires --group, no pagination support).")
 	issueListCmd.MarkFlagsMutuallyExclusive("output", "output-format")
 	issueListCmd.Flags().StringVar(&opts.OrderBy, "order", "created_at", fmt.Sprintf("Order %s by <field>. Order options: created_at, updated_at, priority, due_date, relative_position, label_priority, milestone_due, popularity, weight.", issueType))
-	issueListCmd.Flags().StringVar(&opts.Sort, "sort", "desc", fmt.Sprintf("Return %s sorted in asc or desc order.", issueType))
+	issueListCmd.Flags().StringVarP(&opts.Sort, "sort", "s", "desc", "Sort direction for --order field: asc or desc.")
 
 	if issueType == issuable.TypeIssue {
 		issueListCmd.Flags().StringVarP(&opts.IssueType, "issue-type", "t", "", "Filter issue by its type. Options: issue, incident, test_case.")

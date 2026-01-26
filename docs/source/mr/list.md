@@ -63,7 +63,7 @@ $ glab mr list --not-draft
   -R, --repo OWNER/REPO        Select another repository. Can use either OWNER/REPO or `GROUP/NAMESPACE/REPO` format. Also accepts full URL or Git URL.
   -r, --reviewer strings       Get only merge requests with users as reviewer. Multiple users can be comma-separated or specified by repeating the flag.
       --search string          Filter by <string> in title and description.
-  -S, --sort string            Sort merge requests by <field>. Sort options: asc, desc.
+  -S, --sort string            Sort direction for --order field: asc or desc.
   -s, --source-branch string   Filter by source branch <name>.
   -t, --target-branch string   Filter by target branch <name>.
 ```
