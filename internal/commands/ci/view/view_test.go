@@ -141,7 +141,6 @@ func Test_line(t *testing.T) {
 		// Set screen to matrix size
 		screen.SetSize(len(test.expected), len(test.expected[0]))
 
-		test := test
 		t.Run(test.desc, func(t *testing.T) {
 			t.Parallel()
 
@@ -235,7 +234,6 @@ func Test_Link(t *testing.T) {
 		test.b1.Draw(screen)
 		test.b2.Draw(screen)
 
-		test := test
 		t.Run(test.desc, func(t *testing.T) {
 			t.Parallel()
 
@@ -425,7 +423,6 @@ func Test_LinkJobsNegative(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		test := test
 		t.Run(test.desc, func(t *testing.T) {
 			t.Parallel()
 
