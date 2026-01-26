@@ -49,9 +49,6 @@ func NewCmdReorderStack(f cmdutils.Factory, gr git.GitRunner, getText cmdutils.G
 			mcpannotations.Destructive: "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.io.StartSpinner("Reordering\n")
-			defer opts.io.StopSpinner("%s Reordering complete\n", f.IO().Color().GreenCheck())
-
 			return opts.run(cmd.Context(), f, getText)
 		},
 	}
