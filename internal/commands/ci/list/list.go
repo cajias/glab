@@ -57,8 +57,15 @@ func NewCmdList(f cmdutils.Factory) *cobra.Command {
 				l.Status = gitlab.Ptr(gitlab.BuildStateValue(m))
 				titleQualifier = m
 			}
-			if m, _ := cmd.Flags().GetString("orderBy"); m != "" {
-				l.OrderBy = gitlab.Ptr(m)
+			// Support both --order and --orderBy (deprecated) for backward compatibility
+			var orderByValue string
+			if cmd.Flags().Changed("orderBy") {
+				orderByValue, _ = cmd.Flags().GetString("orderBy")
+			} else {
+				orderByValue, _ = cmd.Flags().GetString("order")
+			}
+			if orderByValue != "" {
+				l.OrderBy = gitlab.Ptr(orderByValue)
 			}
 			if m, _ := cmd.Flags().GetString("sort"); m != "" {
 				l.Sort = gitlab.Ptr(m)
@@ -125,8 +132,10 @@ func NewCmdList(f cmdutils.Factory) *cobra.Command {
 		},
 	}
 	pipelineListCmd.Flags().StringP("status", "s", "", "Get pipeline with this status. Options: running, pending, success, failed, canceled, skipped, created, manual, waiting_for_resource, preparing, scheduled")
-	pipelineListCmd.Flags().StringP("orderBy", "o", "id", "Order pipelines by this field. Options: id, status, ref, updated_at, user_id.")
-	pipelineListCmd.Flags().StringP("sort", "", "desc", "Sort pipelines. Options: asc, desc.")
+	pipelineListCmd.Flags().StringP("order", "o", "id", "Order pipelines by this field. Options: id, status, ref, updated_at, user_id.")
+	pipelineListCmd.Flags().String("orderBy", "id", "Deprecated: use --order instead.")
+	_ = pipelineListCmd.Flags().MarkDeprecated("orderBy", "use --order instead")
+	pipelineListCmd.Flags().StringP("sort", "", "desc", "Sort direction for --order field: asc or desc.")
 	pipelineListCmd.Flags().IntP("page", "p", 1, "Page number.")
 	pipelineListCmd.Flags().IntP("per-page", "P", 30, "Number of items to list per page.")
 	pipelineListCmd.Flags().StringP("output", "F", "text", "Format output. Options: text, json.")

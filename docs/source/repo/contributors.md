@@ -40,7 +40,7 @@ $ glab repo contributors -R gitlab-com/www-gitlab-com
   -p, --page int          Page number. (default 1)
   -P, --per-page int      Number of items to list per page. (default 30)
   -R, --repo OWNER/REPO   Select another repository. Can use either OWNER/REPO or `GROUP/NAMESPACE/REPO` format. Also accepts full URL or Git URL.
-  -s, --sort string       Return contributors. Sort options: asc, desc.
+  -s, --sort string       Sort direction for --order field: asc or desc.
 ```
 
 ## Options inherited from parent commands

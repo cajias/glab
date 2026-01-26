@@ -135,7 +135,7 @@ func NewCmdList(f cmdutils.Factory, runE func(opts *options) error) *cobra.Comma
 	mrListCmd.Flags().IntVarP(&opts.perPage, "per-page", "P", 30, "Number of items to list per page.")
 	mrListCmd.Flags().StringSliceVarP(&opts.assignee, "assignee", "a", []string{}, "Get only merge requests assigned to users. Multiple users can be comma-separated or specified by repeating the flag.")
 	mrListCmd.Flags().StringSliceVarP(&opts.reviewer, "reviewer", "r", []string{}, "Get only merge requests with users as reviewer. Multiple users can be comma-separated or specified by repeating the flag.")
-	mrListCmd.Flags().StringVarP(&opts.sort, "sort", "S", "", "Sort merge requests by <field>. Sort options: asc, desc.")
+	mrListCmd.Flags().StringVarP(&opts.sort, "sort", "S", "", "Sort direction for --order field: asc or desc.")
 	mrListCmd.Flags().StringVarP(&opts.orderBy, "order", "o", "", "Order merge requests by <field>. Order options: created_at, updated_at, merged_at, title, priority, label_priority, milestone_due, and popularity.")
 	mrListCmd.Flags().TimeVar(&opts.createdAfter, "created-before", time.Time{}, []string{time.RFC3339}, "Filter merge requests created after a certain date (ISO 8601 format).")
 	mrListCmd.Flags().TimeVar(&opts.createdAfter, "created-after", time.Time{}, []string{time.RFC3339}, "Filter merge requests created after a certain date (ISO 8601 format).")
