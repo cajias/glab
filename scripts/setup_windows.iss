@@ -37,7 +37,7 @@ OutputDir=bin
 OutputBaseFilename=glab_{#Version}_Windows_x86_64_installer
 Compression=lzma
 SolidCompression=yes
-WizardStyle=modern
+WizardStyle=modern dynamic
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
