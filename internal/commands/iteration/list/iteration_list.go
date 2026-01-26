@@ -125,6 +125,7 @@ func (o *options) run() error {
 			for _, iteration := range iterations {
 				iterationBuilder.WriteString(formatIterationInfo(iteration.Description, iteration.Title, iteration.WebURL))
 			}
+			fmt.Fprintln(o.io.StdOut, utils.Indent(iterationBuilder.String(), " "))
 		}
 	} else {
 		repo, err := o.baseRepo()
@@ -143,9 +144,9 @@ func (o *options) run() error {
 			for _, iteration := range iterations {
 				iterationBuilder.WriteString(formatIterationInfo(iteration.Description, iteration.Title, iteration.WebURL))
 			}
+			fmt.Fprintln(o.io.StdOut, utils.Indent(iterationBuilder.String(), " "))
 		}
 	}
-	fmt.Fprintln(o.io.StdOut, utils.Indent(iterationBuilder.String(), " "))
 	return nil
 }
 

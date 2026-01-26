@@ -104,7 +104,9 @@ func (o *options) run() error {
 	table := tableprinter.NewTablePrinter()
 
 	if o.group != "" {
-		o.io.LogInfof("Listing variables for the %s group:\n\n", color.Bold(o.group))
+		if o.outputFormat != "json" {
+			o.io.LogInfof("Listing variables for the %s group:\n\n", color.Bold(o.group))
+		}
 		listOpts := &gitlab.ListGroupVariablesOptions{
 			ListOptions: gitlab.ListOptions{
 				Page:    int64(o.page),
@@ -126,7 +128,9 @@ func (o *options) run() error {
 			}
 		}
 	} else if o.instance {
-		o.io.LogInfo("Listing variables for the instance\n\n")
+		if o.outputFormat != "json" {
+			o.io.LogInfo("Listing variables for the instance\n\n")
+		}
 		listOpts := &gitlab.ListInstanceVariablesOptions{
 			ListOptions: gitlab.ListOptions{
 				Page:    int64(o.page),
@@ -152,7 +156,9 @@ func (o *options) run() error {
 		if err != nil {
 			return err
 		}
-		o.io.LogInfof("Listing variables from the %s project:\n\n", color.Bold(repo.FullName()))
+		if o.outputFormat != "json" {
+			o.io.LogInfof("Listing variables from the %s project:\n\n", color.Bold(repo.FullName()))
+		}
 		listOpts := &gitlab.ListProjectVariablesOptions{
 			ListOptions: gitlab.ListOptions{
 				Page:    int64(o.page),
