@@ -74,3 +74,6 @@ scripts/commit-lint/node_modules/
 
 # See https://gitlab.com/gitlab-org/cli/-/merge_requests/2387#note_2751915451
 /.gitlab-secrets
+
+# fd utility
+.fdignore
