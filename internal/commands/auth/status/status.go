@@ -42,9 +42,9 @@ func NewCmdStatus(f cmdutils.Factory, runE func(*options) error) *cobra.Command 
 		Short: "View authentication status.",
 		Long: heredoc.Docf(`Verifies and displays information about your authentication state.
 
-		By default, this command checks the authentication state of the GitLab instance 
-		determined by your current context (%[1]sgit remote%[1]s, %[1]sGITLAB_HOST%[1]s environment variable, 
-		or configuration). Use %[1]s--all%[1]s to check all configured instances, or %[1]s--hostname%[1]s to 
+		By default, this command checks the authentication state of the GitLab instance
+		determined by your current context (%[1]sgit remote%[1]s, %[1]sGITLAB_HOST%[1]s environment variable,
+		or configuration). Use %[1]s--all%[1]s to check all configured instances, or %[1]s--hostname%[1]s to
 		check a specific instance.
 		`, "`"),
 		Annotations: map[string]string{
