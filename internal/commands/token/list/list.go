@@ -1,7 +1,6 @@
 package list
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -256,13 +255,10 @@ func (o *options) run() error {
 	}
 
 	if o.outputFormat == "json" {
-		encoder := json.NewEncoder(o.io.StdOut)
-		if err := encoder.Encode(apiTokens); err != nil {
-			return err
-		}
-	} else {
-		table := createTablePrinter(outputTokens)
-		o.io.LogInfof("%s", table.String())
+		return o.io.PrintJSON(apiTokens)
 	}
+
+	table := createTablePrinter(outputTokens)
+	o.io.LogInfof("%s", table.String())
 	return nil
 }

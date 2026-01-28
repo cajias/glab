@@ -1,7 +1,6 @@
 package get
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -128,12 +127,11 @@ func NewCmdGet(f cmdutils.Factory) *cobra.Command {
 			outputFormat, _ := cmd.Flags().GetString("output-format")
 			output, _ := cmd.Flags().GetString("output")
 			if output == "json" || outputFormat == "json" {
-				printJSON(*mergedPipelineObject, f.IO().StdOut)
-			} else {
-				showJobDetails, _ := cmd.Flags().GetBool("with-job-details")
-				printTable(*mergedPipelineObject, f.IO().StdOut, showJobDetails)
+				return f.IO().PrintJSON(*mergedPipelineObject)
 			}
 
+			showJobDetails, _ := cmd.Flags().GetBool("with-job-details")
+			printTable(*mergedPipelineObject, f.IO().StdOut, showJobDetails)
 			return nil
 		},
 	}
@@ -148,11 +146,6 @@ func NewCmdGet(f cmdutils.Factory) *cobra.Command {
 	pipelineGetCmd.Flags().Bool("with-variables", false, "Show variables in pipeline. Requires the Maintainer role.")
 
 	return pipelineGetCmd
-}
-
-func printJSON(p PipelineMergedResponse, dest io.Writer) {
-	JSONStr, _ := json.Marshal(p)
-	fmt.Fprintln(dest, string(JSONStr))
 }
 
 func printTable(p PipelineMergedResponse, dest io.Writer, showJobDetails bool) {
