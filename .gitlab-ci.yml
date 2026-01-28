@@ -1,6 +1,5 @@
 variables:
   GO_VERSION: "1.25.4"
-  GOLANGCI_LINT_VERSION: "2.8.0"
   GITLAB_ADVANCED_SAST_ENABLED: "true"
 
 .code-patterns: &code-patterns
@@ -238,7 +237,7 @@ lint:
   needs:
     - job: prepare_go_cache
       optional: true
-  image: ${GITLAB_DEPENDENCY_PROXY}golangci/golangci-lint:v$GOLANGCI_LINT_VERSION
+  image: ${GITLAB_DEPENDENCY_PROXY}golangci/golangci-lint:v2.8.0
   cache:
     key:
       prefix: lint
