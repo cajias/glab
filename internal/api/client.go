@@ -311,6 +311,17 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 	var newAuthSource newAuthSource
 	switch {
 	case isOAuth2Cfg == "true":
+		if v, _ := cfg.Get(repoHost, "oauth2_refresh_token"); v == "" {
+			if token == "" {
+				return nil, errors.New("with OAuth2 is enabled and when no Refresh Token is available an OAuth2 Access Token is required")
+			}
+
+			newAuthSource = func(client *http.Client) (gitlab.AuthSource, error) {
+				return oauth2AccessTokenOnlyAuthSource{token: token}, nil
+			}
+			break
+		}
+
 		newAuthSource = func(client *http.Client) (gitlab.AuthSource, error) {
 			ts, err := oauth2.NewConfigTokenSource(cfg, client, glinstance.DefaultProtocol, repoHost)
 			if err != nil {
