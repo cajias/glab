@@ -40,9 +40,10 @@ type LoginOptions struct {
 
 	Interactive bool
 
-	Hostname string
-	Token    string
-	JobToken string
+	Hostname   string
+	Token      string
+	JobToken   string
+	CookieFile string
 
 	ApiHost                  string
 	ApiProtocol              string
@@ -108,6 +109,12 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 
 			To configure glab as the Git credential helper for the host without a prompt, for example in a CI/CD job, use %[1]s--setup-git-credential-helper%[1]s.
 
+			For GitLab instances protected by SSO or an identity provider (IdP), use
+			%[1]s--sso-cookie-file%[1]s to provide browser session cookies for authentication. The
+			cookie file must be in Netscape/Mozilla format, and may use the %[1]s#HttpOnly_%[1]s
+			prefix. Cookies cover the SSO/IdP layer only, so a token is still required for
+			GitLab API authentication.
+
 			In interactive mode, glab detects GitLab instances from your Git remotes
 			and lists them as options, so you do not have to type the hostname manually.
 
@@ -163,6 +170,9 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 
 			# Non-interactive setup that also lets Git push and pull with the same token
 			glab auth login --hostname $CI_SERVER_FQDN --token $GITLAB_TOKEN --setup-git-credential-helper
+
+			# Authenticate with an SSO or IdP protected instance, using browser cookies for the IdP
+			glab auth login --hostname gitlab.example.org --token glpat-xxx --sso-cookie-file ~/cookies.txt
 		`, "`"),
 		Annotations: map[string]string{
 			mcpannotations.Exclude: "true",
@@ -229,6 +239,7 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 	cmd.Flags().StringVarP(&opts.ApiProtocol, "api-protocol", "p", "", "API protocol. Options: https, http.")
 	cmd.Flags().StringVarP(&opts.GitProtocol, "git-protocol", "g", "", "Git protocol. Options: ssh, https, http.")
 	cmd.Flags().StringVar(&opts.SSHHostname, "ssh-hostname", "", "SSH hostname for instances with a different SSH endpoint. A port is not required; Git uses the port from the remote URL. Also skips the SSH hostname prompt in interactive mode.")
+	cmd.Flags().StringVar(&opts.CookieFile, "sso-cookie-file", "", "Path to a Netscape/Mozilla format cookie file, used to authenticate with the SSO or identity provider in front of the instance.")
 	cmd.Flags().StringVar(&opts.ContainerRegistryDomains, "container-registry-domains", "", "Container registry and image dependency proxy domains, comma-separated.")
 	cmd.Flags().BoolVar(&opts.SetupGitCredentialHelper, "setup-git-credential-helper", false, "Configure glab as the Git credential helper for this host without prompting. Use this in non-interactive runs, such as CI/CD jobs.")
 
@@ -264,6 +275,15 @@ func glabExecutable() string {
 		return exe
 	}
 	return "glab"
+}
+
+// setCookieFile persists the --sso-cookie-file path under the key the API
+// client reads it from, so later commands replay the cookies to the IdP.
+func setCookieFile(cfg config.Config, hostname, cookieFile string) error {
+	if cookieFile == "" {
+		return nil
+	}
+	return cfg.Set(hostname, "sso_cookie_file", cookieFile)
 }
 
 func loginRun(ctx context.Context, opts *LoginOptions) error {
@@ -344,6 +364,10 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 			}
 		}
 
+		if err := setCookieFile(cfg, hostname, opts.CookieFile); err != nil {
+			return err
+		}
+
 		// Best-effort: a failed lookup must not make this flow require network
 		// access, because it is the flow scripts and CI jobs use.
 		if username, err := lookupUsername(ctx, opts, hostname); err != nil {
@@ -417,6 +441,10 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 			if err != nil {
 				return err
 			}
+		}
+
+		if err := setCookieFile(cfg, hostname, opts.CookieFile); err != nil {
+			return err
 		}
 
 		if err := cfg.Write(); err != nil {
@@ -796,6 +824,10 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 	}
 
 	if err := cfg.Set(hostname, "user", username); err != nil {
+		return err
+	}
+
+	if err := setCookieFile(cfg, hostname, opts.CookieFile); err != nil {
 		return err
 	}
 

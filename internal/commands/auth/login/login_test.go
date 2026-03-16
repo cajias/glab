@@ -1038,6 +1038,26 @@ func Test_nonInteractiveLoginDefaultsToTheResolvedHost(t *testing.T) {
 	assert.Empty(t, onDefault, "credentials should not land on gitlab.com")
 }
 
+// The API client reads the cookie path from `sso_cookie_file`, so storing it
+// under any other key leaves --sso-cookie-file silently doing nothing.
+func Test_tokenLoginStoresTheSSOCookieFile(t *testing.T) {
+	keyring.MockInit()
+
+	d := t.TempDir()
+	t.Setenv("GLAB_CONFIG_DIR", d)
+	cfg := config.NewBlankConfigInDir(d)
+	cookieFile := filepath.Join(d, "cookies.txt")
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdLogin, false, cmdtest.WithConfig(cfg), currentUserFactoryOption(t))
+
+	_, err := exec("--hostname gitlab.example.com --token glpat-1234 --sso-cookie-file " + cookieFile)
+	require.NoError(t, err)
+
+	got, err := cfg.Get("gitlab.example.com", "sso_cookie_file")
+	require.NoError(t, err)
+	assert.Equal(t, cookieFile, got)
+}
+
 // loginRun stores use_keyring before the OAuth2 flow has a token, so the
 // client for that flow must not depend on a stored token.
 func Test_deviceLoginWithKeyringAndNoStoredToken(t *testing.T) {

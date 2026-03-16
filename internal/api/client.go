@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"strconv"
@@ -50,6 +51,10 @@ type Client struct {
 	// client certificate files
 	clientCertFile string
 	clientKeyFile  string
+	// cookieFile is the cookie file for IdP/SSO authentication
+	cookieFile string
+	// ssoAllowedDomains are pre-approved SSO domains (loaded from config)
+	ssoAllowedDomains map[string]struct{}
 
 	baseURL    string
 	authSource gitlab.AuthSource
@@ -192,6 +197,39 @@ func (c *Client) initializeHTTPClient() error {
 	}
 
 	c.httpClient = &http.Client{Transport: rt, CheckRedirect: refuseMethodChangingRedirect}
+
+	// Configure cookie jar and SSO transport if cookie file is provided.
+	// refuseMethodChangingRedirect stays in place: ssoTransport resolves
+	// 301/302/303 on mutating methods itself and never hands one back to the
+	// client, so the policy only ever sees method-preserving redirects.
+	if c.cookieFile != "" {
+		jar, err := c.createCookieJar()
+		if err != nil {
+			return fmt.Errorf("failed to create cookie jar: %w", err)
+		}
+		c.httpClient.Jar = jar
+
+		// ssoClient uses the underlying transport (not ssoTransport) to avoid infinite loops
+		ssoClient := &http.Client{
+			Transport: rt,
+			Jar:       jar,
+			Timeout:   ssoTimeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
+				}
+				return nil
+			},
+		}
+
+		c.httpClient.Transport = &ssoTransport{
+			rt:             rt,
+			ssoClient:      ssoClient,
+			allowedDomains: c.ssoAllowedDomains,
+		}
+		dbg.Debugf("ssoTransport: initialized with cookie file %q and %d pre-approved SSO domains", c.cookieFile, len(c.ssoAllowedDomains))
+	}
+
 	return nil
 }
 
@@ -202,6 +240,42 @@ func WithProxy(proxyURL *url.URL) ClientOption {
 		c.proxyURL = proxyURL
 		return nil
 	}
+}
+
+// createCookieJar creates a cookie jar and loads cookies from the configured cookie file.
+func (c *Client) createCookieJar() (http.CookieJar, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
+	}
+
+	cookies, err := config.LoadCookieFile(c.cookieFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load cookies from file: %w", err)
+	}
+
+	if len(cookies) == 0 {
+		return nil, fmt.Errorf("cookie file %q contains no valid cookies; ensure it is in Netscape/Mozilla format with unexpired cookies", c.cookieFile)
+	}
+
+	domainCookies := make(map[string][]*http.Cookie, len(cookies))
+	for _, cookie := range cookies {
+		// Normalize domain - remove leading dot for URL construction
+		domain := strings.TrimPrefix(cookie.Domain, ".")
+		domainCookies[domain] = append(domainCookies[domain], cookie)
+	}
+
+	// Add cookies to jar for each domain
+	for domain, domainCookieList := range domainCookies {
+		domainURL, err := url.Parse("https://" + domain + "/")
+		if err != nil {
+			dbg.Debugf("skipping %d cookies for invalid domain %q: %v", len(domainCookieList), domain, err)
+			continue
+		}
+		jar.SetCookies(domainURL, domainCookieList)
+	}
+
+	return jar, nil
 }
 
 // WithCustomHeaders sets custom headers for requests to the client's base URL.
@@ -271,6 +345,24 @@ func WithBaseURL(baseURL string) ClientOption {
 func WithUserAgent(userAgent string) ClientOption {
 	return func(c *Client) error {
 		c.userAgent = userAgent
+		return nil
+	}
+}
+
+// WithCookieFile configures the client to use cookies from a Netscape/Mozilla format cookie file.
+// This is useful for GitLab instances behind identity providers requiring browser-based SAML authentication.
+func WithCookieFile(cookieFile string) ClientOption {
+	return func(c *Client) error {
+		c.cookieFile = cookieFile
+		return nil
+	}
+}
+
+// WithSSOAllowedDomains configures pre-approved SSO domains (typically loaded from config).
+// Redirects to these domains will not prompt for consent.
+func WithSSOAllowedDomains(domains map[string]struct{}) ClientOption {
+	return func(c *Client) error {
+		c.ssoAllowedDomains = domains
 		return nil
 	}
 }
@@ -382,6 +474,7 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 	caCert, _ := cfg.Get(repoHost, "ca_cert")
 	clientCert, _ := cfg.Get(repoHost, "client_cert")
 	keyFile, _ := cfg.Get(repoHost, "client_key")
+	cookieFile, _ := cfg.Get(repoHost, "sso_cookie_file")
 	proxyURL, err := config.ResolveHostProxy(cfg, repoHost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve proxy: %w", err)
@@ -497,6 +590,16 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 
 	if skipTlsVerify {
 		options = append(options, WithInsecureSkipVerify(skipTlsVerify))
+	}
+
+	if cookieFile != "" {
+		options = append(options, WithCookieFile(cookieFile))
+
+		// Load pre-approved SSO domain from config
+		ssoDomain, _ := cfg.Get(repoHost, "sso_domain")
+		if ssoDomain != "" {
+			options = append(options, WithSSOAllowedDomains(map[string]struct{}{ssoDomain: {}}))
+		}
 	}
 
 	return NewClient(newAuthSource, options...)

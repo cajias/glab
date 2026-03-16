@@ -325,6 +325,18 @@ var KeySchema = []KeyDef{
 		Description:  "Skip TLS certificate verification when talking to this host (true/false).\nEmpty is treated as false. Use only for development; do not enable in production.",
 	},
 	{
+		Name: "sso_cookie_file", Scope: ScopePerHost, Type: TypeString,
+		UserSettable: true,
+		EnvVars:      []string{"GLAB_SSO_COOKIE_FILE", "SSO_COOKIE_FILE"},
+		Description:  "Path to a Netscape/Mozilla format cookie file used to authenticate against a\nGitLab instance behind an identity provider that requires browser-based SSO.",
+	},
+	{
+		Name: "sso_domain", Scope: ScopePerHost, Type: TypeString,
+		UserSettable: true,
+		EnvVars:      []string{"GLAB_SSO_DOMAIN", "SSO_DOMAIN"},
+		Description:  "Identity provider domain that SSO redirects from this host may go to.\nRedirects to any other domain are refused. Requires `sso_cookie_file`.",
+	},
+	{
 		Name: "container_registry_domains", Scope: ScopePerHost, Type: TypeString,
 		Default: "gitlab.com,gitlab.com:443,registry.gitlab.com", UserSettable: true,
 		EnvVars:     []string{"GLAB_CONTAINER_REGISTRY_DOMAINS", "CONTAINER_REGISTRY_DOMAINS"},

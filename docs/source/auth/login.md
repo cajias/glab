@@ -41,6 +41,12 @@ To pass a token on standard input, use `--stdin`.
 
 To configure glab as the Git credential helper for the host without a prompt, for example in a CI/CD job, use `--setup-git-credential-helper`.
 
+For GitLab instances protected by SSO or an identity provider (IdP), use
+`--sso-cookie-file` to provide browser session cookies for authentication. The
+cookie file must be in Netscape/Mozilla format, and may use the `#HttpOnly_`
+prefix. Cookies cover the SSO/IdP layer only, so a token is still required for
+GitLab API authentication.
+
 In interactive mode, glab detects GitLab instances from your Git remotes
 and lists them as options, so you do not have to type the hostname manually.
 
@@ -103,6 +109,9 @@ glab auth login --hostname $CI_SERVER_FQDN --job-token $CI_JOB_TOKEN --api-proto
 # Non-interactive setup that also lets Git push and pull with the same token
 glab auth login --hostname $CI_SERVER_FQDN --token $GITLAB_TOKEN --setup-git-credential-helper
 
+# Authenticate with an SSO or IdP protected instance, using browser cookies for the IdP
+glab auth login --hostname gitlab.example.org --token glpat-xxx --sso-cookie-file ~/cookies.txt
+
 ```
 
 ## Options
@@ -118,6 +127,7 @@ glab auth login --hostname $CI_SERVER_FQDN --token $GITLAB_TOKEN --setup-git-cre
   -j, --job-token string                    CI job token.
       --setup-git-credential-helper         Configure glab as the Git credential helper for this host without prompting. Use this in non-interactive runs, such as CI/CD jobs.
       --ssh-hostname string                 SSH hostname for instances with a different SSH endpoint. A port is not required; Git uses the port from the remote URL. Also skips the SSH hostname prompt in interactive mode.
+      --sso-cookie-file string              Path to a Netscape/Mozilla format cookie file, used to authenticate with the SSO or identity provider in front of the instance.
       --stdin                               Read the token from standard input.
   -t, --token string                        Your GitLab access token.
       --web                                 Skip the login type prompt and use web/OAuth login.

@@ -396,6 +396,45 @@ func TestNewClientFromConfig_DuoWorkflowID(t *testing.T) {
 	})
 }
 
+func TestNewHTTPRequest_EmptyTokenSetsEmptyAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	// Create a client with empty token (cookie-only SSO scenario)
+	client, err := NewClient(
+		func(c *http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: ""}, nil
+		},
+		WithBaseURL("https://gitlab.example.com/api/v4/"),
+	)
+	require.NoError(t, err)
+
+	baseURL, _ := url.Parse("https://gitlab.example.com/api/v4/projects")
+	req, err := NewHTTPRequest(t.Context(), client, http.MethodGet, baseURL, nil, nil, false)
+	require.NoError(t, err)
+
+	// Empty token should set an empty Private-Token header
+	assert.Empty(t, req.Header.Get(gitlab.JobTokenHeaderName))
+	assert.Empty(t, req.Header.Get("Authorization"))
+}
+
+func TestNewHTTPRequest_TokenSetsAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewClient(
+		func(c *http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: "test-pat"}, nil
+		},
+		WithBaseURL("https://gitlab.example.com/api/v4/"),
+	)
+	require.NoError(t, err)
+
+	baseURL, _ := url.Parse("https://gitlab.example.com/api/v4/projects")
+	req, err := NewHTTPRequest(t.Context(), client, http.MethodGet, baseURL, nil, nil, false)
+	require.NoError(t, err)
+
+	assert.Equal(t, "test-pat", req.Header.Get(gitlab.AccessTokenHeaderName))
+}
+
 func TestNewClientFromConfig_OAuth2NoTokenReturnsError(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
 	t.Setenv("GLAB_IS_OAUTH2", "true")

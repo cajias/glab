@@ -2,9 +2,14 @@
 
 package api
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 func TestIsTokenConfigured(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		token string
@@ -38,9 +43,8 @@ func TestIsTokenConfigured(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsTokenConfigured(tt.token); got != tt.want {
-				t.Errorf("IsTokenConfigured() = %v, want %v", got, tt.want)
-			}
+			t.Parallel()
+			assert.Equal(t, tt.want, IsTokenConfigured(tt.token))
 		})
 	}
 }
