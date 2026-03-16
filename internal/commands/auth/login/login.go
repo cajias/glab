@@ -34,9 +34,10 @@ type LoginOptions struct {
 
 	Interactive bool
 
-	Hostname string
-	Token    string
-	JobToken string
+	Hostname   string
+	Token      string
+	JobToken   string
+	CookieFile string
 
 	ApiHost     string
 	ApiProtocol string
@@ -70,6 +71,11 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 			When running in interactive mode inside a Git repository, %[1]sglab%[1]s will automatically detect
 			GitLab instances from your Git remotes and present them as options, saving you from having to
 			manually type the hostname.
+
+			For GitLab instances protected by SSO or Identity Providers (IdP), use the %[1]s--sso-cookie-file%[1]s
+			flag to provide browser session cookies for authentication. The cookie file must be in
+			Netscape/Mozilla format (supports %[1]s#HttpOnly_%[1]s prefix). This requires a token for GitLab
+			API authentication, while cookies handle the SSO/IdP layer.
 		`, "`"),
 		Example: heredoc.Docf(`
 			# Start interactive setup
@@ -90,6 +96,9 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 
 			# Non-interactive CI/CD setup
 			$ glab auth login --hostname $CI_SERVER_HOST --job-token $CI_JOB_TOKEN
+
+			# Authenticate with SSO/IdP protected GitLab using cookies
+			$ glab auth login --hostname gitlab.example.org --token glpat-xxx --sso-cookie-file ~/cookies.txt
 		`, "`"),
 		Annotations: map[string]string{
 			mcpannotations.Destructive: "true",
@@ -150,6 +159,7 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 	cmd.Flags().StringVarP(&opts.ApiHost, "api-host", "a", "", "API host url.")
 	cmd.Flags().StringVarP(&opts.ApiProtocol, "api-protocol", "p", "", "API protocol: https, http")
 	cmd.Flags().StringVarP(&opts.GitProtocol, "git-protocol", "g", "", "Git protocol: ssh, https, http")
+	cmd.Flags().StringVar(&opts.CookieFile, "sso-cookie-file", "", "Path to a Netscape/Mozilla format cookie file for IdP/SSO authentication.")
 
 	return cmd
 }
@@ -195,6 +205,13 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 				}
 			}
 
+			if opts.CookieFile != "" {
+				err = cfg.Set(opts.Hostname, "cookie_file", opts.CookieFile)
+				if err != nil {
+					return err
+				}
+			}
+
 			return cfg.Write()
 		}
 
@@ -229,6 +246,13 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 
 			if opts.GitProtocol != "" {
 				err = cfg.Set(opts.Hostname, "git_protocol", opts.GitProtocol)
+				if err != nil {
+					return err
+				}
+			}
+
+			if opts.CookieFile != "" {
+				err = cfg.Set(opts.Hostname, "cookie_file", opts.CookieFile)
 				if err != nil {
 					return err
 				}
@@ -538,6 +562,13 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 	err = cfg.Set(hostname, "user", username)
 	if err != nil {
 		return err
+	}
+
+	if opts.CookieFile != "" {
+		err = cfg.Set(hostname, "cookie_file", opts.CookieFile)
+		if err != nil {
+			return err
+		}
 	}
 
 	err = cfg.Write()

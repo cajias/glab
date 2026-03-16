@@ -17,6 +17,11 @@ var sensitiveHeaders = []string{
 	"Authorization",
 	"Proxy-Authorization",
 	"Cf-Access-Client-Secret",
+	"Cookie",
+}
+
+var sensitiveResponseHeaders = []string{
+	"Set-Cookie",
 }
 
 type debugTransport struct {
@@ -42,8 +47,17 @@ func (d *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	// Dump response
+	// Clone response headers to redact sensitive values without affecting the caller
+	origHeaders := resp.Header
+	resp.Header = origHeaders.Clone()
+	for _, h := range sensitiveResponseHeaders {
+		if resp.Header.Get(h) != "" {
+			resp.Header.Set(h, "[REDACTED]")
+		}
+	}
+
 	respDump, err := httputil.DumpResponse(resp, true)
+	resp.Header = origHeaders // restore original headers
 	if err != nil {
 		return nil, err
 	}

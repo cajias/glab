@@ -2,7 +2,7 @@
 title: glab auth login
 stage: Create
 group: Code Review
-info: To determine the technical writer assigned to the Stage/Group associated with this page, see https://about.gitlab.com/handbook/product/ux/technical-writing/#assignments
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
 ---
 
 <!--
@@ -14,14 +14,26 @@ Authenticate with a GitLab instance.
 
 ## Synopsis
 
-Authenticate with a GitLab instance.
-You can pass in a token on standard input by using `--stdin`.
-The minimum required scopes for the token are: `api`, `write_repository`.
-Configuration and credentials are stored in the global configuration file (default `~/.config/glab-cli/config.yml`)
+Authenticates with a GitLab instance.
 
-When running in interactive mode inside a Git repository, `glab` will automatically detect
-GitLab instances from your Git remotes and present them as options, saving you from having to
-manually type the hostname.
+Stores your credentials in the global configuration file
+(default `~/.config/glab-cli/config.yml`).
+To store your token in your operating system's keyring instead, use `--use-keyring`.
+After authentication, all `glab` commands use the stored credentials.
+
+If `GITLAB_TOKEN`, `GITLAB_ACCESS_TOKEN`, or `OAUTH_TOKEN` are set,
+they take precedence over the stored credentials.
+When CI auto-login is enabled, these variables also override `CI_JOB_TOKEN`.
+
+To pass a token on standard input, use `--stdin`.
+
+In interactive mode, `glab` detects GitLab instances from your Git remotes
+and lists them as options, so you do not have to type the hostname manually.
+
+For GitLab instances protected by SSO or Identity Providers (IdP), use the `--sso-cookie-file`
+flag to provide browser session cookies for authentication. The cookie file must be in
+Netscape/Mozilla format (supports `#HttpOnly_` prefix). This requires a token for GitLab
+API authentication, while cookies handle the SSO/IdP layer.
 
 ```plaintext
 glab auth login [flags]
@@ -46,22 +58,32 @@ $ glab auth login --hostname gitlab.example.org --token glpat-xxx --api-host git
 # Non-interactive setup reading token from a file
 $ glab auth login --hostname gitlab.example.org --api-host gitlab.example.org:3443 --api-protocol https --git-protocol ssh  --stdin < myaccesstoken.txt
 
+# Semi-interactive OAuth login, skipping all prompts except browser auth
+$ glab auth login --hostname gitlab.com --web --git-protocol ssh --container-registry-domains "gitlab.com,gitlab.com:443,registry.gitlab.com" --use-keyring
+
 # Non-interactive CI/CD setup
 $ glab auth login --hostname $CI_SERVER_HOST --job-token $CI_JOB_TOKEN
+
+# Authenticate with SSO/IdP protected GitLab using cookies
+$ glab auth login --hostname gitlab.example.org --token glpat-xxx --sso-cookie-file ~/cookies.txt
 
 ```
 
 ## Options
 
 ```plaintext
-  -a, --api-host string       API host url.
-  -p, --api-protocol string   API protocol: https, http
-  -g, --git-protocol string   Git protocol: ssh, https, http
-      --hostname string       The hostname of the GitLab instance to authenticate with.
-  -j, --job-token string      CI job token.
-      --stdin                 Read token from standard input.
-  -t, --token string          Your GitLab access token.
-      --use-keyring           Store token in your operating system's keyring.
+  -a, --api-host string                     API host url.
+  -p, --api-protocol string                 API protocol: https, http
+      --container-registry-domains string   Container registry and image dependency proxy domains (comma-separated).
+  -g, --git-protocol string                 Git protocol: ssh, https, http
+      --hostname string                     The hostname of the GitLab instance to authenticate with.
+  -j, --job-token string                    CI job token.
+      --ssh-hostname string                 SSH hostname for instances with a different SSH endpoint.
+      --sso-cookie-file string              Path to a Netscape/Mozilla format cookie file for IdP/SSO authentication.
+      --stdin                               Read token from standard input.
+  -t, --token string                        Your GitLab access token.
+      --use-keyring                         Store token in your operating system's keyring.
+      --web                                 Skip the login type prompt and use web/OAuth login.
 ```
 
 ## Options inherited from parent commands
