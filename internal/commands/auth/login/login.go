@@ -206,7 +206,7 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 			}
 
 			if opts.CookieFile != "" {
-				err = cfg.Set(opts.Hostname, "cookie_file", opts.CookieFile)
+				err = cfg.Set(opts.Hostname, "sso_cookie_file", opts.CookieFile)
 				if err != nil {
 					return err
 				}
@@ -252,7 +252,7 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 			}
 
 			if opts.CookieFile != "" {
-				err = cfg.Set(opts.Hostname, "cookie_file", opts.CookieFile)
+				err = cfg.Set(opts.Hostname, "sso_cookie_file", opts.CookieFile)
 				if err != nil {
 					return err
 				}
@@ -565,7 +565,7 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 	}
 
 	if opts.CookieFile != "" {
-		err = cfg.Set(hostname, "cookie_file", opts.CookieFile)
+		err = cfg.Set(hostname, "sso_cookie_file", opts.CookieFile)
 		if err != nil {
 			return err
 		}

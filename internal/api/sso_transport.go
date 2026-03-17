@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"gitlab.com/gitlab-org/cli/internal/dbg"
@@ -23,7 +22,6 @@ import (
 type ssoTransport struct {
 	rt             http.RoundTripper
 	ssoClient      *http.Client
-	mu             sync.RWMutex
 	allowedDomains map[string]struct{}
 }
 
@@ -88,10 +86,24 @@ func drainAndClose(resp *http.Response) {
 	resp.Body.Close()
 }
 
-// copyHeaders copies headers from src to dst, excluding Cookie and Content-Length.
+// copyHeaders copies headers from src to dst, excluding Cookie, Content-Length,
+// and auth headers (Authorization, Private-Token) to prevent credential leakage
+// on cross-host redirects. Use copyAuthHeaders for same-host requests.
 func copyHeaders(src, dst *http.Request) {
 	for key, values := range src.Header {
-		if !strings.EqualFold(key, "Cookie") && !strings.EqualFold(key, "Content-Length") {
+		switch strings.ToLower(key) {
+		case "cookie", "content-length", "authorization", "private-token":
+			continue
+		}
+		dst.Header[key] = values
+	}
+}
+
+// copyAuthHeaders copies authentication headers from src to dst.
+// Only call for same-host requests where credentials should be preserved.
+func copyAuthHeaders(src, dst *http.Request) {
+	for _, key := range []string{"Authorization", "Private-Token"} {
+		if values, ok := src.Header[key]; ok {
 			dst.Header[key] = values
 		}
 	}
@@ -103,20 +115,23 @@ func isMutatingMethod(method string) bool {
 }
 
 func (t *ssoTransport) isDomainAllowed(domain string) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
 	_, ok := t.allowedDomains[domain]
 	return ok
 }
 
 // RoundTrip performs the request and handles SSO/same-host redirects for 301/302/303.
 func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Buffer the body upfront for mutating methods so it can be replayed after redirects.
+	// This must happen before rt.RoundTrip, which consumes the body.
 	var bodyBytes []byte
 	if req.Body != nil && isMutatingMethod(req.Method) {
 		var err error
-		bodyBytes, err = io.ReadAll(io.LimitReader(req.Body, maxBodySize))
+		bodyBytes, err = io.ReadAll(io.LimitReader(req.Body, maxBodySize+1))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+		if len(bodyBytes) > maxBodySize {
+			return nil, fmt.Errorf("request body exceeds maximum size of %d bytes for SSO redirect replay", maxBodySize)
 		}
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
@@ -222,6 +237,7 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		return nil, fmt.Errorf("failed to create retry request: %w", err)
 	}
 	copyHeaders(req, retryReq)
+	copyAuthHeaders(req, retryReq) // same-host retry: preserve auth credentials
 
 	// Use a no-redirect client so we can handle redirects with method preservation
 	retryClient := &http.Client{
@@ -236,7 +252,7 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 		return nil, fmt.Errorf("retry %s %s failed after SSO: %w", req.Method, req.URL, err)
 	}
 
-	// If no redirect, return directly
+	// If not a method-changing redirect (301/302/303), return directly
 	if !requiresMethodPreservation(retryResp.StatusCode) {
 		return retryResp, nil
 	}
@@ -274,6 +290,7 @@ func (t *ssoTransport) followRedirects(ctx context.Context, origReq *http.Reques
 			return nil, fmt.Errorf("failed to create redirect request: %w", err)
 		}
 		copyHeaders(origReq, redirectReq)
+		copyAuthHeaders(origReq, redirectReq) // same-host redirect: preserve auth credentials
 
 		// Add cookies from jar (RoundTrip doesn't consult the jar)
 		if t.ssoClient != nil && t.ssoClient.Jar != nil {

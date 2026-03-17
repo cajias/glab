@@ -15,6 +15,7 @@ import (
 )
 
 func TestCreateCookieJar_MultipleDomains(t *testing.T) {
+	t.Parallel()
 	// Create a temporary directory for the test cookie file
 	tmpDir := t.TempDir()
 	cookieFile := filepath.Join(tmpDir, "cookies.txt")
@@ -73,6 +74,7 @@ func TestCreateCookieJar_MultipleDomains(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req, err := http.NewRequest("GET", tc.url, nil)
 			require.NoError(t, err, "failed to create request")
 
@@ -92,6 +94,7 @@ func TestCreateCookieJar_MultipleDomains(t *testing.T) {
 }
 
 func TestCreateCookieJar_DomainWithLeadingDot(t *testing.T) {
+	t.Parallel()
 	// Create a temporary directory for the test cookie file
 	tmpDir := t.TempDir()
 	cookieFile := filepath.Join(tmpDir, "cookies.txt")
@@ -126,6 +129,7 @@ example.com	FALSE	/	TRUE	%d	exact_cookie	value3
 }
 
 func TestCreateCookieJar_FileNotFound(t *testing.T) {
+	t.Parallel()
 	client := &Client{
 		baseURL:    "https://example.com/api/v4",
 		cookieFile: "/nonexistent/path/cookies.txt",

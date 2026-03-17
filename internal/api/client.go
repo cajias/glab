@@ -225,24 +225,20 @@ func (c *Client) initializeHTTPClient() error {
 		}
 		c.httpClient.Jar = jar
 
-		c.httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		checkRedirect := func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxRedirects {
 				return fmt.Errorf("stopped after %d redirects", maxRedirects)
 			}
 			return nil
 		}
+		c.httpClient.CheckRedirect = checkRedirect
 
 		// ssoClient uses the underlying transport (not ssoTransport) to avoid infinite loops
 		ssoClient := &http.Client{
-			Transport: rt,
-			Jar:       jar,
-			Timeout:   ssoTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= maxRedirects {
-					return fmt.Errorf("stopped after %d redirects", maxRedirects)
-				}
-				return nil
-			},
+			Transport:     rt,
+			Jar:           jar,
+			Timeout:       ssoTimeout,
+			CheckRedirect: checkRedirect,
 		}
 
 		c.httpClient.Transport = &ssoTransport{
@@ -277,7 +273,7 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 	}
 
 	if len(cookies) == 0 {
-		return nil, fmt.Errorf("cookie file %q contains no valid cookies; ensure it is in Netscape/Mozilla format with unexpired cookies", c.cookieFile)
+		return nil, fmt.Errorf("cookie file %q contains no valid cookies; ensure it is in Netscape/Mozilla format with unexpired entries", c.cookieFile)
 	}
 
 	domainCookies := make(map[string][]*http.Cookie, len(cookies))
@@ -291,8 +287,7 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 	for domain, domainCookieList := range domainCookies {
 		domainURL, err := url.Parse("https://" + domain + "/")
 		if err != nil {
-			dbg.Debugf("skipping %d cookies for invalid domain %q: %v", len(domainCookieList), domain, err)
-			continue
+			return nil, fmt.Errorf("cookie file contains invalid domain %q: %w", domain, err)
 		}
 		jar.SetCookies(domainURL, domainCookieList)
 	}

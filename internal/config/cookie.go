@@ -44,6 +44,8 @@ func LoadCookieFile(path string) ([]*http.Cookie, error) {
 	var cookies []*http.Cookie
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
+	skippedMalformed := 0
+	skippedExpired := 0
 
 	for scanner.Scan() {
 		lineNum++
@@ -68,14 +70,15 @@ func LoadCookieFile(path string) ([]*http.Cookie, error) {
 
 		cookie, err := parseCookieLine(line, httpOnly)
 		if err != nil {
-			// Log malformed entries for debugging but continue processing
 			dbg.Debugf("cookie file %s:%d: skipping malformed entry: %v", expandedPath, lineNum, err)
+			skippedMalformed++
 			continue
 		}
 
 		// Skip expired cookies (session cookies with zero expiration are always included)
 		if !cookie.Expires.IsZero() && cookie.Expires.Before(time.Now()) {
 			dbg.Debugf("cookie file %s:%d: skipping expired cookie %q (expired %s)", expandedPath, lineNum, cookie.Name, cookie.Expires)
+			skippedExpired++
 			continue
 		}
 
@@ -84,6 +87,10 @@ func LoadCookieFile(path string) ([]*http.Cookie, error) {
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading cookie file: %w", err)
+	}
+
+	if len(cookies) == 0 && (skippedMalformed > 0 || skippedExpired > 0) {
+		return nil, fmt.Errorf("cookie file %q contains no valid cookies (%d malformed, %d expired); ensure it is in Netscape/Mozilla format with tab-separated fields", expandedPath, skippedMalformed, skippedExpired)
 	}
 
 	return cookies, nil
