@@ -209,7 +209,10 @@ func (c *Client) initializeHTTPClient() error {
 		}
 		c.httpClient.Jar = jar
 
-		// ssoClient uses the underlying transport (not ssoTransport) to avoid infinite loops
+		// ssoClient uses the underlying transport (not ssoTransport) to avoid infinite loops.
+		// It needs its own permissive policy rather than refuseMethodChangingRedirect: the
+		// SSO flow hops across IdP hosts, and those hops are all GET, so only the loop
+		// limit matters here.
 		ssoClient := &http.Client{
 			Transport: rt,
 			Jar:       jar,
@@ -255,7 +258,7 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 	}
 
 	if len(cookies) == 0 {
-		return nil, fmt.Errorf("cookie file %q contains no valid cookies; ensure it is in Netscape/Mozilla format with unexpired cookies", c.cookieFile)
+		return nil, fmt.Errorf("cookie file %q contains no valid cookies; ensure it is in Netscape/Mozilla format with unexpired entries", c.cookieFile)
 	}
 
 	domainCookies := make(map[string][]*http.Cookie, len(cookies))
@@ -269,8 +272,7 @@ func (c *Client) createCookieJar() (http.CookieJar, error) {
 	for domain, domainCookieList := range domainCookies {
 		domainURL, err := url.Parse("https://" + domain + "/")
 		if err != nil {
-			dbg.Debugf("skipping %d cookies for invalid domain %q: %v", len(domainCookieList), domain, err)
-			continue
+			return nil, fmt.Errorf("cookie file contains invalid domain %q: %w", domain, err)
 		}
 		jar.SetCookies(domainURL, domainCookieList)
 	}
