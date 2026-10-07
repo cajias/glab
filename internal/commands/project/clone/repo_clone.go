@@ -16,6 +16,7 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/git"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
@@ -157,7 +158,13 @@ func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *c
 				return runE(opts, ctxOpts)
 			}
 
-			opts.host = f.DefaultHostname()
+			cfg := f.Config()
+
+			host, err := cloneHost(ctxOpts.Repo, f.DefaultHostname(), cfg)
+			if err != nil {
+				return err
+			}
+			opts.host = host
 
 			apiClient, err := f.ApiClient(opts.host)
 			if err != nil {
@@ -170,7 +177,6 @@ func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *c
 				return err
 			}
 
-			cfg := f.Config()
 			opts.protocol, _ = cfg.Get(opts.host, "git_protocol")
 
 			if opts.groupName != "" {
@@ -207,6 +213,24 @@ func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *c
 	})
 
 	return repoCloneCmd
+}
+
+// cloneHost returns the host a clone should target. A full URL argument names
+// its own host, so cloning from another instance does not authenticate against
+// the default one. Anything else uses the default host.
+func cloneHost(repoArg, defaultHost string, cfg config.Config) (string, error) {
+	if !git.IsValidURL(repoArg) {
+		return defaultHost, nil
+	}
+	u, err := git.ParseURL(repoArg)
+	if err != nil {
+		return "", fmt.Errorf("invalid argument: %w", err)
+	}
+	repo, err := glrepo.FromURL(u, defaultHost, cfg)
+	if err != nil {
+		return "", fmt.Errorf("invalid argument: %w", err)
+	}
+	return repo.RepoHost(), nil
 }
 
 func groupClone(opts *options, ctxOpts *ContextOpts) error {

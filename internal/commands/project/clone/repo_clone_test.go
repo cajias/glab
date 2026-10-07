@@ -256,6 +256,33 @@ func TestNewCmdClone(t *testing.T) {
 	}
 }
 
+func TestCloneHost(t *testing.T) {
+	t.Parallel()
+
+	const defaultHost = "gitlab.com"
+
+	testCases := []struct {
+		name     string
+		repoArg  string
+		wantHost string
+	}{
+		{name: "path argument uses default host", repoArg: "NAMESPACE/REPO", wantHost: defaultHost},
+		{name: "project ID uses default host", repoArg: "4356677", wantHost: defaultHost},
+		{name: "default host URL", repoArg: "https://gitlab.com/gitlab-org/cli", wantHost: defaultHost},
+		{name: "self-managed URL uses its own host", repoArg: "https://mygitlab.com/mygroup/myrepo", wantHost: "mygitlab.com"},
+		{name: "scp-style URL uses its own host", repoArg: "git@mygitlab.com:mygroup/myrepo.git", wantHost: "mygitlab.com"},
+	}
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			host, err := cloneHost(tt.repoArg, defaultHost, config.NewBlankConfig())
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantHost, host)
+		})
+	}
+}
+
 func TestCloneWikiRepository(t *testing.T) {
 	opts := &options{
 		currentUser: &gitlab.User{Username: "OWNER"},
