@@ -17,7 +17,8 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/api"
 )
 
-func httpRequest(ctx context.Context, client *api.Client, method, p string, params any, headers []string) (*http.Response, error) {
+// httpRequest labels an io.Reader body as JSON only when rawBodyIsJSON is set.
+func httpRequest(ctx context.Context, client *api.Client, method, p string, params any, headers []string, rawBodyIsJSON bool) (*http.Response, error) {
 	var err error
 	isGraphQL := p == "graphql"
 
@@ -61,6 +62,7 @@ func httpRequest(ctx context.Context, client *api.Client, method, p string, para
 		}
 	case io.Reader:
 		body = pp
+		bodyIsJSON = rawBodyIsJSON
 	case nil:
 		body = nil
 	default:

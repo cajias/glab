@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -137,11 +138,12 @@ func Test_httpRequest(t *testing.T) {
 	})
 
 	type args struct {
-		host    string
-		method  string
-		p       string
-		params  any
-		headers []string
+		host          string
+		method        string
+		p             string
+		params        any
+		headers       []string
+		rawBodyIsJSON bool
 	}
 	type expects struct {
 		method  string
@@ -363,12 +365,66 @@ func Test_httpRequest(t *testing.T) {
 				headers: "Content-Type: application/json; charset=utf-8\r\nPrivate-Token: OTOKEN\r\nUser-Agent: glab test client\r\n",
 			},
 		},
+		{
+			name: "raw body announced as JSON gets the default content type",
+			args: args{
+				host:          "gitlab.com",
+				method:        http.MethodPost,
+				p:             "markdown",
+				params:        strings.NewReader(`{"text":"hello"}`),
+				headers:       []string{},
+				rawBodyIsJSON: true,
+			},
+			wantErr: false,
+			want: expects{
+				method:  http.MethodPost,
+				u:       "https://gitlab.com/api/v4/markdown",
+				body:    `{"text":"hello"}`,
+				headers: "Content-Type: application/json; charset=utf-8\r\nPrivate-Token: OTOKEN\r\nUser-Agent: glab test client\r\n",
+			},
+		},
+		{
+			name: "an explicit content type beats the raw-body default",
+			args: args{
+				host:          "gitlab.com",
+				method:        http.MethodPost,
+				p:             "markdown",
+				params:        strings.NewReader("hello"),
+				headers:       []string{"Content-Type: text/plain"},
+				rawBodyIsJSON: true,
+			},
+			wantErr: false,
+			want: expects{
+				method:  http.MethodPost,
+				u:       "https://gitlab.com/api/v4/markdown",
+				body:    "hello",
+				headers: "Content-Type: text/plain\r\nPrivate-Token: OTOKEN\r\nUser-Agent: glab test client\r\n",
+			},
+		},
+		{
+			name: "a raw body not announced as JSON is left undeclared",
+			args: args{
+				host:          "gitlab.com",
+				method:        http.MethodPost,
+				p:             "markdown",
+				params:        strings.NewReader("hello"),
+				headers:       []string{},
+				rawBodyIsJSON: false,
+			},
+			wantErr: false,
+			want: expects{
+				method:  http.MethodPost,
+				u:       "https://gitlab.com/api/v4/markdown",
+				body:    "hello",
+				headers: "Private-Token: OTOKEN\r\nUser-Agent: glab test client\r\n",
+			},
+		},
 	}
 	for _, tt := range tests {
 		var options []api.ClientOption
 		httpClient := cmdtest.NewTestApiClient(t, client, "OTOKEN", tt.args.host, options...)
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := httpRequest(t.Context(), httpClient, tt.args.method, tt.args.p, tt.args.params, tt.args.headers)
+			got, err := httpRequest(t.Context(), httpClient, tt.args.method, tt.args.p, tt.args.params, tt.args.headers, tt.args.rawBodyIsJSON)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("httpRequest() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -417,7 +473,7 @@ func Test_httpRequest_invalidURLReturnsError(t *testing.T) {
 	})
 
 	httpClient := cmdtest.NewTestApiClient(t, client, "OTOKEN", "gitlab.com")
-	_, err := httpRequest(t.Context(), httpClient, http.MethodGet, "http://host:abc", nil, nil) //nolint:bodyclose // transport returns nil response on invalid-URL error path
+	_, err := httpRequest(t.Context(), httpClient, http.MethodGet, "http://host:abc", nil, nil, false) //nolint:bodyclose // transport returns nil response on invalid-URL error path
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid request URL")
 }

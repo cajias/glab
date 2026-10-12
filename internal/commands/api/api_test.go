@@ -1414,24 +1414,36 @@ func Test_apiRun_ndjson_pagination(t *testing.T) {
 
 func Test_apiRun_inputFile(t *testing.T) {
 	tests := []struct {
-		name          string
-		inputFile     string
-		inputContents []byte
+		name           string
+		inputFile      string
+		inputContents  []byte
+		requestHeaders []string
 
-		contentLength    int64
-		expectedContents []byte
+		contentLength       int64
+		expectedContents    []byte
+		expectedContentType string
 	}{
 		{
-			name:          "stdin",
-			inputFile:     "-",
-			inputContents: []byte("I WORK OUT"),
-			contentLength: 0,
+			name:                "stdin",
+			inputFile:           "-",
+			inputContents:       []byte("I WORK OUT"),
+			contentLength:       0,
+			expectedContentType: "application/json; charset=utf-8",
 		},
 		{
-			name:          "from file",
-			inputFile:     "gitlab-test-file",
-			inputContents: []byte("I WORK OUT"),
-			contentLength: 10,
+			name:                "from file",
+			inputFile:           "gitlab-test-file",
+			inputContents:       []byte("I WORK OUT"),
+			contentLength:       10,
+			expectedContentType: "application/json; charset=utf-8",
+		},
+		{
+			name:                "explicit content type is not overridden",
+			inputFile:           "-",
+			inputContents:       []byte("I WORK OUT"),
+			requestHeaders:      []string{"Content-Type: text/plain"},
+			contentLength:       0,
+			expectedContentType: "text/plain",
 		},
 	}
 	for _, tt := range tests {
@@ -1466,6 +1478,7 @@ func Test_apiRun_inputFile(t *testing.T) {
 				requestPath:      "hello",
 				requestInputFile: inputFile,
 				fields:           rawFields("a=b", "c=d"),
+				requestHeaders:   tt.requestHeaders,
 
 				io: ios,
 				baseRepo: func() (glrepo.Interface, error) {
@@ -1484,7 +1497,8 @@ func Test_apiRun_inputFile(t *testing.T) {
 			assert.Equal(t, http.MethodPost, resp.Request.Method)
 			assert.Equal(t, "/api/v4/hello?a=b&c=d", resp.Request.URL.RequestURI())
 			assert.Equal(t, tt.contentLength, resp.Request.ContentLength)
-			assert.Empty(t, resp.Request.Header.Get("Content-Type"))
+			assert.Equal(t, tt.expectedContentType, resp.Request.Header.Get("Content-Type"))
+			assert.Len(t, resp.Request.Header.Values("Content-Type"), 1)
 			assert.Equal(t, tt.inputContents, bodyBytes)
 		})
 	}
