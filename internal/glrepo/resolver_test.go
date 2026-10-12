@@ -937,6 +937,53 @@ func Test_HeadRepo(t *testing.T) {
 		assert.Equal(t, "maxice8/glab", got.FullName())
 	})
 
+	t.Run("Consult the network, fork of a fork, pick the local fork", func(t *testing.T) {
+		localRem := rem()
+		originRemote := &Remote{
+			Remote: &git.Remote{Name: "origin"},
+			Repo:   NewWithHost("group/sub", "project", "gitlab.com"),
+		}
+		parent := mockGitlabProject("group/sub/template")
+		parent.ForkedFromProject = &gitlab.ForkParent{PathWithNamespace: "group/base"}
+		project := mockGitlabProject("group/sub/project")
+		project.ForkedFromProject = &gitlab.ForkParent{PathWithNamespace: parent.PathWithNamespace}
+		localRem.remotes = Remotes{originRemote}
+		localRem.network = []gitlab.Project{project}
+
+		getProject := api.GetProject
+		t.Cleanup(func() { api.GetProject = getProject })
+		api.GetProject = func(_ *gitlab.Client, projectID any) (*gitlab.Project, error) {
+			require.Equal(t, parent.PathWithNamespace, projectID)
+			return &parent, nil
+		}
+
+		ios := iostreams.New()
+		require.False(t, ios.PromptEnabled())
+		got, err := localRem.HeadRepo(t.Context(), ios)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, "group/sub/project", got.FullName())
+		assert.Equal(t, "gitlab.com", got.RepoHost())
+	})
+
+	t.Run("Consult the network, no fork with a local remote, pick the first", func(t *testing.T) {
+		localRem := rem()
+		originRemote := &Remote{
+			Remote: &git.Remote{Name: "origin"},
+			Repo:   NewWithHost("other", "project", "gitlab.com"),
+		}
+		project := mockGitlabProject("group/fork")
+		project.ForkedFromProject = &gitlab.ForkParent{PathWithNamespace: "group/base"}
+		localRem.remotes = Remotes{originRemote, localRem.remotes[0]}
+		localRem.network = []gitlab.Project{project}
+
+		ios := iostreams.New()
+		require.False(t, ios.PromptEnabled())
+		got, err := localRem.HeadRepo(t.Context(), ios)
+		require.NoError(t, err)
+		assert.Same(t, localRem.remotes[0], got)
+	})
+
 	t.Run("Consult the network, more than 1 repo, pick the first", func(t *testing.T) {
 		localRem := rem()
 

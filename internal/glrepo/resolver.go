@@ -246,11 +246,14 @@ func (r *ResolvedRemotes) HeadRepo(ctx context.Context, ios *iostreams.IOStreams
 			for _, repo := range repoNames {
 				if repoMap[repo].ForkedFromProject != nil {
 					selectedRepoInfo, _ := FromFullName(repoMap[repo].HTTPURLToRepo, r.defaultHostname, r.cfg)
-					remote, _ := r.RemoteForRepo(selectedRepoInfo)
+					remote, err := r.RemoteForRepo(selectedRepoInfo)
+					if err != nil {
+						continue
+					}
 					return remote, nil
 				}
 			}
-			// There are no forked repos so return the first repo
+			// No fork with a local remote
 			return r.remotes[0], nil
 		}
 
