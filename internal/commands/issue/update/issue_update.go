@@ -29,6 +29,8 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 			description. Use %[1]s--label%[1]s and %[1]s--unlabel%[1]s to add or remove
 			labels.
 
+			Use %[1]s--estimate%[1]s and %[1]s--spend%[1]s to track time on the issue, the same as the %[1]s/estimate%[1]s and %[1]s/spend%[1]s quick actions. Durations use the GitLab time tracking format, for example %[1]s1mo 2w 3d 4h 5m%[1]s. %[1]s--spend%[1]s adds to the time already spent. %[1]s--remove-estimate%[1]s and %[1]s--remove-time-spent%[1]s reset the estimate and the time spent.
+
 			%[1]s--attach%[1]s uploads a file and references it at the end of the description. Repeat the flag for more than one file, or pass %[1]s-%[1]s to read the file from standard input. Without %[1]s--description%[1]s the references are added to the description the issue already has, instead of replacing it.
 			%[2]s`, "`", fmt.Sprintf(text.ExperimentalFlagString, "`--attach`")),
 		Example: heredoc.Doc(`
@@ -42,7 +44,13 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 			cat description.md | glab issue update 42 --description-file -
 
 			# Add a screenshot to the existing description
-			glab issue update 42 --attach ./screenshot.png`),
+			glab issue update 42 --attach ./screenshot.png
+
+			# Set a time estimate and log time spent
+			glab issue update 42 --estimate 2d --spend 1h30m
+
+			# Reset the time estimate and the time spent
+			glab issue update 42 --remove-estimate --remove-time-spent`),
 		Args: cobra.ExactArgs(1),
 		Annotations: map[string]string{
 			mcpannotations.Destructive: "true",
@@ -78,6 +86,14 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 			}
 			if cmd.Flags().Changed("confidential") && cmd.Flags().Changed("public") {
 				return &cmdutils.FlagError{Err: errors.New("--public and --confidential can't be used together")}
+			}
+			for _, name := range []string{"estimate", "spend"} {
+				if !cmd.Flags().Changed(name) {
+					continue
+				}
+				if v, _ := cmd.Flags().GetString(name); strings.TrimSpace(v) == "" {
+					return &cmdutils.FlagError{Err: fmt.Errorf("--%s can't be empty", name)}
+				}
 			}
 
 			if err := cmdutils.ResolveDescriptionFile(f.IO(), cmd); err != nil {
@@ -214,11 +230,48 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 				l.DueDate = new(dueDate)
 			}
 
+			timeTrackingChanged := cmd.Flags().Changed("estimate") || cmd.Flags().Changed("remove-estimate") ||
+				cmd.Flags().Changed("spend") || cmd.Flags().Changed("remove-time-spent")
+
 			f.IO().LogInfof("- Updating issue #%d\n", issue.IID)
 
-			issue, err = api.UpdateIssue(client, repo.FullName(), issue.IID, l)
-			if err != nil {
-				return err
+			if *l != (gitlab.UpdateIssueOptions{}) || !timeTrackingChanged {
+				issue, err = api.UpdateIssue(client, repo.FullName(), issue.IID, l)
+				if err != nil {
+					return err
+				}
+			}
+
+			ctx := gitlab.WithContext(cmd.Context())
+			if cmd.Flags().Changed("estimate") {
+				estimate, _ := cmd.Flags().GetString("estimate")
+				_, _, err := client.Issues.SetTimeEstimate(repo.FullName(), issue.IID, &gitlab.SetTimeEstimateOptions{Duration: new(estimate)}, ctx)
+				if err != nil {
+					return err
+				}
+				actions = append(actions, fmt.Sprintf("set time estimate to %s", estimate))
+			}
+			if cmd.Flags().Changed("remove-estimate") {
+				_, _, err := client.Issues.ResetTimeEstimate(repo.FullName(), issue.IID, ctx)
+				if err != nil {
+					return err
+				}
+				actions = append(actions, "removed time estimate")
+			}
+			if cmd.Flags().Changed("spend") {
+				spend, _ := cmd.Flags().GetString("spend")
+				_, _, err := client.Issues.AddSpentTime(repo.FullName(), issue.IID, &gitlab.AddSpentTimeOptions{Duration: new(spend)}, ctx)
+				if err != nil {
+					return err
+				}
+				actions = append(actions, fmt.Sprintf("added %s of time spent", spend))
+			}
+			if cmd.Flags().Changed("remove-time-spent") {
+				_, _, err := client.Issues.ResetSpentTime(repo.FullName(), issue.IID, ctx)
+				if err != nil {
+					return err
+				}
+				actions = append(actions, "removed time spent")
 			}
 
 			for _, s := range actions {
@@ -244,6 +297,12 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 	issueUpdateCmd.Flags().Bool("unassign", false, "Unassign all users.")
 	issueUpdateCmd.Flags().IntP("weight", "w", 0, "Set weight of the issue.")
 	issueUpdateCmd.Flags().StringP("due-date", "", "", "A date in 'YYYY-MM-DD' format.")
+	issueUpdateCmd.Flags().String("estimate", "", "Set the time estimate for the issue, for example '2d' or '3h30m'.")
+	issueUpdateCmd.Flags().Bool("remove-estimate", false, "Remove the time estimate from the issue.")
+	issueUpdateCmd.Flags().String("spend", "", "Add time spent on the issue, for example '1h30m'.")
+	issueUpdateCmd.Flags().Bool("remove-time-spent", false, "Remove all time spent from the issue.")
+	issueUpdateCmd.MarkFlagsMutuallyExclusive("estimate", "remove-estimate")
+	issueUpdateCmd.MarkFlagsMutuallyExclusive("spend", "remove-time-spent")
 	cmdutils.AddDescriptionFileFlag(issueUpdateCmd, "issue")
 	cmdutils.AddAttachFlag(issueUpdateCmd, &attach, "description")
 
