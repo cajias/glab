@@ -261,22 +261,44 @@ func TestCloneHost(t *testing.T) {
 
 	const defaultHost = "gitlab.com"
 
+	// A self-managed instance served under a relative URL root.
+	subfolderConfig := func(t *testing.T) config.Config {
+		cfg := config.NewBlankConfig()
+		require.NoError(t, cfg.Set("example.com", "subfolder", "gitlab"))
+		return cfg
+	}
+
 	testCases := []struct {
 		name     string
 		repoArg  string
+		cfg      func(t *testing.T) config.Config
 		wantHost string
+		wantErr  bool
 	}{
 		{name: "path argument uses default host", repoArg: "NAMESPACE/REPO", wantHost: defaultHost},
 		{name: "project ID uses default host", repoArg: "4356677", wantHost: defaultHost},
 		{name: "default host URL", repoArg: "https://gitlab.com/gitlab-org/cli", wantHost: defaultHost},
 		{name: "self-managed URL uses its own host", repoArg: "https://mygitlab.com/mygroup/myrepo", wantHost: "mygitlab.com"},
 		{name: "scp-style URL uses its own host", repoArg: "git@mygitlab.com:mygroup/myrepo.git", wantHost: "mygitlab.com"},
+		{name: "ported host keeps its port", repoArg: "https://mygitlab.com:8080/mygroup/myrepo", wantHost: "mygitlab.com:8080"},
+		{name: "configured subfolder resolves the host", repoArg: "https://example.com/gitlab/mygroup/myrepo", cfg: subfolderConfig, wantHost: "example.com"},
+		{name: "URL without a repo segment is rejected", repoArg: "https://gitlab.com/group", wantErr: true},
+		{name: "trailing-slash URL is rejected", repoArg: "https://gitlab.com/mygroup/", wantErr: true},
 	}
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			host, err := cloneHost(tt.repoArg, defaultHost, config.NewBlankConfig())
+			cfg := config.NewBlankConfig()
+			if tt.cfg != nil {
+				cfg = tt.cfg(t)
+			}
+
+			host, err := cloneHost(tt.repoArg, defaultHost, cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantHost, host)
 		})
