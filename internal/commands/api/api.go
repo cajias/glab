@@ -211,6 +211,11 @@ func NewCmdApi(f cmdutils.Factory, runF func(*options) error) *cobra.Command {
 		read from standard input. In this mode, parameters specified with %[1]s--field%[1]s
 		flags are serialized into URL query parameters.
 
+		A %[1]s--input%[1]s body is sent as %[1]sapplication/json%[1]s, which is what most GitLab
+		endpoints require to parse it. To send a body of another type, set the
+		header yourself with %[1]s--header 'Content-Type: ...'%[1]s; an explicit header is
+		never overridden.
+
 		In %[1]s--paginate%[1]s mode, all pages of results are requested sequentially until
 		no more pages of results remain. For GraphQL requests:
 
@@ -328,7 +333,7 @@ func NewCmdApi(f cmdutils.Factory, runF func(*options) error) *cobra.Command {
 	fl.StringArrayVarP(&opts.requestHeaders, "header", "H", nil, "Add an additional HTTP request header.")
 	fl.BoolVarP(&opts.showResponseHeaders, "include", "i", false, "Include HTTP response headers in the output.")
 	fl.BoolVar(&opts.paginate, "paginate", false, "Make additional HTTP requests to fetch all pages of results.")
-	fl.StringVar(&opts.requestInputFile, "input", "", "The file to use as the body for the HTTP request.")
+	fl.StringVar(&opts.requestInputFile, "input", "", "The file to use as the body for the HTTP request. Sent as 'application/json' unless you set another 'Content-Type' with --header.")
 	fl.BoolVar(&opts.silent, "silent", false, "Do not print the response body.")
 	fl.Var(cmdutils.NewEnumValue([]string{"json", "ndjson"}, "json", &opts.outputFormat), "output", "Format output as: json, ndjson.")
 	fl.StringArrayVar(&opts.placeholderFlags, "placeholder", nil, "Define a custom placeholder in <name>=<value> format, expanded from :<name>. Repeat the flag to define more than one.")
@@ -442,6 +447,7 @@ func (o *options) run(ctx context.Context) error {
 	}
 	requestHeaders := o.requestHeaders
 	var requestBody any = params
+	var bodyIsJSON bool
 
 	o.warnOnLegacyRawArrays(method, params, rawKeys)
 
@@ -460,6 +466,8 @@ func (o *options) run(ctx context.Context) error {
 			return err
 		}
 		requestBody = file
+		// GitLab rejects a body with no Content-Type with HTTP 415.
+		bodyIsJSON = true
 		if size >= 0 {
 			requestHeaders = append([]string{fmt.Sprintf("Content-Length: %d", size)}, requestHeaders...)
 		}
@@ -497,7 +505,7 @@ func (o *options) run(ctx context.Context) error {
 
 	hasNextPage := true
 	for hasNextPage {
-		resp, err := httpRequest(ctx, client, method, requestPath, requestBody, requestHeaders)
+		resp, err := httpRequest(ctx, client, method, requestPath, requestBody, requestHeaders, bodyIsJSON)
 		if err != nil {
 			return err
 		}
