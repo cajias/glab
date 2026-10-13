@@ -5,6 +5,8 @@ package login
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1029,4 +1031,44 @@ func Test_nonInteractiveLoginDefaultsToTheResolvedHost(t *testing.T) {
 
 	onDefault, _ := cfg.Get("gitlab.com", "job_token")
 	assert.Empty(t, onDefault, "credentials should not land on gitlab.com")
+}
+
+// loginRun stores use_keyring before the OAuth2 flow has a token, so the
+// client for that flow must not depend on a stored token.
+func Test_deviceLoginWithKeyringAndNoStoredToken(t *testing.T) {
+	keyring.MockInit()
+	t.Setenv("GITLAB_CI", "")
+	t.Setenv("CI", "")
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GITLAB_ACCESS_TOKEN", "")
+	t.Setenv("OAUTH_TOKEN", "")
+
+	requests := make(chan string, 10)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Path
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	t.Cleanup(server.Close)
+	hostname := strings.TrimPrefix(server.URL, "https://")
+
+	d := t.TempDir()
+	t.Setenv("GLAB_CONFIG_DIR", d)
+	cfg := config.NewBlankConfigInDir(d)
+	require.NoError(t, cfg.Set(hostname, "client_id", "test-client-id"))
+	require.NoError(t, cfg.Set(hostname, "skip_tls_verify", "true"))
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdLogin, false,
+		cmdtest.WithConfig(cfg),
+		cmdtest.WithApiClientFunc(func(repoHost string) (*api.Client, error) {
+			return api.NewClientFromConfig(repoHost, cfg, false, "test-agent")
+		}),
+	)
+
+	_, err := exec("--hostname " + hostname + " --device")
+	require.ErrorContains(t, err, "failed to start device authorization")
+	require.Len(t, requests, 1)
+	assert.Equal(t, "/oauth/authorize_device", <-requests)
+
+	useKeyring, _ := cfg.Get(hostname, "use_keyring")
+	assert.Equal(t, "true", useKeyring)
 }
