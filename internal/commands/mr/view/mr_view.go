@@ -26,8 +26,8 @@ type options struct {
 	openInBrowser  bool
 	outputFormat   string
 
-	commentPageNujmber int
-	commentLimit       int
+	commentPageNumber int
+	commentLimit      int
 
 	io           *iostreams.IOStreams
 	gitlabClient func() (*gitlab.Client, error)
@@ -72,7 +72,7 @@ func NewCmdView(f cmdutils.Factory) *cobra.Command {
 	mrViewCmd.Flags().BoolVar(&opts.showUnresolved, "unresolved", false, "Show only unresolved discussions (implies --comments).")
 	cmdutils.EnableJSONOutput(mrViewCmd, opts.io, &opts.outputFormat)
 	mrViewCmd.Flags().BoolVarP(&opts.openInBrowser, "web", "w", false, "Open merge request in a browser. Uses default browser or browser specified in BROWSER variable.")
-	mrViewCmd.Flags().IntVarP(&opts.commentPageNujmber, "page", "p", 0, "Page number.")
+	mrViewCmd.Flags().IntVarP(&opts.commentPageNumber, "page", "p", 0, "Page number.")
 	mrViewCmd.Flags().IntVarP(&opts.commentLimit, "per-page", "P", 20, "Number of items to list per page.")
 
 	return mrViewCmd
@@ -121,7 +121,7 @@ func (o *options) run(ctx context.Context, f cmdutils.Factory, args []string) er
 	if o.showComments {
 		l := &gitlab.ListMergeRequestDiscussionsOptions{
 			ListOptions: gitlab.ListOptions{
-				Page:    int64(o.commentPageNujmber),
+				Page:    int64(o.commentPageNumber),
 				PerPage: int64(o.commentLimit),
 				Sort:    "asc",
 			},
