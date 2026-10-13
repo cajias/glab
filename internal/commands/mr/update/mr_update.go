@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 
 	"charm.land/huh/v2"
@@ -216,25 +215,25 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 				mergeTitle = mr.Title
 			}
 			if isDraft || isWIP {
+				var alreadyPresent bool
 				if isDraft {
-					if strings.HasPrefix(strings.ToLower(mergeTitle), "draft:") {
+					mergeTitle, alreadyPresent = cmdutils.EnsureTitlePrefix(mergeTitle, "Draft:")
+					if alreadyPresent {
 						actions = append(actions, "already a Draft")
 					} else {
 						actions = append(actions, "marked as Draft")
-						mergeTitle = "Draft: " + mergeTitle
 					}
 				} else {
-					if strings.HasPrefix(strings.ToLower(mergeTitle), "wip:") {
+					mergeTitle, alreadyPresent = cmdutils.EnsureTitlePrefix(mergeTitle, "WIP:")
+					if alreadyPresent {
 						actions = append(actions, "already a WIP")
 					} else {
 						actions = append(actions, "marked as WIP")
-						mergeTitle = "WIP: " + mergeTitle
 					}
 				}
 			} else if isReady, _ := cmd.Flags().GetBool("ready"); isReady {
 				actions = append(actions, "marked as ready")
-				re := regexp.MustCompile(`(?i)^(\s*(?:draft:|wip:)\s*)*`)
-				mergeTitle = re.ReplaceAllString(mergeTitle, "")
+				mergeTitle = cmdutils.StripTitlePrefixes(mergeTitle)
 			}
 
 			l.Title = new(mergeTitle)

@@ -168,6 +168,11 @@ func TestUpdateMergeRequest(t *testing.T) {
 			ExpectedMsg: []string{"✓ already a Draft", "2 Draft: mrTitle"},
 		},
 		{
+			Name:        "Set WIP",
+			Args:        "1 --wip",
+			ExpectedMsg: []string{"marked as WIP", "!1 WIP: mrTitle"},
+		},
+		{
 			Name:        "Set ready",
 			Args:        "2 --ready",
 			ExpectedMsg: []string{"✓ marked as ready", "2 mrTitle"},
