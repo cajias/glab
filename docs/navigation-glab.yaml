@@ -296,11 +296,6 @@
       url: 'cli/label/get/'
     - title: glab label list
       url: 'cli/label/list/'
-- title: glab mcp
-  url: 'cli/mcp/'
-  submenu:
-    - title: glab mcp serve
-      url: 'cli/mcp/serve/'
 - title: glab milestone
   url: 'cli/milestone/'
   submenu:

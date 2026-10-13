@@ -86,7 +86,6 @@ Run `glab --help` to view a list of core commands in your terminal.
 - [`glab iteration`](docs/source/iteration): Retrieve iteration information.
 - [`glab job`](docs/source/job): Work with GitLab CI/CD jobs.
 - [`glab label`](docs/source/label): Manage project and group labels.
-- [`glab mcp`](docs/source/mcp): Work with a Model Context Protocol (MCP) server. (EXPERIMENTAL)
 - [`glab milestone`](docs/source/milestone): Manage group or project milestones.
 - [`glab mr`](docs/source/mr): Create, view, and manage merge requests.
 - [`glab opentofu`](docs/source/opentofu): Work with the OpenTofu or Terraform integration.

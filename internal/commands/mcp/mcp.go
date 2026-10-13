@@ -22,6 +22,7 @@ func NewCmdMCP(f cmdutils.Factory) *cobra.Command {
 		`) + text.ExperimentalString,
 		Example: heredoc.Doc(`
 			glab mcp serve`),
+		Deprecated: "use the GitLab MCP Server (https://docs.gitlab.com/user/model_context_protocol/mcp_server/) instead.",
 	}
 
 	mcpCmd.AddCommand(mcpServeCmd.NewCmdServe(f))
