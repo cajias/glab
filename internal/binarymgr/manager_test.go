@@ -116,20 +116,27 @@ func TestManager_verifyChecksum(t *testing.T) {
 		filePath         string
 		expectedChecksum string
 		wantsErr         bool
+		wantsStderr      string
 	}{
-		{"valid checksum", testFile, expected, false},
-		{"invalid checksum", testFile, "invalid_checksum", true},
-		{"empty checksum (skipped)", testFile, "", false},
-		{"non-existent file", "/nonexistent/file", expected, true},
+		{"valid checksum", testFile, expected, false, "Checksum verified"},
+		{"invalid checksum", testFile, "invalid_checksum", true, ""},
+		{"empty checksum (skipped)", testFile, "", false, "No checksum available, skipping verification"},
+		{"non-existent file", "/nonexistent/file", expected, true, ""},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			ios, _, _, _ := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(false))
+			ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(false))
 			m := NewManager(ios, testSpec())
 			err := m.verifyChecksum(tc.filePath, tc.expectedChecksum)
+			assert.Empty(t, stdout.String())
+			if tc.wantsStderr != "" {
+				assert.Contains(t, stderr.String(), tc.wantsStderr)
+			} else {
+				assert.Empty(t, stderr.String())
+			}
 			if tc.wantsErr {
 				require.Error(t, err)
 			} else {

@@ -249,7 +249,7 @@ func (m *Manager) downloadAndInstall(ctx context.Context, platform Platform) (*B
 	defer os.Remove(tempFile.Name())
 	defer tempFile.Close()
 
-	m.io.LogInfof("Downloading %s version %s...\n", asset.filename, asset.version)
+	m.io.LogErrorf("Downloading %s version %s...\n", asset.filename, asset.version)
 	if err := m.downloadFile(ctx, asset, tempFile); err != nil {
 		return nil, err
 	}
@@ -279,7 +279,7 @@ func (m *Manager) downloadAndInstall(ctx context.Context, platform Platform) (*B
 
 	finalPath := binaryPath(m.spec, platform)
 	color := m.io.Color()
-	m.io.LogInfof("%s Installed to: %s\n", color.GreenCheck(), finalPath)
+	m.io.LogErrorf("%s Installed to: %s\n", color.GreenCheck(), finalPath)
 
 	return &BinaryInfo{
 		Path:     finalPath,
@@ -385,7 +385,7 @@ func (m *Manager) downloadFile(ctx context.Context, asset *packageAsset, dest *o
 func (m *Manager) verifyChecksum(filePath, expectedChecksum string) error {
 	if expectedChecksum == "" {
 		color := m.io.Color()
-		m.io.LogInfof("%s No checksum available, skipping verification\n", color.DotWarnIcon())
+		m.io.LogErrorf("%s No checksum available, skipping verification\n", color.DotWarnIcon())
 		return nil
 	}
 
@@ -406,7 +406,7 @@ func (m *Manager) verifyChecksum(filePath, expectedChecksum string) error {
 	}
 
 	color := m.io.Color()
-	m.io.LogInfof("%s Checksum verified\n", color.GreenCheck())
+	m.io.LogErrorf("%s Checksum verified\n", color.GreenCheck())
 	return nil
 }
 
