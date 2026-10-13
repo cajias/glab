@@ -147,6 +147,21 @@ func TestPackageSendsMappedRequest(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestPackageSendsMappedCargoRequest(t *testing.T) {
+	client := mockClient(t, func(tc *gitlabtesting.TestClient) {
+		tc.MockSecurityDependencyFirewall.EXPECT().
+			EvaluatePackage("g/p", &gitlab.EvaluatePackageOptions{
+				Ecosystem: gitlab.DependencyFirewallEcosystemCargo,
+				Name:      "serde",
+				Version:   "1.0.197",
+			}, gomock.Any()).
+			Return(&gitlab.PackageEvaluation{Outcome: gitlab.DependencyFirewallOutcomeAllowed}, nil, nil)
+	})
+
+	_, _, err := runPackage(t, client, "pkg:cargo/serde@1.0.197")
+	require.NoError(t, err)
+}
+
 func TestPackageAllowReportsAllowed(t *testing.T) {
 	client := mockClient(t, func(tc *gitlabtesting.TestClient) {
 		tc.MockSecurityDependencyFirewall.EXPECT().

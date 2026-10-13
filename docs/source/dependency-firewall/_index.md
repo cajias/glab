@@ -38,6 +38,7 @@ df
 ## Subcommands
 
 - [`bundle`](bundle.md)
+- [`cargo`](cargo.md)
 - [`ci-summary`](ci-summary.md)
 - [`gem`](gem.md)
 - [`gradle`](gradle.md)

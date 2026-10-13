@@ -86,6 +86,15 @@ func TestManagerEnvironAndCATrust(t *testing.T) {
 		assert.NotContains(t, env, "HTTPS_PROXY="+proxyURL, "uppercase is the engine's job; must not be duplicated here")
 		assert.Equal(t, []string{"SSL_CERT_FILE=" + caPath, "BUNDLE_SSL_CA_CERT=" + caPath}, Bundle().CATrustEnviron(caPath))
 	})
+
+	t.Run("cargo", func(t *testing.T) {
+		t.Parallel()
+		// cargo pins CARGO_HTTP_PROXY: an http.proxy in cargo or git config
+		// outranks the engine's HTTPS_PROXY, and curl ignores the uppercase
+		// HTTP_PROXY for plaintext registries.
+		assert.Equal(t, []string{"CARGO_HTTP_PROXY=" + proxyURL}, Cargo().Environment(proxyURL))
+		assert.Equal(t, []string{"CARGO_HTTP_CAINFO=" + caPath}, Cargo().CATrustEnviron(caPath))
+	})
 }
 
 // TestManagerExistingBundleVars pins each manager's declared CA-preservation
@@ -112,6 +121,7 @@ func TestManagerExistingBundleVars(t *testing.T) {
 		// through a generated JVM truststore, not an env-named CA file.
 		{Maven(), nil},
 		{Gradle(), nil},
+		{Cargo(), []string{"CARGO_HTTP_CAINFO"}},
 	}
 	for _, c := range cases {
 		t.Run(c.m.Name(), func(t *testing.T) {
@@ -155,7 +165,7 @@ func TestCleanupCAFilesNoOpForEnvProxyManagers(t *testing.T) {
 	t.Parallel()
 	caPath := filepath.Join(t.TempDir(), "ca.pem")
 	require.NoError(t, os.WriteFile(caPath, []byte("x"), 0o600))
-	for _, m := range []PackageManager{NPM(), Pnpm(), Yarn(), Pip(), Pipenv(), Uv(), Poetry(), Twine(), Gem(), Bundle()} {
+	for _, m := range []PackageManager{NPM(), Pnpm(), Yarn(), Pip(), Pipenv(), Uv(), Poetry(), Twine(), Gem(), Bundle(), Cargo()} {
 		m.CleanupCAFiles(caPath)
 	}
 	_, err := os.Stat(caPath)

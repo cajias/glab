@@ -156,6 +156,8 @@
   submenu:
     - title: glab dependency-firewall bundle
       url: 'cli/dependency-firewall/bundle/'
+    - title: glab dependency-firewall cargo
+      url: 'cli/dependency-firewall/cargo/'
     - title: glab dependency-firewall ci-summary
       url: 'cli/dependency-firewall/ci-summary/'
     - title: glab dependency-firewall gem
