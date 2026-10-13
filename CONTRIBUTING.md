@@ -303,7 +303,7 @@ Following these conventions results in a clear changelog for every version.
 
 It's generally a good idea to follow the conventions for your MR's title as well as for commit messages. This way, if your merge request is squashed upon merge, the maintainer can use its title as the final commit message, creating a properly-formatted history.
 
-If your MR contains multiple commits but only one logical change, the [Squash commits when merge request is accepted](https://gitlab.com/help/user/project/merge_requests/squash_and_merge) option (enabled by default in this project) will allow GitLab to use the MR title as the commit message.
+If your MR contains multiple commits but only one logical change, the [Squash commits when merge request is accepted](https://docs.gitlab.com/user/project/merge_requests/squash_and_merge/) option (enabled by default in this project) will allow GitLab to use the MR title as the commit message.
 
 #### `<type>`
 
