@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,6 +26,7 @@ import (
 type options struct {
 	groupName         string
 	includeSubgroups  bool
+	excludeSubgroups  []string
 	preserveNamespace bool
 	withMREnabled     bool
 	withIssuesEnabled bool
@@ -95,6 +97,9 @@ func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *c
 
 			# Clones all repos in a group
 			glab repo clone -g everyonecancontribute --paginate
+
+			# Clones all repos in a group, except those in one subgroup
+			glab repo clone -g mygroup --exclude-subgroup domain/backend --paginate
 
 			# Clones all non-archived repos in a group
 			glab repo clone -g everyonecancontribute --archived=false --paginate
@@ -181,6 +186,7 @@ func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *c
 	repoCloneCmd.Flags().BoolVarP(&opts.active, "active", "", false, "Limit by project status. When true, returns active projects. When false, returns projects that are archived or marked for deletion. Used with the --group flag.")
 	repoCloneCmd.Flags().BoolVarP(&opts.archived, "archived", "a", false, "Limit by archived status. Use with '-a=false' to exclude archived repositories. Used with the --group flag.")
 	repoCloneCmd.Flags().BoolVarP(&opts.includeSubgroups, "include-subgroups", "G", true, "Include projects in subgroups of this group. Default is true. Used with the --group flag.")
+	repoCloneCmd.Flags().StringSliceVar(&opts.excludeSubgroups, "exclude-subgroup", nil, "Skip projects in this subgroup, as a path relative to the group, not a numeric ID. Repeat the flag, or separate values with commas, to skip more than one. Projects shared from other namespaces are not affected. Used with the --group flag.")
 	repoCloneCmd.Flags().BoolVarP(&opts.owned, "mine", "m", false, "Limit by projects in the group owned by the current authenticated user. Used with the --group flag.")
 	repoCloneCmd.Flags().StringVarP(&opts.visibility, "visibility", "v", "", "Limit by visibility: public, internal, private. Used with the --group flag.")
 	repoCloneCmd.Flags().BoolVarP(&opts.withIssuesEnabled, "with-issues-enabled", "I", false, "Limit by projects with the issues feature enabled. Default is false. Used with the --group flag.")
@@ -243,6 +249,15 @@ func groupClone(opts *options, ctxOpts *ContextOpts) error {
 		listOpts.Page = int64(opts.page)
 	}
 
+	groupPath := opts.groupName
+	if _, parseErr := strconv.ParseInt(opts.groupName, 10, 64); parseErr == nil && len(opts.excludeSubgroups) > 0 {
+		group, _, err := opts.apiClient.Lab().Groups.GetGroup(opts.groupName, nil)
+		if err != nil {
+			return err
+		}
+		groupPath = group.FullPath
+	}
+
 	var projects []*gitlab.Project
 	var err error
 	if opts.paginate {
@@ -258,6 +273,16 @@ func groupClone(opts *options, ctxOpts *ContextOpts) error {
 	if len(projects) == 0 {
 		opts.io.LogErrorf("Group %q does not have any projects.\n", opts.groupName)
 		return cmdutils.SilentError
+	}
+
+	if len(opts.excludeSubgroups) > 0 {
+		projects = slices.DeleteFunc(projects, func(p *gitlab.Project) bool {
+			return isExcludedSubgroup(p.PathWithNamespace, groupPath, opts.excludeSubgroups)
+		})
+		if len(projects) == 0 {
+			opts.io.LogErrorf("No projects left to clone in group %q after applying --exclude-subgroup.\n", opts.groupName)
+			return cmdutils.SilentError
+		}
 	}
 
 	var finalOutput []string
@@ -293,6 +318,25 @@ func validateAPIPath(p string) error {
 		}
 	}
 	return nil
+}
+
+func isExcludedSubgroup(pathWithNamespace, groupPath string, excludes []string) bool {
+	projectPath := strings.ToLower(pathWithNamespace)
+	groupPrefix := strings.ToLower(strings.Trim(groupPath, "/")) + "/"
+	for _, exclude := range excludes {
+		exclude = strings.ToLower(strings.Trim(exclude, "/"))
+		if exclude == "" {
+			continue
+		}
+		fullPath := exclude
+		if !strings.HasPrefix(exclude, groupPrefix) {
+			fullPath = groupPrefix + exclude
+		}
+		if projectPath == fullPath || strings.HasPrefix(projectPath, fullPath+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneRun(opts *options, ctxOpts *ContextOpts) error {

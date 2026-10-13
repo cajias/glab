@@ -3,15 +3,23 @@
 package clone
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/google/shlex"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/v3/testing"
 
+	"gitlab.com/gitlab-org/cli/internal/api"
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 	"gitlab.com/gitlab-org/cli/test"
 )
@@ -170,6 +178,24 @@ func TestNewCmdClone(t *testing.T) {
 			},
 		},
 		{
+			name: "group clone with repeated exclude-subgroup",
+			args: "-g mygroup --exclude-subgroup domain/backend --exclude-subgroup docs",
+			wantOpts: options{
+				gitFlags:         []string{},
+				groupName:        "mygroup",
+				excludeSubgroups: []string{"domain/backend", "docs"},
+			},
+		},
+		{
+			name: "group clone with comma-separated exclude-subgroup",
+			args: "-g mygroup --exclude-subgroup domain/backend,docs",
+			wantOpts: options{
+				gitFlags:         []string{},
+				groupName:        "mygroup",
+				excludeSubgroups: []string{"domain/backend", "docs"},
+			},
+		},
+		{
 			name: "group clone without active flag",
 			args: "-g mygroup",
 			wantOpts: options{
@@ -225,6 +251,7 @@ func TestNewCmdClone(t *testing.T) {
 			assert.Equal(t, tt.wantOpts.dir, opts.dir)
 			assert.Equal(t, tt.wantOpts.preserveNamespace, opts.preserveNamespace)
 			assert.Equal(t, tt.wantOpts.wiki, opts.wiki)
+			assert.Equal(t, tt.wantOpts.excludeSubgroups, opts.excludeSubgroups)
 		})
 	}
 }
@@ -411,6 +438,142 @@ func TestValidateAPIPath(t *testing.T) {
 				require.NoError(t, err)
 			} else {
 				require.ErrorContains(t, err, "invalid project path")
+			}
+		})
+	}
+}
+
+func TestIsExcludedSubgroup(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		path     string
+		excludes []string
+		want     bool
+	}{
+		{name: "project in excluded subgroup", path: "mygroup/domain/backend/api", excludes: []string{"domain/backend"}, want: true},
+		{name: "project in nested excluded subgroup", path: "mygroup/domain/backend/svc/api", excludes: []string{"domain/backend"}, want: true},
+		{name: "project path equals exclude", path: "mygroup/domain/backend", excludes: []string{"domain/backend"}, want: true},
+		{name: "exclude prefixed with group", path: "mygroup/domain/backend/api", excludes: []string{"mygroup/domain/backend"}, want: true},
+		{name: "sibling sharing string prefix", path: "mygroup/domain/backend-utils/api", excludes: []string{"domain/backend"}, want: false},
+		{name: "parent subgroup project", path: "mygroup/domain/api", excludes: []string{"domain/backend"}, want: false},
+		{name: "different case", path: "mygroup/domain/backend/api", excludes: []string{"Domain/Backend"}, want: true},
+		{name: "surrounding slashes", path: "mygroup/domain/backend/api", excludes: []string{"/domain/backend/"}, want: true},
+		{name: "one of several excludes", path: "mygroup/docs/site", excludes: []string{"domain/backend", "docs"}, want: true},
+		{name: "no excludes", path: "mygroup/domain/backend/api", excludes: nil, want: false},
+		{name: "empty exclude", path: "mygroup/api", excludes: []string{"", "/"}, want: false},
+	}
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, isExcludedSubgroup(tt.path, "mygroup", tt.excludes))
+		})
+	}
+}
+
+func TestGroupCloneExcludeSubgroup(t *testing.T) {
+	projects := []*gitlab.Project{
+		{Path: "api", PathWithNamespace: "mygroup/api", SSHURLToRepo: "git@gitlab.com:mygroup/api.git"},
+		{Path: "svc", PathWithNamespace: "mygroup/domain/backend/svc", SSHURLToRepo: "git@gitlab.com:mygroup/domain/backend/svc.git"},
+		{Path: "lib", PathWithNamespace: "mygroup/domain/backend-utils/lib", SSHURLToRepo: "git@gitlab.com:mygroup/domain/backend-utils/lib.git"},
+		{Path: "shared", PathWithNamespace: "othergroup/domain/backend/shared", SSHURLToRepo: "git@gitlab.com:othergroup/domain/backend/shared.git"},
+	}
+	clonesWithoutBackend := []string{
+		"git clone -- git@gitlab.com:mygroup/api.git",
+		"git clone -- git@gitlab.com:mygroup/domain/backend-utils/lib.git",
+		"git clone -- git@gitlab.com:othergroup/domain/backend/shared.git",
+	}
+
+	testCases := []struct {
+		name        string
+		cli         string
+		group       string
+		projects    []*gitlab.Project
+		numericID   bool
+		getGroupErr error
+		wantClones  []string
+		wantErr     string
+		wantStderr  string
+	}{
+		{
+			name:       "skips projects in excluded subgroup",
+			cli:        "-g mygroup --exclude-subgroup domain/backend",
+			group:      "mygroup",
+			wantClones: clonesWithoutBackend,
+		},
+		{
+			name:       "accepts exclude prefixed with group path",
+			cli:        "-g mygroup --exclude-subgroup mygroup/domain/backend",
+			group:      "mygroup",
+			wantClones: clonesWithoutBackend,
+		},
+		{
+			name:       "resolves numeric group ID to its full path",
+			cli:        "-g 123 --exclude-subgroup domain/backend",
+			group:      "123",
+			numericID:  true,
+			wantClones: clonesWithoutBackend,
+		},
+		{
+			name:       "no projects left after exclusion",
+			cli:        "-g mygroup --exclude-subgroup domain",
+			group:      "mygroup",
+			projects:   projects[1:3],
+			wantErr:    cmdutils.SilentError.Error(),
+			wantStderr: `No projects left to clone in group "mygroup" after applying --exclude-subgroup.`,
+		},
+		{
+			name:        "group lookup fails",
+			cli:         "-g 123 --exclude-subgroup domain/backend",
+			group:       "123",
+			getGroupErr: errors.New("404 Group Not Found"),
+			wantErr:     "404 Group Not Found",
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			testClient := gitlabtesting.NewTestClient(t)
+			testClient.MockUsers.EXPECT().CurrentUser().Return(&gitlab.User{Username: "OWNER"}, nil, nil)
+			if tc.projects == nil {
+				tc.projects = projects
+			}
+			if tc.getGroupErr != nil {
+				testClient.MockGroups.EXPECT().GetGroup(tc.group, gomock.Any()).Return(nil, nil, tc.getGroupErr)
+			} else {
+				if tc.numericID {
+					testClient.MockGroups.EXPECT().GetGroup(tc.group, gomock.Any()).Return(&gitlab.Group{FullPath: "mygroup"}, nil, nil)
+				}
+				testClient.MockGroups.EXPECT().ListGroupProjects(tc.group, gomock.Any()).Return(slices.Clone(tc.projects), nil, nil)
+			}
+
+			cs, restore := test.InitCmdStubber()
+			defer restore()
+			for range tc.wantClones {
+				cs.Stub("")
+			}
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdClone(f, nil)
+			}, false,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+				cmdtest.WithConfig(config.NewFromString("git_protocol: ssh\n")),
+			)
+
+			out, err := exec(tc.cli)
+
+			if tc.wantErr != "" {
+				require.EqualError(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			if tc.wantStderr != "" {
+				assert.Contains(t, out.Stderr(), tc.wantStderr)
+			}
+			require.Len(t, cs.Calls, len(tc.wantClones))
+			for i, want := range tc.wantClones {
+				assert.Equal(t, want, strings.Join(cs.Calls[i].Args, " "))
 			}
 		})
 	}
