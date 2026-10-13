@@ -138,7 +138,7 @@ func TestSaveNewStack(t *testing.T) {
 			}
 
 			dir := git.InitGitRepoWithCommit(t)
-			err := git.SetLocalConfig("glab.currentstack", "cool-test-feature")
+			err := git.SetCurrentStackTitle("cool-test-feature")
 			require.NoError(t, err)
 
 			createTemporaryFiles(t, dir, tc.files)
@@ -221,7 +221,7 @@ func TestSaveStack_WarningWhenNotOnLastEntry(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			dir := git.InitGitRepoWithCommit(t)
 			stackTitle := "test-stack"
-			err := git.SetLocalConfig("glab.currentstack", stackTitle)
+			err := git.SetCurrentStackTitle(stackTitle)
 			require.NoError(t, err)
 
 			err = git.AddStackRefFile(stackTitle, firstRef)
@@ -315,7 +315,7 @@ func Test_addFiles(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.desc, func(t *testing.T) {
 			dir := git.InitGitRepoWithCommit(t)
-			err := git.SetLocalConfig("glab.currentstack", "cool-test-feature")
+			err := git.SetCurrentStackTitle("cool-test-feature")
 			require.NoError(t, err)
 
 			createTemporaryFiles(t, dir, tc.expected)
@@ -386,7 +386,7 @@ func Test_checkForChanges(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.desc, func(t *testing.T) {
 			dir := git.InitGitRepoWithCommit(t)
-			err := git.SetLocalConfig("glab.currentstack", "cool-test-feature")
+			err := git.SetCurrentStackTitle("cool-test-feature")
 			require.NoError(t, err)
 
 			createTemporaryFiles(t, dir, tc.args)

@@ -135,11 +135,15 @@ func (o *options) run(ctx context.Context) error {
 		}
 	}
 
-	// Clear the config before removing the directory so a failure leaves the stack intact.
-	// git.Config returns the same error for an unset key and a failed call, so any error means no current stack.
+	currentStack, err := git.GetCurrentStackTitle()
+	if err != nil && !errors.Is(err, git.ErrNoCurrentStack) {
+		return err
+	}
+
+	// Clear the current stack before removing the directory so a failure leaves the stack intact.
 	clearedCurrent := false
-	if currentStack, err := git.GetCurrentStackTitle(); err == nil && currentStack == o.name {
-		if err := git.UnsetLocalConfig("glab.currentstack"); err != nil {
+	if err == nil && currentStack == o.name {
+		if err := git.ClearCurrentStackTitle(o.name); err != nil {
 			return err
 		}
 		clearedCurrent = true
@@ -147,7 +151,7 @@ func (o *options) run(ctx context.Context) error {
 
 	if err := git.RemoveStackRefDir(o.name); err != nil {
 		if clearedCurrent {
-			if restoreErr := git.SetLocalConfig("glab.currentstack", o.name); restoreErr != nil {
+			if restoreErr := git.SetCurrentStackTitle(o.name); restoreErr != nil {
 				return errors.Join(err, restoreErr)
 			}
 		}

@@ -68,9 +68,9 @@ func NewCmdCreateStack(f cmdutils.Factory, gr git.GitRunner) *cobra.Command {
 					color.Blue(title))
 			}
 
-			err := git.SetLocalConfig("glab.currentstack", title)
+			err := git.SetCurrentStackTitle(title)
 			if err != nil {
-				return fmt.Errorf("error setting local Git config: %w", err)
+				return fmt.Errorf("error setting current stack: %w", err)
 			}
 
 			_, err = git.AddStackRefDir(title)

@@ -1284,7 +1284,7 @@ func Test_stackSync(t *testing.T) {
 			opts.labels = tc.args.stack.labels
 			opts.reviewers = tc.args.stack.reviewers
 
-			err := git.SetConfig("glab.currentstack", tc.args.stack.title)
+			err := git.SetCurrentStackTitle(tc.args.stack.title)
 			require.NoError(t, err)
 
 			createStack(t, tc.args.stack.title, tc.args.stack.refs)

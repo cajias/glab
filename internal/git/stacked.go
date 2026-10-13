@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/run"
@@ -69,8 +71,92 @@ func UnsetLocalConfig(key string) error {
 	return nil
 }
 
+// The current stack is stored in the per-worktree Git directory because
+// `git config --local` is shared by every linked worktree. The legacy config
+// key is still read as a fallback for repositories set up by older versions.
+const (
+	currentStackFile      = "GLAB_CURRENT_STACK"
+	legacyCurrentStackKey = "glab.currentstack"
+)
+
+// ErrNoCurrentStack is returned when no stack is selected in the current worktree.
+var ErrNoCurrentStack = errors.New("no current stack")
+
+func currentStackPath() (string, error) {
+	gitDir, err := GitDir()
+	if err != nil {
+		return "", fmt.Errorf("finding Git directory: %w", err)
+	}
+	return filepath.Join(gitDir, currentStackFile), nil
+}
+
+// GetCurrentStackTitle returns the stack selected in the current worktree.
 func GetCurrentStackTitle() (string, error) {
-	return Config("glab.currentstack")
+	path, err := currentStackPath()
+	if err != nil {
+		return "", err
+	}
+
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return legacyCurrentStackTitle()
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading current stack: %w", err)
+	}
+
+	title := strings.TrimSpace(string(data))
+	if title == "" {
+		return "", ErrNoCurrentStack
+	}
+	return title, nil
+}
+
+func legacyCurrentStackTitle() (string, error) {
+	output, err := run.PrepareCmd(GitCommand("config", legacyCurrentStackKey)).Output()
+	if isUnsetConfigKey(err) {
+		return "", ErrNoCurrentStack
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading legacy current stack: %w", err)
+	}
+	return firstLine(output), nil
+}
+
+// isUnsetConfigKey reports whether `git config <key>` failed only because the
+// key has no value, which Git signals with exit status 1.
+func isUnsetConfigKey(err error) bool {
+	var cmdErr *run.CmdError
+	var exitErr *exec.ExitError
+	return errors.As(err, &cmdErr) && errors.As(cmdErr.Err, &exitErr) && exitErr.ExitCode() == 1
+}
+
+// SetCurrentStackTitle selects a stack in the current worktree only.
+func SetCurrentStackTitle(title string) error {
+	path, err := currentStackPath()
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(path, []byte(title+"\n"), 0o600); err != nil {
+		return fmt.Errorf("writing current stack: %w", err)
+	}
+	return nil
+}
+
+// ClearCurrentStackTitle leaves the current worktree without a stack. The
+// file is emptied rather than removed so the worktree does not fall back to
+// the legacy config value, which is unset too when it still names title.
+func ClearCurrentStackTitle(title string) error {
+	if err := SetCurrentStackTitle(""); err != nil {
+		return err
+	}
+
+	legacy, err := run.PrepareCmd(GitCommand("config", "--local", "--get", legacyCurrentStackKey)).Output()
+	if err == nil && firstLine(legacy) == title {
+		return UnsetLocalConfig(legacyCurrentStackKey)
+	}
+	return nil
 }
 
 func AddStackRefDir(dir string) (string, error) {

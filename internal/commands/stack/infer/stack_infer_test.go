@@ -76,7 +76,7 @@ func TestCreateBranches(t *testing.T) {
 		dir := git.InitGitRepoWithCommit(t)
 
 		stackTitle := "test-stack"
-		err := git.SetLocalConfig("glab.currentstack", stackTitle)
+		err := git.SetCurrentStackTitle(stackTitle)
 		require.NoError(t, err)
 
 		_, err = git.AddStackRefDir(stackTitle)
@@ -148,7 +148,7 @@ func TestCreateBranches(t *testing.T) {
 		dir := git.InitGitRepoWithCommit(t)
 
 		stackTitle := "test-stack"
-		err := git.SetLocalConfig("glab.currentstack", stackTitle)
+		err := git.SetCurrentStackTitle(stackTitle)
 		require.NoError(t, err)
 
 		_, err = git.AddStackRefDir(stackTitle)
@@ -213,7 +213,7 @@ func TestCreateBranches(t *testing.T) {
 		dir := git.InitGitRepoWithCommit(t)
 
 		stackTitle := "test-stack"
-		err := git.SetLocalConfig("glab.currentstack", stackTitle)
+		err := git.SetCurrentStackTitle(stackTitle)
 		require.NoError(t, err)
 
 		_, err = git.AddStackRefDir(stackTitle)
@@ -279,7 +279,7 @@ func TestCreateBranches(t *testing.T) {
 		dir := git.InitGitRepoWithCommit(t)
 
 		stackTitle := "test-stack"
-		err := git.SetLocalConfig("glab.currentstack", stackTitle)
+		err := git.SetCurrentStackTitle(stackTitle)
 		require.NoError(t, err)
 
 		_, err = git.AddStackRefDir(stackTitle)

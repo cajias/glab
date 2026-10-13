@@ -537,3 +537,93 @@ func Test_StackLocation_SharedAcrossWorktrees(t *testing.T) {
 	require.NoError(t, err)
 	require.NoDirExists(t, filepath.Join(gitDir1, "stacked"))
 }
+
+func Test_CurrentStackTitle_IsolatedPerWorktree(t *testing.T) {
+	repo := NewTestRepo(t)
+	require.NoError(t, SetCurrentStackTitle("stack-alpha"))
+
+	worktreeDir := repo.addWorktree(t)
+	require.NoError(t, SetCurrentStackTitle("stack-beta"))
+
+	t.Chdir(repo.rootDir)
+	title, err := GetCurrentStackTitle()
+	require.NoError(t, err)
+	require.Equal(t, "stack-alpha", title)
+
+	t.Chdir(worktreeDir)
+	title, err = GetCurrentStackTitle()
+	require.NoError(t, err)
+	require.Equal(t, "stack-beta", title)
+}
+
+func Test_CurrentStackTitle_FallsBackToLegacyConfig(t *testing.T) {
+	repo := NewTestRepo(t)
+	require.NoError(t, SetLocalConfig(legacyCurrentStackKey, "legacy-stack"))
+	repo.addWorktree(t)
+
+	title, err := GetCurrentStackTitle()
+	require.NoError(t, err)
+	require.Equal(t, "legacy-stack", title)
+
+	require.NoError(t, SetCurrentStackTitle("new-stack"))
+	title, err = GetCurrentStackTitle()
+	require.NoError(t, err)
+	require.Equal(t, "new-stack", title)
+
+	t.Chdir(repo.rootDir)
+	title, err = GetCurrentStackTitle()
+	require.NoError(t, err)
+	require.Equal(t, "legacy-stack", title)
+}
+
+func Test_CurrentStackTitle_NotSet(t *testing.T) {
+	InitGitRepo(t)
+
+	_, err := GetCurrentStackTitle()
+	require.ErrorIs(t, err, ErrNoCurrentStack)
+}
+
+func Test_CurrentStackTitle_ReadErrorIsNotNoCurrentStack(t *testing.T) {
+	InitGitRepo(t)
+	path, err := currentStackPath()
+	require.NoError(t, err)
+	require.NoError(t, os.Mkdir(path, 0o755))
+
+	_, err = GetCurrentStackTitle()
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNoCurrentStack)
+}
+
+func Test_ClearCurrentStackTitle(t *testing.T) {
+	tests := []struct {
+		name       string
+		legacy     string
+		wantLegacy bool
+	}{
+		{name: "without legacy config"},
+		{name: "legacy config names the cleared stack", legacy: "doomed-stack"},
+		{name: "legacy config names another stack", legacy: "other-stack", wantLegacy: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			InitGitRepo(t)
+			if tc.legacy != "" {
+				require.NoError(t, SetLocalConfig(legacyCurrentStackKey, tc.legacy))
+			}
+			require.NoError(t, SetCurrentStackTitle("doomed-stack"))
+
+			require.NoError(t, ClearCurrentStackTitle("doomed-stack"))
+
+			_, err := GetCurrentStackTitle()
+			require.ErrorIs(t, err, ErrNoCurrentStack)
+
+			_, err = Config(legacyCurrentStackKey)
+			if tc.wantLegacy {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}

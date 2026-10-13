@@ -92,7 +92,7 @@ func switchFunc(cmd *cobra.Command, f cmdutils.Factory, args []string) error {
 	}
 
 	currentStackTitle, err := git.GetCurrentStackTitle()
-	if err != nil {
+	if err != nil && !errors.Is(err, git.ErrNoCurrentStack) {
 		return fmt.Errorf("error getting current stack: %w", err)
 	}
 
@@ -101,9 +101,9 @@ func switchFunc(cmd *cobra.Command, f cmdutils.Factory, args []string) error {
 		return nil
 	}
 
-	err = git.SetLocalConfig("glab.currentstack", name)
+	err = git.SetCurrentStackTitle(name)
 	if err != nil {
-		return fmt.Errorf("error setting local Git config: %w", err)
+		return fmt.Errorf("error setting current stack: %w", err)
 	}
 
 	f.IO().LogInfof("Switched to stack %s.\n", name)
