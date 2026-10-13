@@ -31,9 +31,11 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	opts := &options{io: f.IO(), cfg: f.Config(), factory: f, execute: executeOrbit}
 	cmd := &cobra.Command{
 		Use:   "orbit [<command>] [flags]",
-		Short: `Run the GitLab Orbit CLI. (EXPERIMENTAL)`,
+		Short: `Query the GitLab Orbit context graph. (EXPERIMENTAL)`,
 		Long: heredoc.Docf(`
 			Run the GitLab Orbit CLI through glab.
+
+			Coding agents: run %[1]sglab orbit --yes skills get orbit%[1]s to load the Orbit skill. %[1]s--yes%[1]s installs the binary without a prompt on first use.
 
 			Every command and flag, including %[1]s--help%[1]s, is forwarded verbatim to the managed Orbit binary. glab downloads, verifies, and updates that binary for you on first use. Until the binary is installed, %[1]s--help%[1]s shows this text instead. glab passes your resolved GitLab credential to the binary on every invocation, so remote commands such as %[1]sglab orbit query%[1]s need no separate login.
 
