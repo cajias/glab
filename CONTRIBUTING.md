@@ -279,7 +279,7 @@ When you deprecate a flag, command, or runtime warning, the message format
 follows specific conventions that depend on whether the message is emitted
 directly by glab or wrapped by Cobra.
 
-For format and examples, see [deprecation messages](https://docs.gitlab.com/development/documentation/cli_styleguide/#deprecation-messages).
+For format and examples, see [deprecation messages](https://docs.gitlab.com/development/documentation/cli_styleguide/#deprecations).
 
 ## Commit Messages
 
