@@ -426,6 +426,167 @@ func TestNewClientFromConfig_SurfacesKeyringReadError(t *testing.T) {
 	assert.Contains(t, err.Error(), "keyring")
 }
 
+func TestNewClientFromConfig_KeyringTokenMissing(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(keyring.MockInit)
+
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GITLAB_ACCESS_TOKEN", "")
+	t.Setenv("OAUTH_TOKEN", "")
+	t.Setenv("GLAB_IS_OAUTH2", "")
+	t.Setenv("JOB_TOKEN", "")
+	t.Setenv("CI_JOB_TOKEN", "")
+	t.Setenv("GITLAB_CI", "")
+	t.Setenv("GLAB_ENABLE_CI_AUTOLOGIN", "")
+	t.Setenv("GLAB_USE_KEYRING", "")
+	t.Setenv("USE_KEYRING", "")
+
+	keyringHost := "---\nhosts:\n  gitlab.example.com:\n    use_keyring: \"true\"\n"
+
+	t.Run("returns an actionable error", func(t *testing.T) {
+		_, err := NewClientFromConfig("gitlab.example.com", config.NewFromString(keyringHost), false, "test-agent")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "keyring")
+		assert.Contains(t, err.Error(), "re-authenticate")
+		assert.Contains(t, err.Error(), "glab auth login --hostname gitlab.example.com")
+	})
+
+	t.Run("a token from the environment still wins", func(t *testing.T) {
+		t.Setenv("GITLAB_TOKEN", "env-pat")
+
+		client, err := NewClientFromConfig("gitlab.example.com", config.NewFromString(keyringHost), false, "test-agent")
+		require.NoError(t, err)
+
+		key, value, err := client.AuthSource().Header(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, gitlab.AccessTokenHeaderName, key)
+		assert.Equal(t, "env-pat", value)
+	})
+
+	t.Run("a job token still authenticates", func(t *testing.T) {
+		t.Setenv("GLAB_ENABLE_CI_AUTOLOGIN", "true")
+		t.Setenv("GITLAB_CI", "true")
+		t.Setenv("CI_JOB_TOKEN", "env-job-token")
+
+		client, err := NewClientFromConfig("gitlab.example.com", config.NewFromString(keyringHost), false, "test-agent")
+		require.NoError(t, err)
+
+		key, value, err := client.AuthSource().Header(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, gitlab.JobTokenHeaderName, key)
+		assert.Equal(t, "env-job-token", value)
+	})
+
+	t.Run("a host without use_keyring stays unauthenticated", func(t *testing.T) {
+		cfg := config.NewFromString("---\nhosts:\n  gitlab.example.com:\n    user: someone\n")
+
+		client, err := NewClientFromConfig("gitlab.example.com", cfg, false, "test-agent")
+		require.NoError(t, err)
+
+		_, _, err = client.AuthSource().Header(t.Context())
+		require.ErrorContains(t, err, "unauthenticated")
+	})
+
+	// The keyring is only read when the host itself sets use_keyring, so
+	// GLAB_USE_KEYRING alone must not turn a tokenless host into an error.
+	t.Run("GLAB_USE_KEYRING does not apply to a host without use_keyring", func(t *testing.T) {
+		t.Setenv("GLAB_USE_KEYRING", "true")
+		cfg := config.NewFromString("---\nhosts:\n  gitlab.example.com:\n    user: someone\n")
+
+		client, err := NewClientFromConfig("gitlab.example.com", cfg, false, "test-agent")
+		require.NoError(t, err)
+
+		_, _, err = client.AuthSource().Header(t.Context())
+		require.ErrorContains(t, err, "unauthenticated")
+	})
+
+	t.Run("a top-level use_keyring does not apply to a host without use_keyring", func(t *testing.T) {
+		cfg := config.NewFromString("---\nuse_keyring: \"true\"\nhosts:\n  gitlab.example.com:\n    user: someone\n")
+
+		client, err := NewClientFromConfig("gitlab.example.com", cfg, false, "test-agent")
+		require.NoError(t, err)
+
+		_, _, err = client.AuthSource().Header(t.Context())
+		require.ErrorContains(t, err, "unauthenticated")
+	})
+
+	t.Run("a top-level use_keyring keeps the token from the host entry", func(t *testing.T) {
+		cfg := config.NewFromString("---\nuse_keyring: \"true\"\nhosts:\n  gitlab.example.com:\n    token: config-pat\n")
+
+		client, err := NewClientFromConfig("gitlab.example.com", cfg, false, "test-agent")
+		require.NoError(t, err)
+
+		key, value, err := client.AuthSource().Header(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, gitlab.AccessTokenHeaderName, key)
+		assert.Equal(t, "config-pat", value)
+	})
+}
+
+func TestNewClientFromConfig_WithoutAuthentication(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(keyring.MockInit)
+
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GITLAB_ACCESS_TOKEN", "")
+	t.Setenv("OAUTH_TOKEN", "")
+	t.Setenv("GLAB_IS_OAUTH2", "")
+	t.Setenv("JOB_TOKEN", "")
+	t.Setenv("CI_JOB_TOKEN", "")
+	t.Setenv("GITLAB_CI", "")
+	t.Setenv("GLAB_USE_KEYRING", "")
+	t.Setenv("USE_KEYRING", "")
+
+	var gotHeader string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Test-Header")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	hostname := strings.TrimPrefix(server.URL, "https://")
+	cfg := config.NewFromString(fmt.Sprintf(`
+---
+hosts:
+  %s:
+    use_keyring: "true"
+    is_oauth2: "true"
+    skip_tls_verify: "true"
+    custom_headers:
+      - name: X-Test-Header
+        value: from-config
+`, hostname))
+
+	client, err := NewClientFromConfig(hostname, cfg, false, "test-agent", WithoutAuthentication())
+	require.NoError(t, err)
+
+	_, _, err = client.AuthSource().Header(t.Context())
+	require.ErrorContains(t, err, "unauthenticated")
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, http.NoBody)
+	require.NoError(t, err)
+	resp, err := client.HTTPClient().Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "from-config", gotHeader)
+}
+
+func TestNewClientFromConfig_WithoutAuthenticationSkipsKeyringRead(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	keyring.MockInitWithError(errors.New("keyring locked"))
+	t.Cleanup(keyring.MockInit)
+
+	cfg := config.NewBlankConfig()
+	require.NoError(t, cfg.Set("example.gitlab.com", "use_keyring", "true"))
+
+	client, err := NewClientFromConfig("example.gitlab.com", cfg, false, "dummy user agent", WithoutAuthentication())
+	require.NoError(t, err)
+
+	_, _, err = client.AuthSource().Header(t.Context())
+	require.ErrorContains(t, err, "unauthenticated")
+}
+
 // TestNewClientFromConfig_WithoutTokenFromEnvironment pins the option glab
 // uses when it acts on behalf of a process that inherits the user's shell
 // environment, such as the Docker credential helper: the environment must

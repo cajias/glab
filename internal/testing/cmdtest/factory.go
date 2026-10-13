@@ -200,6 +200,13 @@ func WithApiClient(client *api.Client) FactoryOption {
 	}
 }
 
+// WithApiClientFunc configures the Factory to build API clients with the given function
+func WithApiClientFunc(apiClient func(repoHost string) (*api.Client, error)) FactoryOption {
+	return func(f *Factory) {
+		f.ApiClientStub = apiClient
+	}
+}
+
 // WithGitLabClient configures the Factory with a specific GitLab client
 func WithGitLabClient(client *gitlab.Client) FactoryOption {
 	return func(f *Factory) {

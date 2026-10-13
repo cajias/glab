@@ -35,6 +35,8 @@ type LoginOptions struct {
 	apiClient       func(repoHost string) (*api.Client, error)
 	defaultHostname string
 
+	unauthenticatedAPIClient func(repoHost string) (*api.Client, error)
+
 	Interactive bool
 
 	Hostname string
@@ -61,6 +63,11 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 		Config:          f.Config,
 		apiClient:       f.ApiClient,
 		defaultHostname: f.DefaultHostname(),
+		// loginRun sets use_keyring before the OAuth2 flow stores a token, so
+		// f.ApiClient would fail here on the missing keyring token.
+		unauthenticatedAPIClient: func(repoHost string) (*api.Client, error) {
+			return api.NewClientFromConfig(repoHost, f.Config(), false, f.BuildInfo().UserAgent(), api.WithoutAuthentication())
+		},
 	}
 
 	var tokenStdin bool
@@ -624,7 +631,7 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 			return err
 		}
 	} else {
-		client, err := opts.apiClient(hostname)
+		client, err := opts.unauthenticatedAPIClient(hostname)
 		if err != nil {
 			return err
 		}

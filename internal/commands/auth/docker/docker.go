@@ -9,6 +9,7 @@ import (
 	"github.com/docker/docker-credential-helpers/credentials"
 	"github.com/spf13/cobra"
 
+	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/mcpannotations"
 )
@@ -70,7 +71,10 @@ func NewCmdCredentialHelper(f cmdutils.Factory) *cobra.Command {
 			mcpannotations.Destructive: "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			apiClient, err := f.ApiClient("")
+			// Only the default host's transport is used here. Each registry
+			// lookup reads its own host's credentials, so a missing default-host
+			// token must not block a registry on another host.
+			apiClient, err := api.NewClientFromConfig(f.DefaultHostname(), f.Config(), false, f.BuildInfo().UserAgent(), api.WithoutAuthentication())
 			if err != nil {
 				return err
 			}

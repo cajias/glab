@@ -321,6 +321,8 @@ type fromConfigOptions struct {
 	// is deliberately excluded from this option: CI_JOB_TOKEN authentication
 	// must keep working under CI auto-login regardless.
 	searchEnvForIdentity bool
+
+	withoutAuthentication bool
 }
 
 // WithoutTokenFromEnvironment resolves the access token and the is_oauth2
@@ -335,6 +337,22 @@ type fromConfigOptions struct {
 func WithoutTokenFromEnvironment() FromConfigOption {
 	return func(o *fromConfigOptions) {
 		o.searchEnvForIdentity = false
+	}
+}
+
+// WithoutAuthentication builds an unauthenticated client that still uses the
+// host's transport settings from config (proxy, CA, client certificate,
+// skip_tls_verify, API host, and custom headers). Tokens from config, the
+// keyring, and the environment are neither read nor sent, so a missing or
+// unreadable keyring entry does not fail the build.
+//
+// Use it where a missing token is expected, such as the OAuth2 flow in
+// `glab auth login`, which sets use_keyring before it stores a token, or
+// where only the host's transport is needed, such as the Docker credential
+// helper.
+func WithoutAuthentication() FromConfigOption {
+	return func(o *fromConfigOptions) {
+		o.withoutAuthentication = true
 	}
 }
 
@@ -358,14 +376,22 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 
 	isOAuth2Cfg, isOAuth2Source, _ := cfg.GetWithSource(repoHost, "is_oauth2", fromCfg.searchEnvForIdentity)
 
-	// token and job_token may be backed by the OS keyring. Surface read errors
-	// (locked keyring, denied access, unavailable backend) instead of silently
-	// treating them as an empty credential, which produces confusing downstream
-	// auth errors. A credential that is simply not stored returns "" with no
-	// error.
-	token, tokenSource, err := cfg.GetWithSource(repoHost, "token", fromCfg.searchEnvForIdentity)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the access token for %q: %w", repoHost, err)
+	var token, tokenSource, jobToken string
+	if !fromCfg.withoutAuthentication {
+		// token and job_token may be backed by the OS keyring. Surface read errors
+		// (locked keyring, denied access, unavailable backend) instead of silently
+		// treating them as an empty credential, which produces confusing downstream
+		// auth errors. A credential that is simply not stored returns "" with no
+		// error.
+		var err error
+		token, tokenSource, err = cfg.GetWithSource(repoHost, "token", fromCfg.searchEnvForIdentity)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read the access token for %q: %w", repoHost, err)
+		}
+		jobToken, err = cfg.Get(repoHost, "job_token")
+		if err != nil {
+			return nil, fmt.Errorf("failed to read the job token for %q: %w", repoHost, err)
+		}
 	}
 
 	isOAuth2 := isOAuth2Cfg == "true"
@@ -373,10 +399,6 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 	isEnvironmentOAuth2 := isOAuth2Source == "GLAB_IS_OAUTH2"
 	if isEnvironmentPAT && !isEnvironmentOAuth2 {
 		isOAuth2 = false
-	}
-	jobToken, err := cfg.Get(repoHost, "job_token")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the job token for %q: %w", repoHost, err)
 	}
 	tlsVerify, _ := cfg.Get(repoHost, "skip_tls_verify")
 	skipTlsVerify := tlsVerify == "true" || tlsVerify == "1"
@@ -421,6 +443,10 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 	// determine auth source
 	var newAuthSource newAuthSource
 	switch {
+	case fromCfg.withoutAuthentication:
+		newAuthSource = func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.Unauthenticated{}, nil
+		}
 	case isOAuth2:
 		// If the refresh token can't be read but a usable access token is still
 		// present, fall through to access-token-only auth rather than failing
@@ -462,6 +488,10 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 			return gitlab.JobTokenAuthSource{Token: jobToken}, nil
 		}
 	default:
+		if config.HostUsesKeyring(cfg, repoHost) {
+			return nil, fmt.Errorf("the token for %q is missing from the operating system keyring; run `glab auth login --hostname %s` to re-authenticate", repoHost, repoHost)
+		}
+
 		// NOTE: use an unauthenticated client.
 		newAuthSource = func(*http.Client) (gitlab.AuthSource, error) {
 			return gitlab.Unauthenticated{}, nil
