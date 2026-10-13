@@ -102,7 +102,7 @@ func TestRESTUnsupportedEcosystemFailsClosed(t *testing.T) {
 	// rejected before the request is sent.
 	c, _ := restCheckerWithMock(t)
 
-	_, err := c.Check(t.Context(), restReq("cargo", "serde", "1.0.0"))
+	_, err := c.Check(t.Context(), restReq("cocoapods", "Alamofire", "5.9.0"))
 	require.Error(t, err)
 }
 
@@ -116,6 +116,7 @@ func TestEcosystemValueMapsSupported(t *testing.T) {
 		{"pypi", gitlab.DependencyFirewallEcosystemPyPI},
 		{"maven", gitlab.DependencyFirewallEcosystemMaven},
 		{"gem", gitlab.DependencyFirewallEcosystemGem},
+		{"cargo", gitlab.DependencyFirewallEcosystemCargo},
 	}
 	for _, tt := range tests {
 		t.Run(tt.ecosystem, func(t *testing.T) {
@@ -129,9 +130,9 @@ func TestEcosystemValueMapsSupported(t *testing.T) {
 
 func TestEcosystemValueRejectsUnsupported(t *testing.T) {
 	t.Parallel()
-	_, err := ecosystemValue("cargo")
+	_, err := ecosystemValue("cocoapods")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cargo")
+	assert.Contains(t, err.Error(), "cocoapods")
 }
 
 // TestRESTStatusOutcomes covers how each API status maps to allow (via the

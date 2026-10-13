@@ -6,6 +6,7 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	cmdBundle "gitlab.com/gitlab-org/cli/internal/commands/df/bundle"
+	cmdCargo "gitlab.com/gitlab-org/cli/internal/commands/df/cargo"
 	cmdCISummary "gitlab.com/gitlab-org/cli/internal/commands/df/cisummary"
 	cmdGem "gitlab.com/gitlab-org/cli/internal/commands/df/gem"
 	cmdGradle "gitlab.com/gitlab-org/cli/internal/commands/df/gradle"
@@ -46,6 +47,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	cmd.AddCommand(cmdGradle.NewCmd(f))
 	cmd.AddCommand(cmdGem.NewCmd(f))
 	cmd.AddCommand(cmdBundle.NewCmd(f))
+	cmd.AddCommand(cmdCargo.NewCmd(f))
 	cmd.AddCommand(cmdPackage.NewCmd(f))
 	cmd.AddCommand(cmdCISummary.NewCmd(f))
 

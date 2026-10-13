@@ -27,6 +27,7 @@ func TestParse(t *testing.T) {
 		{"maven", "pkg:maven/org.slf4j/slf4j-api@2.0.13", TypeMaven, "org.slf4j:slf4j-api", "2.0.13"},
 		{"maven deep group", "pkg:maven/org.apache.commons/commons-lang3@3.14.0", TypeMaven, "org.apache.commons:commons-lang3", "3.14.0"},
 		{"gem", "pkg:gem/rails@7.1.3", TypeGem, "rails", "7.1.3"},
+		{"cargo", "pkg:cargo/serde@1.0.197", TypeCargo, "serde", "1.0.197"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

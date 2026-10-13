@@ -51,6 +51,7 @@ func TestManagerMetadata(t *testing.T) {
 		{Bundle(), "bundle", "bundle"},
 		{Maven(), "maven", "mvn"},
 		{Gradle(), "gradle", "gradle"},
+		{Cargo(), "cargo", "cargo"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -185,6 +186,8 @@ func TestMatcherTypes(t *testing.T) {
 	assert.True(t, ok, "maven")
 	_, ok = Gradle().Matcher().(proxy.MavenMatcher)
 	assert.True(t, ok, "gradle")
+	_, ok = Cargo().Matcher().(proxy.CargoMatcher)
+	assert.True(t, ok, "cargo")
 }
 
 // fakeExecutor records the env it was invoked with and returns execErr.
