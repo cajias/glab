@@ -70,7 +70,7 @@ func TestCheckNoRebaseInProgress(t *testing.T) {
 	t.Run("clean repo returns nil", func(t *testing.T) {
 		git.InitGitRepo(t)
 		require.NoError(t, git.CreateRefFiles(stackRefs, "test-stack"))
-		require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+		require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 		require.NoError(t, CheckNoRebaseInProgress())
 	})
@@ -78,7 +78,7 @@ func TestCheckNoRebaseInProgress(t *testing.T) {
 	t.Run("paused reorder is blocked", func(t *testing.T) {
 		git.InitGitRepo(t)
 		require.NoError(t, git.CreateRefFiles(stackRefs, "test-stack"))
-		require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+		require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 		require.NoError(t, git.WriteReorderState("test-stack",
 			git.ReorderState{NewOrder: []string{"branchA"}}))
 

@@ -3,6 +3,7 @@
 package delete
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -61,6 +62,21 @@ func TestDeleteClearsTheCurrentStack(t *testing.T) {
 	git.InitGitRepo(t)
 	_, err := git.AddStackRefDir("current-stack")
 	require.NoError(t, err)
+	require.NoError(t, git.SetCurrentStackTitle("current-stack"))
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdDeleteStack, true)
+
+	_, err = exec("current-stack --yes")
+	require.NoError(t, err)
+
+	_, err = git.GetCurrentStackTitle()
+	require.Error(t, err, "current stack should have been cleared")
+}
+
+func TestDeleteClearsTheLegacyCurrentStack(t *testing.T) {
+	git.InitGitRepo(t)
+	_, err := git.AddStackRefDir("current-stack")
+	require.NoError(t, err)
 	require.NoError(t, git.SetLocalConfig("glab.currentstack", "current-stack"))
 
 	exec := cmdtest.SetupCmdForTest(t, NewCmdDeleteStack, true)
@@ -69,6 +85,9 @@ func TestDeleteClearsTheCurrentStack(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = git.GetCurrentStackTitle()
+	require.Error(t, err, "current stack should have been cleared")
+
+	_, err = git.Config("glab.currentstack")
 	require.Error(t, err, "glab.currentstack should have been unset")
 }
 
@@ -78,7 +97,7 @@ func TestDeleteKeepsTheCurrentStackWhenDeletingAnother(t *testing.T) {
 	require.NoError(t, err)
 	_, err = git.AddStackRefDir("other-stack")
 	require.NoError(t, err)
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "current-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("current-stack"))
 
 	exec := cmdtest.SetupCmdForTest(t, NewCmdDeleteStack, true)
 
@@ -88,6 +107,21 @@ func TestDeleteKeepsTheCurrentStackWhenDeletingAnother(t *testing.T) {
 	currentStack, err := git.GetCurrentStackTitle()
 	require.NoError(t, err)
 	require.Equal(t, "current-stack", currentStack)
+}
+
+func TestDeleteFailsWhenTheCurrentStackCannotBeRead(t *testing.T) {
+	git.InitGitRepo(t)
+	_, err := git.AddStackRefDir("current-stack")
+	require.NoError(t, err)
+	gitDir, err := git.GitDir()
+	require.NoError(t, err)
+	require.NoError(t, os.Mkdir(filepath.Join(gitDir, "GLAB_CURRENT_STACK"), 0o755))
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdDeleteStack, true)
+
+	_, err = exec("current-stack --yes")
+	require.ErrorContains(t, err, "reading current stack")
+	require.DirExists(t, stackDir(t, "current-stack"))
 }
 
 func TestDeletePromptsForStackNameAndConfirmation(t *testing.T) {

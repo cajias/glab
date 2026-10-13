@@ -668,7 +668,7 @@ func Test_normalFlow_uncommittedChanges_errorsBeforeEditor(t *testing.T) {
 	require.NoError(t, git.CreateRefFiles(map[string]git.StackRef{
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "", Branch: "branchA"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	ctrl := gomock.NewController(t)
 	mockGr := gittesting.NewMockGitRunner(ctrl)
@@ -752,8 +752,7 @@ func Test_abortFlow_resetsAndRestores(t *testing.T) {
 	}
 	require.NoError(t, git.WriteReorderState("test-stack", state))
 
-	// Need to set glab.currentstack for GetCurrentStackTitle
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	ctrl := gomock.NewController(t)
 	mockGr := gittesting.NewMockGitRunner(ctrl)
@@ -828,7 +827,7 @@ func writePausedReorder(t *testing.T) {
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "ref-b", Branch: "branchA"},
 		"ref-b": {SHA: "ref-b", Prev: "ref-a", Next: "", Branch: "branchB"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 	require.NoError(t, git.WriteReorderState("test-stack", git.ReorderState{
 		NewOrder:       []string{"branchB", "branchA"},
 		NextIndex:      1,
@@ -844,7 +843,7 @@ func Test_abortFlow_noStateFile(t *testing.T) {
 	require.NoError(t, git.CreateRefFiles(map[string]git.StackRef{
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "", Branch: "branchA"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	err := runReorderCmd(t, git.StandardGitCommand{}, "--abort")
 	require.Error(t, err)
@@ -858,7 +857,7 @@ func Test_abortFlow_refusedAfterRebasesComplete(t *testing.T) {
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "ref-b", Branch: "branchA"},
 		"ref-b": {SHA: "ref-b", Prev: "ref-a", Next: "", Branch: "branchB"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	state := git.ReorderState{
 		NewOrder:       []string{"branchB", "branchA"},
@@ -887,7 +886,7 @@ func Test_normalFlow_blockedByInProgressReorder(t *testing.T) {
 	require.NoError(t, git.CreateRefFiles(map[string]git.StackRef{
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "", Branch: "branchA"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	// Write a state file to simulate an in-progress reorder.
 	state := git.ReorderState{NewOrder: []string{"branchA"}}
@@ -905,7 +904,7 @@ func Test_continueFlow_noStateFile(t *testing.T) {
 	require.NoError(t, git.CreateRefFiles(map[string]git.StackRef{
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "", Branch: "branchA"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	// No state file written, so there is nothing to continue.
 	err := runReorderCmd(t, git.StandardGitCommand{}, "--continue")
@@ -919,7 +918,7 @@ func Test_continueFlow_invalidIndex(t *testing.T) {
 	require.NoError(t, git.CreateRefFiles(map[string]git.StackRef{
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "", Branch: "branchA"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	// NextIndex points past the end of NewOrder — a corrupt/invalid state.
 	state := git.ReorderState{NewOrder: []string{"branchA"}, NextIndex: 2}
@@ -937,7 +936,7 @@ func Test_continueFlow_gitRebaseInProgress_errors(t *testing.T) {
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "ref-b", Branch: "branchA"},
 		"ref-b": {SHA: "ref-b", Prev: "ref-a", Next: "", Branch: "branchB"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	state := git.ReorderState{
 		NewOrder:       []string{"branchB", "branchA"},
@@ -974,7 +973,7 @@ func Test_continueFlow_branchNotRebasedOntoParent_errors(t *testing.T) {
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "ref-b", Branch: "branchA"},
 		"ref-b": {SHA: "ref-b", Prev: "ref-a", Next: "", Branch: "branchB"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	// Reorder stalled at index 0: branchB should be rebased onto main first.
 	state := git.ReorderState{
@@ -1018,7 +1017,7 @@ func Test_continueFlow_branchStillAtOldTip_errors(t *testing.T) {
 		"ref-a": {SHA: "ref-a", Prev: "", Next: "ref-b", Branch: "branchA"},
 		"ref-b": {SHA: "ref-b", Prev: "ref-a", Next: "", Branch: "branchB"},
 	}, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	state := git.ReorderState{
 		NewOrder:       []string{"branchB", "branchA"},
@@ -1076,7 +1075,7 @@ func Test_continueFlow_afterResolvedConflict_finishesReorder(t *testing.T) {
 	}}
 	require.NoError(t, git.CreateRefFiles(oldStack.Refs, "test-stack"))
 	require.NoError(t, git.AddStackBaseBranch("test-stack", "main"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 
 	// State as the conflict on branchC (index 1) left it, after the user
 	// resolved it and finished `git rebase --continue`.
@@ -1129,7 +1128,7 @@ func Test_continueFlow_rebasesDone_retriesMRUpdate(t *testing.T) {
 		"ref-a": {SHA: "ref-a", Prev: "ref-b", Next: "", Branch: "branchA", MR: mr("1")},
 	}
 	require.NoError(t, git.CreateRefFiles(oldRefs, "test-stack"))
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "test-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("test-stack"))
 	require.NoError(t, git.WriteReorderState("test-stack", git.ReorderState{
 		NewOrder:       []string{"branchB", "branchA"},
 		NextIndex:      2,

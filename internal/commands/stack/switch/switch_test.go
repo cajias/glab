@@ -20,7 +20,26 @@ func TestSwitchWithStackName(t *testing.T) {
 	require.NoError(t, err)
 	_, err = git.AddStackRefDir("target-stack")
 	require.NoError(t, err)
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "current-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("current-stack"))
+
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdStackSwitch(f, nil)
+	}, true)
+
+	output, err := exec("target-stack")
+
+	require.NoError(t, err)
+	require.Equal(t, "Switched to stack target-stack.\n", output.String())
+
+	currentStack, err := git.GetCurrentStackTitle()
+	require.NoError(t, err)
+	require.Equal(t, "target-stack", currentStack)
+}
+
+func TestSwitchWithoutCurrentStack(t *testing.T) {
+	git.InitGitRepo(t)
+	_, err := git.AddStackRefDir("target-stack")
+	require.NoError(t, err)
 
 	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
 		return NewCmdStackSwitch(f, nil)
@@ -40,7 +59,7 @@ func TestSwitchWithCurrentStackName(t *testing.T) {
 	git.InitGitRepo(t)
 	_, err := git.AddStackRefDir("current-stack")
 	require.NoError(t, err)
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "current-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("current-stack"))
 
 	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
 		return NewCmdStackSwitch(f, nil)
@@ -62,7 +81,7 @@ func TestSwitchPromptsForStackName(t *testing.T) {
 	require.NoError(t, err)
 	_, err = git.AddStackRefDir("target-stack")
 	require.NoError(t, err)
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "current-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("current-stack"))
 
 	c := ugh.New(t)
 	c.Expect(ugh.Select("Choose a stack to switch to:")).
@@ -86,7 +105,7 @@ func TestSwitchWithoutStackNameRequiresPrompts(t *testing.T) {
 	git.InitGitRepo(t)
 	_, err := git.AddStackRefDir("current-stack")
 	require.NoError(t, err)
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "current-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("current-stack"))
 
 	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
 		return NewCmdStackSwitch(f, nil)
@@ -117,7 +136,7 @@ func TestSwitchBlockedByInProgressReorder(t *testing.T) {
 	require.NoError(t, err)
 	_, err = git.AddStackRefDir("target-stack")
 	require.NoError(t, err)
-	require.NoError(t, git.SetLocalConfig("glab.currentstack", "current-stack"))
+	require.NoError(t, git.SetCurrentStackTitle("current-stack"))
 	require.NoError(t, git.WriteReorderState("current-stack",
 		git.ReorderState{NewOrder: []string{"branchA"}}))
 

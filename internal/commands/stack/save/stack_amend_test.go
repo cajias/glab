@@ -76,7 +76,7 @@ func Test_stackAmendCmd(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.desc, func(t *testing.T) {
 			dir := git.InitGitRepoWithCommit(t)
-			err := git.SetLocalConfig("glab.currentstack", "cool-test-feature")
+			err := git.SetCurrentStackTitle("cool-test-feature")
 			require.NoError(t, err)
 
 			createTemporaryFiles(t, dir, tc.files)
@@ -137,7 +137,7 @@ func Test_stackAmendReword(t *testing.T) {
 		f := cmdtest.NewTestFactory(ios)
 
 		dir := git.InitGitRepoWithCommit(t)
-		err := git.SetLocalConfig("glab.currentstack", "cool-test-feature")
+		err := git.SetCurrentStackTitle("cool-test-feature")
 		require.NoError(t, err)
 
 		// Create initial stack entry via save
@@ -191,7 +191,7 @@ func Test_stackAmendReword(t *testing.T) {
 		ios, _, _, _ := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
 
 		dir := git.InitGitRepoWithCommit(t)
-		err := git.SetLocalConfig("glab.currentstack", "cool-test-feature")
+		err := git.SetCurrentStackTitle("cool-test-feature")
 		require.NoError(t, err)
 
 		createTemporaryFiles(t, dir, []string{"initialfile"})
@@ -220,7 +220,7 @@ func Test_stackAmendReword(t *testing.T) {
 		f := cmdtest.NewTestFactory(ios)
 
 		dir := git.InitGitRepoWithCommit(t)
-		err := git.SetLocalConfig("glab.currentstack", "cool-test-feature")
+		err := git.SetCurrentStackTitle("cool-test-feature")
 		require.NoError(t, err)
 
 		createTemporaryFiles(t, dir, []string{"initialfile"})
