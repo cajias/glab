@@ -4,6 +4,8 @@ package binarymgr
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"os"
@@ -58,32 +60,34 @@ func TestRunner_saveAutoDownloadPreference(t *testing.T) {
 
 func TestRunner_versionAfterFloor(t *testing.T) {
 	managed := "/managed/bin/test"
-	newRunner := func(t *testing.T, min string) *Runner {
+	newRunner := func(t *testing.T, min string) (*Runner, *bytes.Buffer, *bytes.Buffer) {
 		t.Helper()
-		ios, _, _, _ := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(false))
+		ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(false))
 		spec := testSpec()
 		spec.MinVersion = min
-		return &Runner{IO: ios, Spec: spec}
+		return &Runner{IO: ios, Spec: spec}, stdout, stderr
 	}
 
 	t.Run("below floor is blanked to force download", func(t *testing.T) {
-		r := newRunner(t, "0.101.1")
+		r, stdout, stderr := newRunner(t, "0.101.1")
 		assert.Empty(t, r.versionAfterFloor("0.101.0", managed, managed))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "Installed Test CLI version 0.101.0 is older than the required 0.101.1")
 	})
 
 	t.Run("at or above floor is preserved", func(t *testing.T) {
-		r := newRunner(t, "0.101.1")
+		r, _, _ := newRunner(t, "0.101.1")
 		assert.Equal(t, "0.101.1", r.versionAfterFloor("0.101.1", managed, managed))
 		assert.Equal(t, "0.102.0", r.versionAfterFloor("0.102.0", managed, managed))
 	})
 
 	t.Run("custom binary path is never forced", func(t *testing.T) {
-		r := newRunner(t, "0.101.1")
+		r, _, _ := newRunner(t, "0.101.1")
 		assert.Equal(t, "0.101.0", r.versionAfterFloor("0.101.0", "/custom/orbit", managed))
 	})
 
 	t.Run("no floor is a no-op", func(t *testing.T) {
-		r := newRunner(t, "")
+		r, _, _ := newRunner(t, "")
 		assert.Equal(t, "0.0.1", r.versionAfterFloor("0.0.1", managed, managed))
 	})
 }
@@ -327,4 +331,34 @@ func TestRunner_ReportUpdate(t *testing.T) {
 		assert.Empty(t, stdout.String())
 		assert.Empty(t, stderr.String())
 	})
+}
+
+func TestRunner_HandleInstall_keepsStdoutClean(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	ios, _, stdout, stderr := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(false))
+	testClient := gitlabtesting.NewTestClient(t, gitlab.WithBaseURL("https://gitlab.com"))
+	spec := testSpec()
+	platform, err := detectPlatform(spec)
+	require.NoError(t, err)
+	content := []byte("#!/bin/sh\n")
+	checksum := sha256.Sum256(content)
+
+	testClient.MockPackages.EXPECT().
+		ListProjectPackages(spec.ProjectID, gomock.Any(), gomock.Any(), gomock.Any()).
+		Return([]*gitlab.Package{{ID: 1, Version: "8.0.0"}}, noMorePages(), nil)
+	testClient.MockPackages.EXPECT().
+		ListPackageFiles(spec.ProjectID, int64(1), gomock.Any(), gomock.Any()).
+		Return([]*gitlab.PackageFile{{FileName: assetName(spec, platform), FileSHA256: hex.EncodeToString(checksum[:])}}, nil, nil)
+	testClient.MockGenericPackages.EXPECT().
+		DownloadPackageFile(spec.ProjectID, spec.PackageName, "8.0.0", assetName(spec, platform), gomock.Any()).
+		Return(content, nil, nil)
+
+	r := &Runner{IO: ios, Cfg: config.NewBlankConfig(), Spec: spec, Yes: true, Manager: &Manager{io: ios, spec: spec, client: testClient.Client}}
+
+	require.NoError(t, r.HandleInstall(t.Context()))
+
+	assert.Empty(t, stdout.String())
+	assert.Contains(t, stderr.String(), "Downloading")
+	assert.Contains(t, stderr.String(), "Checksum verified")
+	assert.Contains(t, stderr.String(), "Installed to:")
 }

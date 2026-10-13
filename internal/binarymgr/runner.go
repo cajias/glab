@@ -89,7 +89,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.checkForUpdates(ctx)
 	} else {
 		color := r.IO.Color()
-		r.IO.LogInfof("%s Using custom %s binary: %s\n", color.DotWarnIcon(), r.Spec.DisplayName, info.Path)
+		r.IO.LogErrorf("%s Using custom %s binary: %s\n", color.DotWarnIcon(), r.Spec.DisplayName, info.Path)
 	}
 
 	if !r.Yes {
@@ -150,7 +150,7 @@ func (r *Runner) HandleUpdate(ctx context.Context) error {
 	}
 
 	if result == nil {
-		r.IO.LogInfo("No version installed, downloading latest...\n")
+		r.IO.LogError("No version installed, downloading latest...")
 		installedVersion, _ := r.Cfg.Get("", r.Spec.configKey("binary_version"))
 		installedPath, _ := r.Cfg.Get("", r.Spec.configKey("binary_path"))
 		autoDownload, _ := r.Cfg.Get("", r.Spec.configKey("auto_download"))
@@ -264,7 +264,7 @@ func (r *Runner) versionAfterFloor(installedVersion, installedPath, managedPath 
 		return installedVersion
 	}
 	color := r.IO.Color()
-	r.IO.LogInfof("%s Installed %s version %s is older than the required %s\n", color.DotWarnIcon(), r.Spec.DisplayName, installedVersion, r.Spec.MinVersion)
+	r.IO.LogErrorf("%s Installed %s version %s is older than the required %s\n", color.DotWarnIcon(), r.Spec.DisplayName, installedVersion, r.Spec.MinVersion)
 	return ""
 }
 
@@ -422,5 +422,5 @@ func (r *Runner) saveLastUpdateCheck(t time.Time) {
 
 func (r *Runner) warnf(format string, args ...any) {
 	color := r.IO.Color()
-	r.IO.LogInfof("%s "+format+"\n", append([]any{color.DotWarnIcon()}, args...)...)
+	r.IO.LogErrorf("%s "+format+"\n", append([]any{color.DotWarnIcon()}, args...)...)
 }
