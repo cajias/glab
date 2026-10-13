@@ -1035,6 +1035,105 @@ func TestMRCreate_RemotesResolverError_PropagatesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "GITLAB_HOST")
 }
 
+func TestNewCmdCreate_FillPush(t *testing.T) {
+	tests := []struct {
+		name       string
+		cli        string
+		wantPushes [][]string
+	}{
+		{
+			name:       "fill pushes the branch",
+			cli:        "--fill --yes",
+			wantPushes: [][]string{{"git", "push", "origin", "HEAD:feat-new-mr"}},
+		},
+		{
+			name:       "fill with push pushes the branch",
+			cli:        "--fill --push --yes",
+			wantPushes: [][]string{{"git", "push", "origin", "HEAD:feat-new-mr"}},
+		},
+		{
+			name: "fill with push=false does not push",
+			cli:  "--fill --push=false --yes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testClient := gitlabtesting.NewTestClient(t)
+
+			testClient.MockProjects.EXPECT().
+				GetProject("OWNER/REPO", gomock.Any()).
+				Return(&gitlab.Project{
+					ID:                   1,
+					DefaultBranch:        "main",
+					WebURL:               "https://gitlab.com/OWNER/REPO",
+					MergeRequestsEnabled: true,
+					PathWithNamespace:    "OWNER/REPO",
+				}, nil, nil)
+			testClient.MockProjects.EXPECT().
+				ListProjectTargetBranchRules("OWNER/REPO", gomock.Any()).
+				Return([]gitlab.TargetBranchRule{}, nil, nil)
+			testClient.MockCommits.EXPECT().
+				GetCommit("OWNER/REPO", "main", gomock.Any()).
+				Return(&gitlab.Commit{ID: "abc123"}, nil, nil)
+			testClient.MockMergeRequests.EXPECT().
+				CreateMergeRequest("OWNER/REPO", gomock.Any()).
+				Return(&gitlab.MergeRequest{
+					BasicMergeRequest: gitlab.BasicMergeRequest{
+						IID:          12,
+						Title:        "feat: add the feature",
+						State:        "opened",
+						SourceBranch: "feat-new-mr",
+						TargetBranch: "main",
+						WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/12",
+					},
+				}, nil, nil)
+
+			cs, csTeardown := test.InitCmdStubber()
+			defer csTeardown()
+			cs.Stub("deadbeef,feat: add the feature") // git log
+			cs.Stub("Body of the commit.")            // git show
+			cs.Stub("")                               // git status
+			cs.Stub("")                               // git push
+			cs.Stub("")                               // git config
+			cs.Stub("")                               // git branch --set-upstream-to
+
+			pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
+
+			exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBranch("feat-new-mr"),
+				func(f *cmdtest.Factory) {
+					f.RemotesStub = func() (glrepo.Remotes, error) {
+						return glrepo.Remotes{
+							{
+								Remote: &git.Remote{
+									Name:     "origin",
+									Resolved: "head",
+									PushURL:  pu,
+								},
+								Repo: glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+							},
+						}, nil
+					}
+				},
+			)
+
+			output, err := exec(tt.cli)
+			require.NoError(t, err)
+			assert.Contains(t, output.String(), "https://gitlab.com/OWNER/REPO/-/merge_requests/12")
+
+			var pushes [][]string
+			for _, call := range cs.Calls {
+				if len(call.Args) > 1 && call.Args[1] == "push" {
+					pushes = append(pushes, call.Args)
+				}
+			}
+			assert.Equal(t, tt.wantPushes, pushes)
+		})
+	}
+}
+
 func TestMRCreate_SquashBeforeMergeFlag(t *testing.T) {
 	tests := []struct {
 		name                string

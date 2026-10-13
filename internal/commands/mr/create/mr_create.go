@@ -66,6 +66,7 @@ type options struct {
 	web         bool
 	recover     bool
 	signoff     bool
+	pushSet     bool
 
 	// Unexported, so a recovery file keeps the description the user wrote.
 	body string
@@ -131,6 +132,9 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 
 			# Fill from commits, expand each commit body into the description
 			glab mr create --fill --fill-commit-body --yes
+
+			# Fill from commits without pushing, for a branch already on the remote
+			glab mr create --fill --push=false --yes
 
 			# Use a merge request template for the description
 			glab mr create -t "Fix login bug" --template bug_fix
@@ -204,11 +208,11 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 			return nil
 		},
 	}
-	mrCreateCmd.Flags().BoolVarP(&opts.Autofill, "fill", "f", false, "Do not prompt for title or description, and just use commit info. Sets `push` to `true`, and pushes the branch.")
+	mrCreateCmd.Flags().BoolVarP(&opts.Autofill, "fill", "f", false, "Do not prompt for title or description, and just use commit info. Pushes the branch unless --push=false is set.")
 	mrCreateCmd.Flags().BoolVarP(&opts.FillCommitBody, "fill-commit-body", "", false, "Fill description with each commit body when multiple commits. Can only be used with --fill.")
 	mrCreateCmd.Flags().BoolVarP(&opts.IsDraft, "draft", "", false, "Mark merge request as a draft.")
 	mrCreateCmd.Flags().BoolVarP(&opts.IsWIP, "wip", "", false, "Mark merge request as a draft. Alternative to --draft.")
-	mrCreateCmd.Flags().BoolVarP(&opts.ShouldPush, "push", "", false, "Push committed changes after creating merge request. Make sure you have committed changes.")
+	mrCreateCmd.Flags().BoolVarP(&opts.ShouldPush, "push", "", false, "Push committed changes before creating the merge request. Make sure you have committed changes. Defaults to true with --fill. Use --push=false to skip the push.")
 	mrCreateCmd.Flags().StringVarP(&opts.Title, "title", "t", "", "Supply a title for the merge request.")
 	mrCreateCmd.Flags().StringVarP(&opts.Description, "description", "d", "", "Supply a description for the merge request. Set to \"-\" to open an editor.")
 	mrCreateCmd.Flags().StringSliceVarP(&opts.Labels, "label", "l", []string{}, "Add label by name. Multiple labels can be comma-separated or specified by repeating the flag.")
@@ -272,6 +276,8 @@ func (o *options) complete(cmd *cobra.Command) {
 		squash, _ := cmd.Flags().GetBool("squash-before-merge")
 		o.SquashBeforeMerge = &squash
 	}
+
+	o.pushSet = cmd.Flags().Changed("push")
 }
 
 func (o *options) validate(cmd *cobra.Command) error {
@@ -583,7 +589,9 @@ func (o *options) run(ctx context.Context) error {
 					o.TargetBranch)
 			}
 
-			o.ShouldPush = true
+			if !o.pushSet {
+				o.ShouldPush = true
+			}
 		} else if o.needsPrompt {
 			var templateContents string
 			if o.Description == "" {
