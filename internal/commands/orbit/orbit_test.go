@@ -184,6 +184,7 @@ func TestNewCmd_HelpShowsGlabTextUntilBinaryIsInstalled(t *testing.T) {
 		out, err := exec(args)
 		require.NoError(t, err, args)
 		assert.Contains(t, out.String(), "Run the GitLab Orbit CLI", args)
+		assert.Contains(t, out.String(), "glab orbit --yes skills get orbit", args)
 	}
 }
 
