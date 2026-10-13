@@ -97,15 +97,18 @@ func TestMavenDoesNotDoubleDecodePath(t *testing.T) {
 	assert.False(t, m.Matched, "matcher must not perform a second percent-decode of req.URL.Path")
 }
 
-func TestMavenVersionPrefixDoesNotMatchLongerFilenameVersion(t *testing.T) {
+func TestMavenVersionPrefixDoesNotMatchLongerFilenameVersionFailsClosed(t *testing.T) {
 	t.Parallel()
 	// The version directory is "1" but the filename is version "10". A plain
 	// prefix check accepts "foo-10.jar" for version "1" because it starts with
-	// "foo-1"; the matcher must require a boundary after the version so it
-	// reports a mismatch (no match) rather than the wrong coordinate.
+	// "foo-1"; the matcher requires a boundary after the version so it does not
+	// report the wrong coordinate. The request still fetches a primary artifact
+	// (.jar), so rather than forwarding it uninspected it fails closed.
 	m := MavenMatcher{}.Match(mvn(http.MethodGet,
 		"/maven2/com/example/foo/1/foo-10.jar"))
-	assert.False(t, m.Matched, "version %q directory must not match filename version %q", "1", "10")
+	assert.True(t, m.Matched)
+	assert.False(t, m.Pass, "a primary artifact whose coordinate cannot be parsed must fail closed")
+	assert.Equal(t, "maven", m.Coordinate.Ecosystem)
 }
 
 func TestMavenClassifierArtifactIsMatched(t *testing.T) {
@@ -129,4 +132,36 @@ func TestMavenAarAndWarAreMatched(t *testing.T) {
 		"/maven2/com/example/app/1.2.3/app-1.2.3.war"))
 	assert.True(t, war.Matched)
 	assert.Equal(t, "com.example:app", war.Coordinate.Name)
+}
+
+func TestMavenPrimaryOutsideRepositoryLayoutIsForwarded(t *testing.T) {
+	t.Parallel()
+	// The matcher sees every request in a gradle or mvn session, not only
+	// repository traffic. A primary extension whose path does not name a
+	// group/artifact/version coordinate is an ordinary download, so it is
+	// forwarded rather than blocked.
+	urls := map[string]string{
+		"github release":     "https://github.com/foo/bar/releases/download/v1.2.3/bar-all.jar",
+		"ivy layout":         "https://repo.typesafe.com/typesafe/ivy-releases/org.scala-sbt/sbt/1.0.0/jars/sbt.jar",
+		"tool download":      "https://download.example.com/tools/lombok.jar",
+		"too few segments":   "https://repo.maven.apache.org/maven2/foo-1.0.jar",
+		"other artifact dir": "https://repo.maven.apache.org/maven2/com/example/foo/1.0/bar-1.0.jar",
+	}
+	for name, u := range urls {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := MavenMatcher{}.Match(httptest.NewRequest(http.MethodGet, u, http.NoBody))
+			assert.False(t, m.Matched)
+		})
+	}
+}
+
+func TestMavenFilenameClaimingOtherVersionFailsClosed(t *testing.T) {
+	t.Parallel()
+	// The filename names the artifact in its directory but a different
+	// version, so the coordinate cannot be trusted: fail closed.
+	m := MavenMatcher{}.Match(mvn(http.MethodGet, "/maven2/com/example/foo/1.0/foo-2.0.jar"))
+	assert.True(t, m.Matched)
+	assert.False(t, m.Pass)
+	assert.Equal(t, "maven", m.Coordinate.Ecosystem)
 }

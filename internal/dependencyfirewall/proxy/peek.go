@@ -49,6 +49,11 @@ type peekResult struct {
 	// overLimit is true when the body exceeded limits.max and could not
 	// be fully inspected; the caller must fail closed (block) in that case.
 	overLimit bool
+	// spilled reads the whole body back from the spill file when it was
+	// larger than limits.inMemory, for matchers whose coordinate can sit past
+	// data. It must be read before Match returns: the upstream round trip
+	// consumes and removes the same file. nil when the body fit in memory.
+	spilled *io.SectionReader
 }
 
 // peekUploadBody buffers an upload body for coordinate inspection. Bodies up
@@ -126,7 +131,7 @@ func peekUploadBody(original io.ReadCloser, limits peekLimits) peekResult {
 		return peekResult{overLimit: true}
 	}
 
-	return peekResult{data: data, body: tempFileBody(f), overLimit: overLimit}
+	return peekResult{data: data, body: tempFileBody(f), overLimit: overLimit, spilled: io.NewSectionReader(f, 0, written)}
 }
 
 // spillError abandons a temp-file spill on write failure, restoring whatever

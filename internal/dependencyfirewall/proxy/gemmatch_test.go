@@ -56,6 +56,18 @@ func TestGemDownloadRequiresGemsAsImmediateParent(t *testing.T) {
 	assert.False(t, m.Matched, "gems must be the immediate parent directory of the .gem file")
 }
 
+func TestGemDownloadUnparseableFilenameFailsClosed(t *testing.T) {
+	t.Parallel()
+	// The ".gem" file sits directly under a "gems/" directory, so it is a
+	// recognized gem download; a filename with no name/version boundary must
+	// fail closed rather than being forwarded uninspected.
+	m := GemMatcher{}.Match(rubygem(http.MethodGet, "/gems/rails.gem"))
+	assert.True(t, m.Matched)
+	assert.False(t, m.Pass, "an unparseable gem filename must fail closed (Pass = false)")
+	assert.Equal(t, "gem", m.Coordinate.Ecosystem)
+	assert.Equal(t, policy.Download, m.Operation)
+}
+
 func TestGemDownloadAllowsMountPrefix(t *testing.T) {
 	t.Parallel()
 	// An arbitrary mount prefix before "gems/" is still a valid download as

@@ -113,3 +113,23 @@ func TestPyPIMatchUploadOverLimitFailsClosed(t *testing.T) {
 	assert.Equal(t, "pypi", m.Coordinate.Ecosystem)
 	assert.Equal(t, policy.Upload, m.Operation)
 }
+
+func TestPyPIMatchUploadUnparseableFailsClosed(t *testing.T) {
+	t.Parallel()
+	// The request hits the /legacy/ endpoint with a multipart body but carries
+	// no "name" field, so it is a recognized-but-unparseable upload and must
+	// fail closed rather than being forwarded uninspected.
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	require.NoError(t, w.WriteField("version", "2.31.0"))
+	require.NoError(t, w.Close())
+
+	req := httptest.NewRequest(http.MethodPost, "https://upload.pypi.org/legacy/", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	m := PyPIMatcher{}.Match(req)
+	assert.True(t, m.Matched)
+	assert.False(t, m.Pass, "an unparseable upload body must fail closed (Pass = false)")
+	assert.Equal(t, "pypi", m.Coordinate.Ecosystem)
+	assert.Equal(t, policy.Upload, m.Operation)
+}
