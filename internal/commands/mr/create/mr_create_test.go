@@ -521,6 +521,167 @@ func TestNewCmdCreate_RelatedIssueWithTitleAndDescription(t *testing.T) {
 	assert.Contains(t, output.String(), "https://gitlab.com/OWNER/REPO/-/merge_requests/12")
 }
 
+// withMRCreateRemotes stubs the upstream/origin remotes and current branch that
+// most mr create tests need.
+func withMRCreateRemotes(branch string) func(*cmdtest.Factory) {
+	pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
+	return func(f *cmdtest.Factory) {
+		f.RemotesStub = func() (glrepo.Remotes, error) {
+			return glrepo.Remotes{
+				{
+					Remote: &git.Remote{Name: "upstream", Resolved: "head", PushURL: pu},
+					Repo:   glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+				},
+				{
+					Remote: &git.Remote{Name: "origin", Resolved: "base", PushURL: pu},
+					Repo:   glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
+				},
+			}, nil
+		}
+		f.BranchStub = func() (string, error) { return branch, nil }
+	}
+}
+
+func TestNewCmdCreate_DoesNotDoublePrefixTitle(t *testing.T) {
+	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
+	t.Setenv("NO_COLOR", "true")
+
+	tests := []struct {
+		name         string
+		title        string
+		extraArgs    []string
+		relatedIssue bool
+		wantTitle    string
+	}{
+		{
+			name:      "--draft prepends when prefix is absent",
+			title:     "my custom MR title",
+			extraArgs: []string{"--draft"},
+			wantTitle: "Draft: my custom MR title",
+		},
+		{
+			name:      "--draft leaves an existing Draft prefix alone",
+			title:     "Draft: my custom MR title",
+			extraArgs: []string{"--draft"},
+			wantTitle: "Draft: my custom MR title",
+		},
+		{
+			name:      "--draft matches the prefix case-insensitively",
+			title:     "draft: my custom MR title",
+			extraArgs: []string{"--draft"},
+			wantTitle: "draft: my custom MR title",
+		},
+		{
+			name:      "--draft ignores leading whitespace before the prefix",
+			title:     " Draft: my custom MR title",
+			extraArgs: []string{"--draft"},
+			wantTitle: " Draft: my custom MR title",
+		},
+		{
+			name:      "--draft leaves a [Draft] title alone",
+			title:     "[Draft] my custom MR title",
+			extraArgs: []string{"--draft"},
+			wantTitle: "[Draft] my custom MR title",
+		},
+		{
+			name:      "--draft leaves a (Draft) title alone",
+			title:     "(Draft) my custom MR title",
+			extraArgs: []string{"--draft"},
+			wantTitle: "(Draft) my custom MR title",
+		},
+		{
+			name:      "--wip prepends when prefix is absent",
+			title:     "my custom MR title",
+			extraArgs: []string{"--wip"},
+			wantTitle: "WIP: my custom MR title",
+		},
+		{
+			name:      "--wip leaves an existing WIP prefix alone",
+			title:     "WIP: my custom MR title",
+			extraArgs: []string{"--wip"},
+			wantTitle: "WIP: my custom MR title",
+		},
+		{
+			name:         "--related-issue implies draft and does not double-prefix",
+			title:        "Draft: my custom MR title",
+			extraArgs:    []string{"--related-issue", "1"},
+			relatedIssue: true,
+			wantTitle:    "Draft: my custom MR title",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testClient := gitlabtesting.NewTestClient(t)
+			testClient.MockProjects.EXPECT().
+				GetProject("OWNER/REPO", gomock.Any()).
+				Return(&gitlab.Project{
+					ID:                   1,
+					DefaultBranch:        "master",
+					WebURL:               "http://gitlab.com/OWNER/REPO",
+					Name:                 "OWNER",
+					Path:                 "REPO",
+					MergeRequestsEnabled: true,
+					PathWithNamespace:    "OWNER/REPO",
+				}, nil, nil)
+			testClient.MockProjects.EXPECT().
+				ListProjectTargetBranchRules("OWNER/REPO", gomock.Any()).
+				Return([]gitlab.TargetBranchRule{}, nil, nil)
+
+			if tt.relatedIssue {
+				testClient.MockIssues.EXPECT().
+					GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+					Return(&gitlab.Issue{ID: 1, IID: 1, ProjectID: 1, Title: "this is a issue title"}, nil, nil)
+			}
+
+			testClient.MockMergeRequests.EXPECT().
+				CreateMergeRequest("OWNER/REPO", gomock.Any()).
+				DoAndReturn(func(pid any, opts *gitlab.CreateMergeRequestOptions, options ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+					assert.Equal(t, tt.wantTitle, *opts.Title)
+					return &gitlab.MergeRequest{
+						BasicMergeRequest: gitlab.BasicMergeRequest{
+							ID:           1,
+							IID:          12,
+							ProjectID:    3,
+							Title:        tt.wantTitle,
+							State:        "opened",
+							TargetBranch: "master",
+							SourceBranch: "feat-new-mr",
+							WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/12",
+						},
+					}, nil, nil
+				})
+
+			cs, csTeardown := test.InitCmdStubber()
+			defer csTeardown()
+			cs.Stub("HEAD branch: master\n")
+			cs.Stub(heredoc.Doc(`
+				deadbeef HEAD
+				deadb00f refs/remotes/upstream/feat-new-mr
+				deadbeef refs/remotes/origin/feat-new-mr
+			`))
+
+			exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, true,
+				cmdtest.WithGitLabClient(testClient.Client),
+				withMRCreateRemotes("feat-new-mr"),
+			)
+
+			args := append([]string{
+				"--title", `"` + tt.title + `"`,
+				"--description", `"my custom MR description"`,
+				"--source-branch", "feat-new-mr",
+			}, tt.extraArgs...)
+
+			output, err := exec(strings.Join(args, " "))
+			require.NoError(t, err, output.Stderr())
+
+			outputLines := strings.SplitN(output.String(), "\n", 2)
+			assert.Contains(t, outputLines[0], "!12 "+tt.wantTitle+" (feat-new-mr)")
+			assert.Contains(t, output.Stderr(), "\nCreating draft merge request for feat-new-mr into master in OWNER/REPO\n\n")
+		})
+	}
+}
+
 func TestMRCreate_nontty_insufficient_flags(t *testing.T) {
 	t.Parallel()
 

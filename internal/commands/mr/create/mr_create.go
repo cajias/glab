@@ -673,12 +673,10 @@ func (o *options) run(ctx context.Context) error {
 		return fmt.Errorf("title can't be blank")
 	}
 
-	if o.IsDraft || o.IsWIP {
-		if o.IsDraft {
-			o.Title = "Draft: " + o.Title
-		} else {
-			o.Title = "WIP: " + o.Title
-		}
+	if o.IsDraft {
+		o.Title, _ = cmdutils.EnsureTitlePrefix(o.Title, "Draft:")
+	} else if o.IsWIP {
+		o.Title, _ = cmdutils.EnsureTitlePrefix(o.Title, "WIP:")
 	}
 	mrCreateOpts.Title = &o.Title
 	mrCreateOpts.Description = &o.Description
