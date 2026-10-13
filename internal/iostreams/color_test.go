@@ -158,6 +158,55 @@ func Test_makeColorFunc(t *testing.T) {
 			term:          "xterm-24bit",
 			want:          "\x1b[0;32mtext\x1b[0m",
 		},
+		{
+			name:          "magenta 16 colors",
+			ansiColorName: "magenta",
+			colorEnabled:  true,
+			term:          "xterm-16color",
+			want:          "\x1b[0;35mtext\x1b[0m",
+		},
+		{
+			name:          "cyan 16 colors",
+			ansiColorName: "cyan",
+			colorEnabled:  true,
+			term:          "xterm-16color",
+			want:          "\x1b[0;36mtext\x1b[0m",
+		},
+		{
+			name:          "red 16 colors",
+			ansiColorName: "red",
+			colorEnabled:  true,
+			term:          "xterm-16color",
+			want:          "\x1b[0;31mtext\x1b[0m",
+		},
+		{
+			name:          "yellow 16 colors",
+			ansiColorName: "yellow",
+			colorEnabled:  true,
+			term:          "xterm-16color",
+			want:          "\x1b[0;33mtext\x1b[0m",
+		},
+		{
+			name:          "blue 16 colors",
+			ansiColorName: "blue",
+			colorEnabled:  true,
+			term:          "xterm-16color",
+			want:          "\x1b[0;34mtext\x1b[0m",
+		},
+		{
+			name:          "default+b 16 colors",
+			ansiColorName: "default+b",
+			colorEnabled:  true,
+			term:          "xterm-16color",
+			want:          "\x1b[0;1;39mtext\x1b[0m",
+		},
+		{
+			name:          "unknown name is left uncolored",
+			ansiColorName: "nope",
+			colorEnabled:  true,
+			term:          "xterm-16color",
+			want:          "text",
+		},
 	}
 
 	for _, tt := range tests {
@@ -171,4 +220,11 @@ func Test_makeColorFunc(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func Test_makeColorFunc_emptyText(t *testing.T) {
+	t.Setenv("COLORTERM", "")
+	t.Setenv("TERM", "xterm-16color")
+
+	require.Empty(t, makeColorFunc(true, nil, "green")(""))
 }

@@ -9,7 +9,6 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-colorable"
-	"github.com/mgutz/ansi"
 	"github.com/muesli/termenv"
 
 	"gitlab.com/gitlab-org/cli/internal/theme"
@@ -102,8 +101,31 @@ func makeColorFunc(isColorfulOutput bool, brandColor color.Color, ansiName strin
 		}
 	}
 
-	// basic ANSI colors
-	return ansi.ColorFunc(ansiName)
+	code, ok := basicANSICodes[ansiName]
+	if !ok {
+		return func(t string) string {
+			return t
+		}
+	}
+	return func(t string) string {
+		if t == "" {
+			return t
+		}
+		return "\x1b[" + code + "m" + t + "\x1b[0m"
+	}
+}
+
+// basicANSICodes maps the palette's color names to SGR parameters, matching
+// the sequences github.com/mgutz/ansi produced for them.
+var basicANSICodes = map[string]string{
+	"magenta":   "0;35",
+	"cyan":      "0;36",
+	"red":       "0;31",
+	"yellow":    "0;33",
+	"blue":      "0;34",
+	"green":     "0;32",
+	"black+h":   "0;90",
+	"default+b": "0;1;39",
 }
 
 // detectIsColorEnabled determines whether color output should be enabled based on environment variables.
