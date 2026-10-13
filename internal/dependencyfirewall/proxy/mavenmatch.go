@@ -24,13 +24,16 @@ func (MavenMatcher) Match(req *http.Request) Match {
 	if req == nil {
 		return Match{}
 	}
-	name, version, ok := mavenCoordinate(req.URL.Path)
-	if !ok {
-		return Match{}
-	}
+	name, version, result := mavenCoordinate(req.URL.Path)
 	op := policy.Download
 	if req.Method == http.MethodPut || req.Method == http.MethodPost {
 		op = policy.Upload
+	}
+	switch result {
+	case mavenNotArtifact:
+		return Match{}
+	case mavenUnparseable:
+		return unparseableMatch("maven", op, "unparseable maven artifact coordinate")
 	}
 	return Match{
 		Matched:    true,
@@ -40,7 +43,18 @@ func (MavenMatcher) Match(req *http.Request) Match {
 	}
 }
 
-func mavenCoordinate(path string) (string, string, bool) {
+// mavenCoordinateResult classifies a request path relative to the Maven
+// artifact shape: not a Maven artifact fetch, a filename claiming a coordinate
+// that does not match its path (fail closed), or a parsed coordinate.
+type mavenCoordinateResult int
+
+const (
+	mavenNotArtifact mavenCoordinateResult = iota
+	mavenUnparseable
+	mavenParsed
+)
+
+func mavenCoordinate(path string) (string, string, mavenCoordinateResult) {
 	// path is req.URL.Path, which Go has already percent-decoded once. Decoding
 	// again would let a double-encoded request (e.g. %2520) present the matcher
 	// a different path than the upstream Maven server sees, and because an
@@ -49,24 +63,35 @@ func mavenCoordinate(path string) (string, string, bool) {
 	rest := strings.Trim(path, "/")
 	rest = strings.TrimPrefix(rest, "maven2/")
 	if rest == "" {
-		return "", "", false
+		return "", "", mavenNotArtifact
 	}
 	segs := strings.Split(rest, "/")
-	if len(segs) < 4 {
-		return "", "", false
-	}
+	// Sidecar and metadata requests (checksums, signatures,
+	// maven-metadata.xml) are not artifact fetches and pass through untouched.
 	file := segs[len(segs)-1]
+	if !mavenIsPrimary(file) {
+		return "", "", mavenNotArtifact
+	}
+	// Every request in a gradle or mvn session reaches this matcher, so a
+	// primary extension alone does not make it repository traffic: GitHub
+	// release jars, Ivy layouts and tool downloads carry no coordinate and are
+	// forwarded like any other download.
+	if len(segs) < 4 {
+		return "", "", mavenNotArtifact
+	}
 	version := segs[len(segs)-2]
 	artifact := segs[len(segs)-3]
 	group := strings.Join(segs[:len(segs)-3], ".")
-
 	if !mavenFileMatchesCoordinate(file, artifact, version) {
-		return "", "", false
+		// A filename that names the directory's artifact but not its version
+		// (foo-10.jar under foo/1/) claims a coordinate we cannot trust: fail
+		// closed.
+		if strings.HasPrefix(file, artifact+"-") {
+			return "", "", mavenUnparseable
+		}
+		return "", "", mavenNotArtifact
 	}
-	if !mavenIsPrimary(file) {
-		return "", "", false
-	}
-	return group + ":" + artifact, version, true
+	return group + ":" + artifact, version, mavenParsed
 }
 
 // snapshotSuffix is the version-directory marker for a Maven snapshot.

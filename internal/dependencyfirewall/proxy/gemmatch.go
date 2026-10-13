@@ -53,7 +53,10 @@ func (GemMatcher) Match(req *http.Request) Match {
 	base := strings.TrimSuffix(file, gemSuffix)
 	name, version, ok := splitGemNameVersion(base)
 	if !ok {
-		return Match{}
+		// The ".gem" file sits directly under a "gems/" directory, so it is a
+		// recognized gem download; a filename this heuristic cannot split
+		// fails closed rather than forwarding it uninspected.
+		return unparseableMatch("gem", policy.Download, "unparseable gem download filename")
 	}
 	return Match{
 		Matched:    true,

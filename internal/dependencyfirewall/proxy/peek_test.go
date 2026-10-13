@@ -26,6 +26,7 @@ func TestPeekUploadBodyInMemory(t *testing.T) {
 	got := peekUploadBody(io.NopCloser(bytes.NewReader(payload)), peekLimits{inMemory: 64, max: 1024})
 	assert.False(t, got.overLimit)
 	assert.Equal(t, payload, got.data)
+	assert.Nil(t, got.spilled, "a body inside the in-memory window has no spill file")
 	assert.Equal(t, payload, readAllAndClose(t, got.body), "restored body must equal the original")
 }
 
@@ -37,6 +38,10 @@ func TestPeekUploadBodySpillsPastInMemory(t *testing.T) {
 	assert.False(t, got.overLimit)
 	// data is bounded by the in-memory window even when spilled.
 	assert.Len(t, got.data, 16)
+	require.NotNil(t, got.spilled)
+	spilled, err := io.ReadAll(got.spilled)
+	require.NoError(t, err)
+	assert.Equal(t, payload, spilled, "spilled must expose the whole body for inspection")
 	assert.Equal(t, payload, readAllAndClose(t, got.body), "restored body must stream the full payload from the spill file")
 }
 

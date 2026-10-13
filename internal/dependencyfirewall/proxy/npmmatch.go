@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"regexp"
@@ -88,9 +87,9 @@ func npmTarball(path string) (string, string, bool) {
 	return name, version, true
 }
 
-// npmUpload reads the leading JSON of a publish body to extract the name
-// and the single version being published. It restores req.Body. A body too
-// large to inspect (see peekLimits.max) fails closed by leaving Pass false.
+// npmUpload reads a publish body to extract the name and the single version
+// being published. It restores req.Body. A body too large to inspect (see
+// peekLimits.max) fails closed by leaving Pass false.
 func npmUpload(req *http.Request, limits peekLimits) Match {
 	if req.Body == nil {
 		return Match{}
@@ -106,27 +105,38 @@ func npmUpload(req *http.Request, limits peekLimits) Match {
 		}
 	}
 
-	var doc struct {
-		Name     string                     `json:"name"`
-		Versions map[string]json.RawMessage `json:"versions"`
-	}
-	if err := json.Unmarshal(peeked.data, &doc); err != nil || doc.Name == "" {
+	// Every PUT in the session reaches this matcher, including npm's metadata
+	// writes (dist-tags, owners, stars) and non-registry uploads. A body that
+	// is not a JSON object cannot be a packument, so it is forwarded.
+	if !bytes.HasPrefix(bytes.TrimLeft(peeked.data, " \t\r\n"), []byte("{")) {
 		return Match{}
 	}
-	// An npm publish packument carries exactly one version (the one being
-	// published), so the single map entry is the coordinate to check.
-	version := ""
-	for v := range doc.Versions {
-		version = v
-		break
+	// A tarball larger than the in-memory window cuts the packument off in
+	// peeked.data, so scan the whole spilled body instead.
+	src := io.Reader(bytes.NewReader(peeked.data))
+	if peeked.spilled != nil {
+		src = peeked.spilled
 	}
-	if version == "" {
+	doc, err := scanPackument(src, int(limits.inMemory))
+	// An object we cannot decode may be a publish: fail closed rather than
+	// forwarding it uninspected.
+	if err != nil {
+		return unparseableMatch("npm", policy.Upload, "unparseable publish metadata")
+	}
+	// Only a publish carries the tarball in _attachments; metadata writes such
+	// as deprecate or owner changes do not, and are forwarded.
+	if !doc.attachments {
 		return Match{}
+	}
+	// A publish carries exactly one version. With several, the one checked
+	// need not be the one the registry stores.
+	if doc.name == "" || len(doc.versions) != 1 {
+		return unparseableMatch("npm", policy.Upload, "unparseable publish metadata")
 	}
 	return Match{
 		Matched:    true,
 		Pass:       true,
-		Coordinate: policy.Coordinate{Ecosystem: "npm", Name: doc.Name, Version: version},
+		Coordinate: policy.Coordinate{Ecosystem: "npm", Name: doc.name, Version: doc.versions[0]},
 		Operation:  policy.Upload,
 	}
 }

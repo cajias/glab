@@ -108,7 +108,10 @@ func pypiUpload(req *http.Request, limits peekLimits) Match {
 	}
 	name, version := pypiFieldsFromMultipart(peeked.data, params["boundary"])
 	if name == "" {
-		return Match{}
+		// The request already matched the "/legacy" endpoint with a multipart
+		// body, so it is definitely a twine upload; a body we cannot parse a
+		// name out of fails closed rather than forwarding it uninspected.
+		return unparseableMatch("pypi", policy.Upload, "unparseable publish metadata")
 	}
 	return Match{
 		Matched:    true,
