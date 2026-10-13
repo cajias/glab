@@ -373,6 +373,109 @@ func TestIssueList_tty_withFlags(t *testing.T) {
 	})
 }
 
+func TestIssueList_headerTotal(t *testing.T) {
+	// NOTE: These subtests cannot run in parallel because the epic case uses cmdutils.GroupOverride()
+	// which modifies global viper state (SetEnvPrefix, BindEnv).
+	t.Setenv("NO_COLOR", "true")
+
+	issues := []*gitlab.Issue{
+		{IID: 6, State: "opened", Title: "Issue one", WebURL: "http://gitlab.com/OWNER/REPO/issues/6"},
+		{IID: 7, State: "opened", Title: "Issue two", WebURL: "http://gitlab.com/OWNER/REPO/issues/7"},
+	}
+
+	tests := []struct {
+		name       string
+		issueType  issuable.IssueType
+		cli        string
+		setupMock  func(tc *gitlabtesting.TestClient)
+		wantHeader string
+	}{
+		{
+			name:      "project shows the total from the API",
+			issueType: issuable.TypeIssue,
+			cli:       "",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					ListProjectIssues("OWNER/REPO", gomock.Any()).
+					Return(issues, &gitlab.Response{CurrentPage: 1, NextPage: 2, TotalPages: 21, TotalItems: 42}, nil)
+			},
+			wantHeader: "Showing 2 of 42 open issues in OWNER/REPO that match your search. (Page 1)\n",
+		},
+		{
+			name:      "group shows the total from the API",
+			issueType: issuable.TypeIssue,
+			cli:       "--group GROUP --per-page 2 --page 21",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					ListGroupIssues("GROUP", gomock.Any()).
+					Return(issues, &gitlab.Response{CurrentPage: 21, TotalPages: 21, TotalItems: 42}, nil)
+			},
+			wantHeader: "Showing 2 of 42 open issues in GROUP that match your search. (Page 21)\n",
+		},
+		{
+			name:      "incident shows the total from the API",
+			issueType: issuable.TypeIncident,
+			cli:       "",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					ListProjectIssues("OWNER/REPO", gomock.Any()).
+					Return(issues, &gitlab.Response{CurrentPage: 1, NextPage: 2, TotalPages: 3, TotalItems: 5}, nil)
+			},
+			wantHeader: "Showing 2 of 5 open incidents in OWNER/REPO that match your search. (Page 1)\n",
+		},
+		{
+			name:      "project without a total from the API",
+			issueType: issuable.TypeIssue,
+			cli:       "",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockIssues.EXPECT().
+					ListProjectIssues("OWNER/REPO", gomock.Any()).
+					Return(issues, &gitlab.Response{CurrentPage: 1, NextPage: 2}, nil)
+			},
+			wantHeader: "Showing 2 open issues in OWNER/REPO that match your search. (Page 1)\n",
+		},
+		{
+			name:      "epic ignores the total from the API",
+			issueType: issuable.TypeIssue,
+			cli:       "--group GROUP --epic 42",
+			setupMock: func(tc *gitlabtesting.TestClient) {
+				tc.MockEpicIssues.EXPECT().
+					ListEpicIssues("GROUP", int64(42), gomock.Any()).
+					Return(issues, &gitlab.Response{CurrentPage: 1, TotalPages: 1, TotalItems: 42}, nil)
+			},
+			wantHeader: "Showing 2 open issues in GROUP&42 that match your search. (Page 1)\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testClient := gitlabtesting.NewTestClient(t)
+			tt.setupMock(testClient)
+
+			apiClient, err := api.NewClient(
+				func(*http.Client) (gitlab.AuthSource, error) {
+					return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+				},
+				api.WithGitLabClient(testClient.Client),
+			)
+			require.NoError(t, err)
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdList(f, nil, tt.issueType)
+			}, true,
+				cmdtest.WithApiClient(apiClient),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+			)
+
+			output, err := exec(tt.cli)
+			require.NoError(t, err)
+
+			assert.True(t, strings.HasPrefix(output.String(), tt.wantHeader), "got %q", output.String())
+			assert.Empty(t, output.Stderr())
+		})
+	}
+}
+
 func TestIssueList_filterByIteration(t *testing.T) {
 	testClient := gitlabtesting.NewTestClient(t)
 

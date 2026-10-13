@@ -293,6 +293,7 @@ func listRun(opts *ListOptions) error {
 	}
 
 	var issues []*gitlab.Issue
+	var resp *gitlab.Response
 	title := utils.NewListTitle(fmt.Sprintf("%s %s", opts.TitleQualifier, issueType))
 	switch {
 	case opts.Epic != 0:
@@ -303,7 +304,7 @@ func listRun(opts *ListOptions) error {
 		title.RepoName = fmt.Sprintf("%s&%d", opts.Group, opts.Epic)
 
 	case opts.Group != "":
-		issues, _, err = client.Issues.ListGroupIssues(opts.Group, projectListIssueOptionsToGroup(listOpts))
+		issues, resp, err = client.Issues.ListGroupIssues(opts.Group, projectListIssueOptionsToGroup(listOpts))
 		if err != nil {
 			return err
 		}
@@ -315,7 +316,7 @@ func listRun(opts *ListOptions) error {
 			return err
 		}
 
-		issues, _, err = client.Issues.ListProjectIssues(repo.FullName(), listOpts)
+		issues, resp, err = client.Issues.ListProjectIssues(repo.FullName(), listOpts)
 		if err != nil {
 			return err
 		}
@@ -325,6 +326,10 @@ func listRun(opts *ListOptions) error {
 	title.Page = int(listOpts.Page)
 	title.ListActionType = opts.ListType
 	title.CurrentPageTotal = len(issues)
+	// Epic issues are filtered client-side, so they have no total that matches the rows shown.
+	if resp != nil {
+		title.Total = int(resp.TotalItems)
+	}
 
 	if opts.Output == "json" {
 		return opts.IO.PrintJSON(issues)
