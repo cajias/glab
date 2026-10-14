@@ -159,22 +159,39 @@ func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *c
 			}
 
 			cfg := f.Config()
+			opts.host = f.DefaultHostname()
 
-			host, err := cloneHost(ctxOpts.Repo, f.DefaultHostname(), cfg)
-			if err != nil {
-				return err
-			}
-			opts.host = host
+			// A full URL is handed to git as-is, so it needs no API client or
+			// authenticated user. Authenticating against the URL's host would
+			// fail (and leak a configured token) when no credentials for that
+			// host exist. Only --wiki resolves the repository through the API,
+			// so it derives the host from the URL and builds a client for it.
+			switch {
+			case git.IsValidURL(ctxOpts.Repo):
+				if opts.wiki {
+					host, err := cloneHost(ctxOpts.Repo, opts.host, cfg)
+					if err != nil {
+						return err
+					}
+					opts.host = host
 
-			apiClient, err := f.ApiClient(opts.host)
-			if err != nil {
-				return err
-			}
-			opts.apiClient = apiClient
+					apiClient, err := f.ApiClient(opts.host)
+					if err != nil {
+						return err
+					}
+					opts.apiClient = apiClient
+				}
+			default:
+				apiClient, err := f.ApiClient(opts.host)
+				if err != nil {
+					return err
+				}
+				opts.apiClient = apiClient
 
-			opts.currentUser, _, err = opts.apiClient.Lab().Users.CurrentUser()
-			if err != nil {
-				return err
+				opts.currentUser, _, err = apiClient.Lab().Users.CurrentUser()
+				if err != nil {
+					return err
+				}
 			}
 
 			opts.protocol, _ = cfg.Get(opts.host, "git_protocol")
@@ -420,6 +437,7 @@ func cloneRun(opts *options, ctxOpts *ContextOpts) error {
 		ctxOpts.Repo = wikiURL
 	}
 	isUserFork := ctxOpts.Project != nil && ctxOpts.Project.ForkedFromProject != nil &&
+		opts.currentUser != nil &&
 		strings.Contains(ctxOpts.Project.PathWithNamespace, opts.currentUser.Username)
 	if isUserFork && localDir == "" {
 		if err := validateAPIPath(ctxOpts.Project.Path); err != nil {
