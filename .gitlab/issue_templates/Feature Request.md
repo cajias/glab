@@ -23,4 +23,4 @@ and verify the issue you're about to submit isn't a duplicate.
 
 ### Links / references
 
-/label ~"type::feature" ~"devops::ai coding" ~"group::code review" ~"category:gitlab cli"
+/label ~"type::feature" ~"devops::ai clients" ~"group::developer clients" ~"category:gitlab cli"

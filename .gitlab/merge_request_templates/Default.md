@@ -16,5 +16,5 @@ Resolves #[issue_number]
 
 ## Screenshots (if appropriate):
 
-/label ~"devops::ai coding" ~"group::code review" ~"category:gitlab cli"
+/label ~"devops::ai clients" ~"group::developer clients" ~"category:gitlab cli"
 /assign me
