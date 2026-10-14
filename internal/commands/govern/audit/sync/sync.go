@@ -251,7 +251,7 @@ type pushResult struct {
 func pushSession(ctx context.Context, t target, sessionID, agentType string, src transcript, data *sessionData, newCursor int64, complete bool, opts *options) (pushResult, error) {
 	var res pushResult
 
-	glSessionID, err := ensureSession(ctx, t.client, t.project.ID, t.identityID, sessionID, agentType, data)
+	glSessionID, err := ensureSession(ctx, t.client, t.project.ID, t.identityID, sessionID, agentType, syncTypeFor(opts), data)
 	if err != nil {
 		return res, err
 	}
@@ -601,14 +601,28 @@ type sessionResponse struct {
 	ID int `json:"id"`
 }
 
+// syncTypeFor reports which path is syncing the session. GitLab keeps the value
+// sent when it creates the session. The hooks are the only callers that pass
+// --silent without --all.
+func syncTypeFor(opts *options) string {
+	switch {
+	case opts.all:
+		return "fallback"
+	case opts.silent:
+		return "hook"
+	default:
+		return "manual"
+	}
+}
+
 // ensureSession creates a session on GitLab or returns the existing one via idempotency key.
-func ensureSession(ctx context.Context, client *api.Client, projectID int64, identityID int, sessionID, agentType string, data *sessionData) (int, error) {
+func ensureSession(ctx context.Context, client *api.Client, projectID int64, identityID int, sessionID, agentType, syncType string, data *sessionData) (int, error) {
 	if agentType == "" {
 		agentType = "unknown"
 	}
 	reqBody := sessionRequest{
 		AgentType:      agentType,
-		SyncType:       "hook",
+		SyncType:       syncType,
 		IdempotencyKey: sessionID,
 	}
 
