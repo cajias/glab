@@ -80,9 +80,10 @@ type options struct {
 
 	registry string
 	// registryURL is registry parsed, set by validate on the --gradle/--npm/
-	// --sbt paths and nil elsewhere. It travels from the check that rejects a
-	// bad URL to the writers that key their entries on one, so no writer has to
-	// parse the same string again and handle a failure that cannot happen.
+	// --sbt/--yarn paths and nil elsewhere. It travels from the check that
+	// rejects a bad URL to the writers that key their entries on one, so no
+	// writer has to parse the same string again and handle a failure that
+	// cannot happen.
 	registryURL   *url.URL
 	registryAlias string
 
@@ -91,6 +92,7 @@ type options struct {
 	gradle bool
 	npm    bool
 	sbt    bool
+	yarn   bool
 }
 
 // NewCmd returns the `glab artifact-registry login` command.
@@ -137,6 +139,10 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			- %[1]s--npm%[1]s: writes a %[1]s//{host}{path}/:_authToken%[1]s entry
 			  in %[1]s~/.npmrc%[1]s. You still need to point npm at the registry, with a
 			  %[1]sregistry=%[1]s or %[1]s@scope:registry=%[1]s line.
+			- %[1]s--yarn%[1]s: writes an %[1]snpmRegistries%[1]s entry with %[1]snpmAuthToken%[1]s
+			  and %[1]snpmAlwaysAuth%[1]s in %[1]s~/.yarnrc.yml%[1]s, for Yarn 2 and later. Set
+			  an %[1]snpmRegistryServer%[1]s that matches %[1]s--registry%[1]s. Rewriting the
+			  file can change its formatting, like indentation, blank lines, and line endings.
 			- %[1]s--sbt%[1]s: writes a %[1]scredentials +=%[1]s line in
 			  %[1]s~/.sbt/1.0/credentials.sbt%[1]s, which assumes a stock sbt 1.x.
 			  An sbt that moved its global base, with
@@ -168,8 +174,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			  actually backs. If you name a container registry here, it receives the
 			  wrong token and the error only surfaces on the next pull.
 			- %[1]s--registry-alias%[1]s applies to %[1]s--maven%[1]s and
-			  %[1]s--gradle%[1]s only, because %[1]s--npm%[1]s and
-			  %[1]s--sbt%[1]s key their entries on %[1]s--registry%[1]s itself.
+			  %[1]s--gradle%[1]s only, because %[1]s--npm%[1]s, %[1]s--sbt%[1]s,
+			  and %[1]s--yarn%[1]s key their entries on %[1]s--registry%[1]s
+			  itself.
 			  For %[1]s--gradle%[1]s, use an alias that is a valid identifier
 			  in your build script: the default is derived from the registry
 			  host and contains hyphens, which Groovy cannot interpolate as
@@ -187,6 +194,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 			# Configure npm to authenticate against a registry for two hours
 			glab artifact-registry login --npm --registry https://ar.example.com --duration 2h
+
+			# Configure Yarn 2 or later to authenticate against a registry for two hours
+			glab artifact-registry login --yarn --registry https://ar.example.com --duration 2h
 
 			# Configure sbt to authenticate against a registry for two hours
 			glab artifact-registry login --sbt --registry https://ar.example.com --duration 2h
@@ -216,8 +226,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.gradle, "gradle", false, "Configure Gradle to authenticate against the registry. Writes to ~/.gradle/gradle.properties.")
 	cmd.Flags().BoolVar(&opts.npm, "npm", false, "Configure npm to authenticate against the registry. Writes to ~/.npmrc.")
 	cmd.Flags().BoolVar(&opts.sbt, "sbt", false, "Configure sbt to authenticate against the registry. Writes to ~/.sbt/1.0/credentials.sbt.")
-	cmd.MarkFlagsMutuallyExclusive("docker", "maven", "gradle", "npm", "sbt")
-	cmd.MarkFlagsOneRequired("docker", "maven", "gradle", "npm", "sbt")
+	cmd.Flags().BoolVar(&opts.yarn, "yarn", false, "Configure Yarn 2 or later to authenticate against the registry. Writes to ~/.yarnrc.yml. For Yarn 1, use --npm.")
+	cmd.MarkFlagsMutuallyExclusive("docker", "maven", "gradle", "npm", "sbt", "yarn")
+	cmd.MarkFlagsOneRequired("docker", "maven", "gradle", "npm", "sbt", "yarn")
 
 	cmd.Flags().StringVar(&opts.registry, "registry", "", "Registry to authenticate against. For --docker, a bare hostname; for others, typically a URL.")
 	cobra.CheckErr(cmd.MarkFlagRequired("registry"))
@@ -244,8 +255,8 @@ func (o *options) complete(cmd *cobra.Command) {
 // validate rejects everything that makes the login impossible, before any
 // network call or write. The --registry rules split by tool: --docker needs a
 // bare hostname because that is what a credential helper is handed, while
-// --gradle, --npm and --sbt need a URL with a host because they write it, or a
-// key derived from it, into their own files.
+// --gradle, --npm, --sbt and --yarn need a URL with a host because they write
+// it, or a key derived from it, into their own files.
 //
 // Two kinds of error come out of it. A bad flag value is a
 // *cmdutils.FlagError, naming the flag whose value the user has to change. The
@@ -261,8 +272,8 @@ func (o *options) validate() error {
 	// MarkFlagsOneRequired only checks that one of the tool flags was passed, so
 	// --docker=false alone (all others left at their false default) reaches here
 	// with no tool actually selected.
-	if !o.docker && !o.maven && !o.gradle && !o.npm && !o.sbt {
-		return &cmdutils.FlagError{Err: fmt.Errorf("invalid --docker, --maven, --gradle, --npm, and --sbt: all false leaves no tool selected; pass one of them as true")}
+	if !o.docker && !o.maven && !o.gradle && !o.npm && !o.sbt && !o.yarn {
+		return &cmdutils.FlagError{Err: fmt.Errorf("invalid --docker, --maven, --gradle, --npm, --sbt, and --yarn: all false leaves no tool selected; pass one of them as true")}
 	}
 
 	if o.registryAlias != "" && (o.maven || o.gradle) && !registryAliasRe.MatchString(o.registryAlias) {
@@ -333,17 +344,18 @@ func (o *options) validate() error {
 		return nil
 	}
 
-	// --gradle joins --npm and --sbt: all three put the registry URL, or a key
-	// derived from it, into the file they write, so a value that is not a URL
-	// only fails later at build time. --maven is the exception, and deliberately
-	// so: its <server> block carries just the alias and the credentials, and the
-	// URL itself lives in the caller's pom.xml keyed by that alias.
+	// --gradle joins --npm, --sbt and --yarn: all four put the registry URL, or
+	// a key derived from it, into the file they write, so a value that is not a
+	// URL only fails later at build time. --maven is the exception, and
+	// deliberately so: its <server> block carries just the alias and the
+	// credentials, and the URL itself lives in the caller's pom.xml keyed by
+	// that alias.
 	//
 	// The scheme is required as well as the host, and not just because the
 	// message says so: url.Parse gives "//ar.example.com" a host and no scheme,
 	// and --gradle writes that value verbatim into {alias}Url, where Gradle
 	// rejects it as a repository URL at build time.
-	if o.gradle || o.npm || o.sbt {
+	if o.gradle || o.npm || o.sbt || o.yarn {
 		u, err := url.Parse(o.registry)
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			return &cmdutils.FlagError{Err: fmt.Errorf("invalid --registry: must be a URL with a scheme and host, for example https://registry.example.com (got %q)", o.registry)}
@@ -356,9 +368,9 @@ func (o *options) validate() error {
 			return &cmdutils.FlagError{Err: fmt.Errorf("invalid --registry: its host must be an IP address, or contain only letters, digits, '.', '_' and '-' (got %q); an internationalized host must be given in punycode", host)}
 		}
 
-		// Kept, not thrown away: loginNpm and loginSbt both need the parsed
-		// URL, and parsing it a second time there would give them an error
-		// branch that this check has already ruled out.
+		// Kept, not thrown away: loginNpm, loginSbt and loginYarn need the
+		// parsed URL, and parsing it a second time there would give them an
+		// error branch that this check has already ruled out.
 		o.registryURL = u
 	}
 
@@ -463,6 +475,19 @@ func (o *options) run(ctx context.Context) error {
 			return err
 		}
 		o.io.LogInfof("%s Configured sbt for %s. Token expires at %s.\n", o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
+	case o.yarn:
+		shadowed, err := loginYarn(o.registryURL, result.Token)
+		if err != nil {
+			return err
+		}
+		// Like --npm, says only what was written: Yarn keeps fetching from its
+		// default registry until npmRegistryServer names this one.
+		o.io.LogInfof("%s Wrote a Yarn auth token for %s. Point Yarn at that registry with `npmRegistryServer`, at the top level or under `npmScopes`, if you have not already. Token expires at %s.\n",
+			o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
+		for _, scope := range shadowed {
+			o.io.LogErrorf("%s The npmScopes entry %q in ~/.yarnrc.yml has its own npmAuthToken or npmAuthIdent, and Yarn sends that for @%s packages instead of this token. Remove it from the scope to use this login.\n",
+				o.io.Color().WarnIcon(), scope, scope)
+		}
 	}
 
 	return nil
