@@ -31,7 +31,7 @@ require (
 	github.com/hashicorp/go-version v1.9.0
 	github.com/itchyny/gojq v0.12.19
 	github.com/lunixbochs/vtclean v1.0.0
-	github.com/mattn/go-colorable v0.1.15
+	github.com/mattn/go-colorable v0.1.16
 	github.com/mattn/go-isatty v0.0.24
 	github.com/mattn/go-runewidth v0.0.30
 	github.com/modelcontextprotocol/go-sdk v1.8.0
