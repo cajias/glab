@@ -77,4 +77,4 @@ Other:
 
 <!-- If you can, link to the line of code that might be responsible for the problem -->
 
-/label ~"type::bug" ~"devops::ai coding" ~"group::code review" ~"category:gitlab cli"
+/label ~"type::bug" ~"devops::ai clients" ~"group::developer clients" ~"category:gitlab cli"

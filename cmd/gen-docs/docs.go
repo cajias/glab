@@ -314,11 +314,11 @@ func genRootCommandDocs(cmd *cobra.Command, basePath string) error {
 // generated-by-a-script comment that every page this generator produces starts
 // with. The comment carries generatedMarker, so pages written through this
 // helper are pruned and rewritten on each run.
-func writeGeneratedHeader(buf *bytes.Buffer, title, stage string) {
+func writeGeneratedHeader(buf *bytes.Buffer, title string) {
 	buf.WriteString("---" + "\n")
 	buf.WriteString("title: " + title + "\n")
-	buf.WriteString("stage: " + stage + "\n")
-	buf.WriteString("group: Code Review" + "\n")
+	buf.WriteString("stage: AI Clients" + "\n")
+	buf.WriteString("group: Developer Clients" + "\n")
 	buf.WriteString("info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>" + "\n")
 	buf.WriteString("---" + "\n\n")
 
@@ -336,7 +336,7 @@ func genCommandsPage(cmd *cobra.Command, basePath string) error {
 	fmt.Println("Generating docs for the commands landing page")
 
 	buf := new(bytes.Buffer)
-	writeGeneratedHeader(buf, "Commands", "AI Coding")
+	writeGeneratedHeader(buf, "Commands")
 
 	buf.WriteString("{{< details >}}\n\n")
 	buf.WriteString("- Tier: Free, Premium, Ultimate\n")
@@ -592,7 +592,7 @@ func GenMarkdownCustom(cmd *cobra.Command, w io.Writer) error {
 
 	buf := new(bytes.Buffer)
 	name := cmd.CommandPath()
-	writeGeneratedHeader(buf, "'`"+name+"`'", "AI Coding")
+	writeGeneratedHeader(buf, "'`"+name+"`'")
 
 	// Wrap URLs in Short description
 	shortDesc := urlwrapper.MDWrap(cmd.Short)
@@ -655,7 +655,7 @@ func printOptions(buf *bytes.Buffer, cmd *cobra.Command) error {
 // GenRootMarkdownCustom creates custom markdown for the root command with preserved intro content
 func GenRootMarkdownCustom(cmd *cobra.Command, w io.Writer) error {
 	buf := new(bytes.Buffer)
-	writeGeneratedHeader(buf, "GitLab CLI (glab)", "Create")
+	writeGeneratedHeader(buf, "GitLab CLI (glab)")
 
 	// Add details shortcode
 	buf.WriteString("{{< details >}}\n\n")

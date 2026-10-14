@@ -10,6 +10,6 @@ If this MR adds or updates CLI command documentation, follow the conventions in 
 [GitLab CLI (glab) documentation style guide](https://docs.gitlab.com/development/documentation/cli_styleguide/),
 run `make gen-docs`, and commit the updated files in `docs/source/`.
 
-/label ~"devops::ai coding" ~"group::code review" ~"category:gitlab cli" ~"section::ai"
+/label ~"devops::ai clients" ~"group::developer clients" ~"category:gitlab cli" ~"section::ai"
 /label ~documentation ~"type::maintenance" ~"docs::improvement" ~"maintenance::refactor"
 /assign me
