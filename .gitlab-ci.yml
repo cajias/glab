@@ -794,6 +794,12 @@ snapcraft_release_stable:
     - snapcraft whoami
     - snapcraft upload *.snap --release=latest/stable
     - snapcraft logout
+  # Snap Store uploads intermittently fail with 5xx or dropped connections.
+  retry:
+    max: 2
+    when:
+      - script_failure
+      - runner_external_dependency_failure
 
 snapcraft_release_edge:
   stage: release
@@ -810,6 +816,11 @@ snapcraft_release_edge:
     - snapcraft whoami
     - snapcraft upload *.snap --release=latest/edge
     - snapcraft logout
+  retry:
+    max: 2
+    when:
+      - script_failure
+      - runner_external_dependency_failure
 
 # The SAST and secret-detection templates place their jobs in the test stage
 # without a `needs:`, so they queued behind the documentation stage. They scan
