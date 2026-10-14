@@ -522,5 +522,7 @@ func projectListIssueOptionsToGroup(l *gitlab.ListProjectIssuesOptions) *gitlab.
 		UpdatedAfter:       l.UpdatedAfter,
 		UpdatedBefore:      l.UpdatedBefore,
 		IssueType:          l.IssueType,
+		Confidential:       l.Confidential,
+		IterationID:        l.IterationID,
 	}
 }
