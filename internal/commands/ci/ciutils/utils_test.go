@@ -590,6 +590,22 @@ func TestRunTraceJob(t *testing.T) {
 		assert.Contains(t, out.String(), "parent trace")
 	})
 
+	t.Run("stops after reporting a skipped job once", func(t *testing.T) {
+		t.Parallel()
+
+		tc := gitlabtesting.NewTestClient(t)
+		tc.MockJobs.EXPECT().
+			GetJob("OWNER/REPO", int64(4243)).
+			Return(&gitlab.Job{ID: 4243, Name: "deploy", Status: "skipped"}, nil, nil)
+
+		var out bytes.Buffer
+		err := RunTraceJob(t.Context(), tc.Client, &out, "OWNER/REPO", 4243, time.Millisecond)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, strings.Count(out.String(), "deploy has been skipped."))
+		assert.NotContains(t, out.String(), "Showing logs for")
+	})
+
 	t.Run("traces a job in a numerically-identified downstream project", func(t *testing.T) {
 		t.Parallel()
 
