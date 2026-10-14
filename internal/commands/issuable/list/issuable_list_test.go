@@ -476,6 +476,40 @@ func TestIssueList_headerTotal(t *testing.T) {
 	}
 }
 
+func TestIssueList_groupPassesConfidentialAndIteration(t *testing.T) {
+	testClient := gitlabtesting.NewTestClient(t)
+
+	testClient.MockIssues.EXPECT().
+		ListGroupIssues("GROUP", gomock.Any()).
+		DoAndReturn(func(gid any, opts *gitlab.ListGroupIssuesOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Issue, *gitlab.Response, error) {
+			require.NotNil(t, opts.Confidential, "confidential filter dropped for group listing")
+			assert.True(t, *opts.Confidential)
+			require.NotNil(t, opts.IterationID, "iteration filter dropped for group listing")
+			assert.Equal(t, int64(9), *opts.IterationID)
+			return []*gitlab.Issue{}, nil, nil
+		})
+
+	apiClient, err := api.NewClient(
+		func(*http.Client) (gitlab.AuthSource, error) {
+			return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+		},
+		api.WithGitLabClient(testClient.Client),
+	)
+	require.NoError(t, err)
+
+	exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+		return NewCmdList(f, nil, issuable.TypeIssue)
+	}, true,
+		cmdtest.WithApiClient(apiClient),
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+	)
+
+	output, err := exec("--group GROUP --confidential --iteration 9")
+	require.NoError(t, err)
+
+	assert.Empty(t, output.Stderr())
+}
+
 func TestIssueList_filterByIteration(t *testing.T) {
 	testClient := gitlabtesting.NewTestClient(t)
 
