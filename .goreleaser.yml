@@ -2,7 +2,6 @@ project_name: glab
 version: 2
 
 release:
-  prerelease: auto
   extra_files:
     - glob: "./bin/*.exe"
 
@@ -149,6 +148,8 @@ changelog:
   use: gitlab
   sort: asc
   abbrev: 8
+  # Author markers are hidden on GitLab; the Slack template swaps them for emoji.
+  format: '{{ $p := split .Message ": " }}{{ if and (gt (len $p) 1) (not (contains (index $p 0) " ")) }}**{{ index $p 0 }}:** {{ trimprefix .Message (printf "%s: " (index $p 0)) }}{{ else }}{{ .Message }}{{ end }} ([{{ .SHA }}](https://gitlab.com/gitlab-org/cli/-/commit/{{ .SHA }})) by {{ .AuthorName }}{{ if eq .AuthorEmail "gitlab-bot@gitlab.com" }}<!--bot-->{{ else if ne (trimsuffix .AuthorEmail "@gitlab.com") .AuthorEmail }}<!--team-->{{ else }}<!--community-->{{ end }}'
   filters:
     exclude:
       - "^Merge branch"
@@ -165,10 +166,10 @@ changelog:
       order: 2
     - title: 📦 Dependencies
       regexp: '^.*?chore\((deps|dependencies)\)[^:]*:.+$'
-      order: 3
+      order: 4
     - title: 🔧 Maintenance
       regexp: '^.*?(chore|ci|refactor)(\([^)]+\))??!?:.+$'
-      order: 4
+      order: 3
     - title: 🔀 Others
       order: 999
 
@@ -179,13 +180,19 @@ announce:
     # Format: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXX
     channel: '{{ .Env.SLACK_CHANNEL }}'
     username: 'glab Release Bot'
-    icon_emoji: ':rocket:'
-    message_template: |
-      :rocket: *glab {{ .Tag }}* has been released!
-      {{ if .Prerelease }}
-      :warning: _This is a pre-release version_
-      {{ end }}
+    icon_emoji: ':glab:'
+    # Plain-text fallback for notifications; the markdown block below is what renders.
+    message_template: "glab {{ .Tag }} has been released: {{ .ReleaseURL }}"
+    blocks:
+      - type: markdown
+        text: |
+          {{- $notes := reverseFilter .ReleaseNotes `^## Changelog` }}
+          {{- $notes = replace $notes "<!--bot-->" " 🤖" }}
+          {{- $notes = replace $notes "<!--team-->" " :tanuki:" }}
+          {{- $notes = replace $notes "<!--community-->" " :community:" -}}
+          🚀 **glab {{ .Tag }}** has been released!
 
-      {{ .ReleaseNotes }}
+          {{/* Cap below Slack's 12,000-character block limit. */ -}}
+          {{ if gt (len $notes) 10000 }}{{ slice $notes 0 10000 }}…{{ else }}{{ $notes }}{{ end }}
 
-      <{{ .ReleaseURL }}|View Release on GitLab>
+          [View release on GitLab]({{ .ReleaseURL }})
