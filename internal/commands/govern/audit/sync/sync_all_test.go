@@ -47,6 +47,7 @@ type fakeGitLab struct {
 	projectLookups   map[string]int
 	sessionsCreated  []string
 	agentTypes       []string
+	syncTypes        []string
 	identityRequests int
 	eventBatches     []int
 	events           []auditEventRequest
@@ -103,6 +104,7 @@ func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.sessionsCreated = append(f.sessionsCreated, body.IdempotencyKey)
 		f.agentTypes = append(f.agentTypes, body.AgentType)
+		f.syncTypes = append(f.syncTypes, body.SyncType)
 		if f.noSessionID {
 			_, _ = io.WriteString(w, `{}`)
 			return
@@ -234,6 +236,7 @@ func TestSyncAll_UploadsRecordedSession(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"sess-1"}, env.fake.sessionsCreated)
+	assert.Equal(t, []string{"fallback"}, env.fake.syncTypes)
 	assert.Equal(t, 2, env.fake.eventsPosted)
 	assert.Zero(t, env.fake.completed)
 
@@ -978,4 +981,48 @@ sleep 20`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out after 300ms")
 	assert.Less(t, time.Since(start), 5*time.Second, "a hung export must not block the run")
+}
+
+func TestSyncSession_ReportsSyncType(t *testing.T) {
+	tests := []struct {
+		name   string
+		silent bool
+		want   string
+	}{
+		{name: "hook", silent: true, want: "hook"},
+		{name: "run directly", silent: false, want: "manual"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("HOME", dir)
+			t.Setenv("GLAB_CONFIG_DIR", dir)
+
+			fake := &fakeGitLab{projects: map[string]int64{}, projectLookups: map[string]int{}}
+			server := httptest.NewServer(fake)
+			t.Cleanup(server.Close)
+			gl, err := gitlab.NewClient("test-token", gitlab.WithBaseURL(server.URL+"/api/v4"))
+			require.NoError(t, err)
+			client := cmdtest.NewTestApiClient(t, nil, "test-token", testHost, api.WithGitLabClient(gl))
+
+			line, err := json.Marshal(map[string]any{
+				"type":      "assistant",
+				"sessionId": "sess-1",
+				"timestamp": time.Now().Format(time.RFC3339),
+				"message": map[string]any{
+					"content": []map[string]any{{"type": "tool_use", "id": "toolu_1", "name": "Bash"}},
+				},
+			})
+			require.NoError(t, err)
+			path := filepath.Join(dir, "sess-1.jsonl")
+			require.NoError(t, os.WriteFile(path, append(line, '\n'), 0o644))
+
+			ios, _, _, _ := cmdtest.TestIOStreams()
+			opts := &options{io: ios, silent: tt.silent, agentType: "claude-code"}
+			dest := target{client: client, project: &gitlab.Project{ID: 42}}
+			require.NoError(t, syncSession(t.Context(), dest, "sess-1", claudeTranscript{path: path}, opts))
+
+			assert.Equal(t, []string{tt.want}, fake.syncTypes)
+		})
+	}
 }
