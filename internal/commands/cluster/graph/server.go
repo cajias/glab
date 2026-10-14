@@ -53,6 +53,9 @@ func (s *server) Run(ctx context.Context) error {
 	if err != nil {
 		s.io.LogError("Failed to open browser:", err)
 	}
+	// Close rather than Shutdown: the graph handler holds a long-lived stream that Shutdown would wait on.
+	stop := context.AfterFunc(ctx, func() { _ = srv.Close() })
+	defer stop()
 	err = srv.Serve(l)
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
