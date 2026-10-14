@@ -562,7 +562,7 @@ func createRun(opts *options) error {
 	}
 
 	// upload files and create asset links
-	err = releaseutils.CreateReleaseAssets(opts.io, client, opts.assetFiles, opts.assetLink, repo.FullName(), release.TagName, opts.packageName, opts.usePackageRegistry)
+	err = releaseutils.CreateReleaseAssets(opts.ctx, opts.io, client, opts.assetFiles, opts.assetLink, repo.FullName(), release.TagName, opts.packageName, opts.usePackageRegistry)
 	if err != nil {
 		return releaseFailedErr(err, start)
 	}

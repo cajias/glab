@@ -1,6 +1,7 @@
 package releaseutils
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -105,7 +106,7 @@ func AssetsFromArgs(args []string) ([]*upload.ReleaseFile, error) {
 	return assets, nil
 }
 
-func CreateReleaseAssets(io *iostreams.IOStreams, client *gitlab.Client, assetFiles []*upload.ReleaseFile, assetLinks []*upload.ReleaseAsset, repoName, tagName, packageName string, usePackageRegistry bool) error {
+func CreateReleaseAssets(ctx context.Context, io *iostreams.IOStreams, client *gitlab.Client, assetFiles []*upload.ReleaseFile, assetLinks []*upload.ReleaseAsset, repoName, tagName, packageName string, usePackageRegistry bool) error {
 	if assetFiles == nil && assetLinks == nil {
 		return nil
 	}
@@ -123,12 +124,12 @@ func CreateReleaseAssets(io *iostreams.IOStreams, client *gitlab.Client, assetFi
 		color.Blue("repo"), repoName,
 		color.Blue("tag"), tagName)
 
-	if err := uploadCtx.UploadFiles(repoName, tagName, packageName, usePackageRegistry); err != nil {
+	if err := uploadCtx.UploadFiles(ctx, repoName, tagName, packageName, usePackageRegistry); err != nil {
 		return cmdutils.WrapError(err, "upload failed")
 	}
 
 	// create asset link for assets provided as json
-	if err := uploadCtx.CreateReleaseAssetLinks(repoName, tagName); err != nil {
+	if err := uploadCtx.CreateReleaseAssetLinks(ctx, repoName, tagName); err != nil {
 		return cmdutils.WrapError(err, "failed to create release link")
 	}
 	return nil

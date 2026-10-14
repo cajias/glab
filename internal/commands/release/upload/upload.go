@@ -1,6 +1,7 @@
 package upload
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,7 +100,7 @@ func NewCmdUpload(f cmdutils.Factory) *cobra.Command {
 				return err
 			}
 
-			return opts.run()
+			return opts.run(cmd.Context())
 		},
 	}
 
@@ -144,7 +145,7 @@ func (o *options) validate() error {
 	return nil
 }
 
-func (o *options) run() error {
+func (o *options) run(ctx context.Context) error {
 	start := time.Now()
 
 	client, err := o.gitlabClient()
@@ -164,7 +165,7 @@ func (o *options) run() error {
 		color.Blue("repo"), repo.FullName(),
 		color.Blue("tag"), o.tagName)
 
-	release, resp, err := client.Releases.GetRelease(repo.FullName(), o.tagName)
+	release, resp, err := client.Releases.GetRelease(repo.FullName(), o.tagName, gitlab.WithContext(ctx))
 	if err != nil {
 		if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden) {
 			return cmdutils.WrapError(err, "release does not exist. Create a new release with `glab release create "+o.tagName+"`.")
@@ -173,7 +174,7 @@ func (o *options) run() error {
 	}
 
 	// upload files and create asset links
-	err = releaseutils.CreateReleaseAssets(o.io, client, o.assetFiles, o.assetLinks, repo.FullName(), release.TagName, o.packageName, o.usePackageRegistry)
+	err = releaseutils.CreateReleaseAssets(ctx, o.io, client, o.assetFiles, o.assetLinks, repo.FullName(), release.TagName, o.packageName, o.usePackageRegistry)
 	if err != nil {
 		return cmdutils.WrapError(err, "creating release assets failed.")
 	}
