@@ -74,7 +74,7 @@ func TestReleaseUpload(t *testing.T) {
 
 			// Mock CreateReleaseLink and verify link_type
 			testClient.MockReleaseLinks.EXPECT().
-				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any()).
+				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
 				DoAndReturn(func(pid any, tagName string, opts *gitlab.CreateReleaseLinkOptions, options ...gitlab.RequestOptionFunc) (*gitlab.ReleaseLink, *gitlab.Response, error) {
 					if tc.wantType {
 						require.NotNil(t, opts.LinkType)
@@ -153,7 +153,7 @@ func TestReleaseUpload_WithAssetsLinksJSON(t *testing.T) {
 
 			// Mock CreateReleaseLink and verify the parameters
 			testClient.MockReleaseLinks.EXPECT().
-				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any()).
+				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
 				DoAndReturn(func(pid any, tagName string, opts *gitlab.CreateReleaseLinkOptions, options ...gitlab.RequestOptionFunc) (*gitlab.ReleaseLink, *gitlab.Response, error) {
 					// Verify direct_asset_path is set and filepath is NOT set
 					assert.NotNil(t, opts.DirectAssetPath)

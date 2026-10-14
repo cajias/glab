@@ -213,7 +213,7 @@ func TestReleaseCreateWithFiles(t *testing.T) {
 
 			// Mock CreateReleaseLink and verify link_type
 			testClient.MockReleaseLinks.EXPECT().
-				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any()).
+				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
 				DoAndReturn(func(pid any, tagName string, opts *gitlab.CreateReleaseLinkOptions, options ...gitlab.RequestOptionFunc) (*gitlab.ReleaseLink, *gitlab.Response, error) {
 					if tc.wantType {
 						require.NotNil(t, opts.LinkType)
@@ -306,7 +306,7 @@ func TestReleaseCreate_WithAssetsLinksJSON(t *testing.T) {
 
 			// Mock CreateReleaseLink and verify the parameters
 			testClient.MockReleaseLinks.EXPECT().
-				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any()).
+				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
 				DoAndReturn(func(pid any, tagName string, opts *gitlab.CreateReleaseLinkOptions, options ...gitlab.RequestOptionFunc) (*gitlab.ReleaseLink, *gitlab.Response, error) {
 					// Verify direct_asset_path is set
 					assert.NotNil(t, opts.DirectAssetPath)
@@ -817,7 +817,7 @@ func TestReleaseCreate_UsePackageRegistryEnvVar(t *testing.T) {
 		// err == nil), usePackageRegistry stays false and UploadProjectMarkdown is called
 		// instead — causing this expectation to fail as "expected call not received".
 		testClient.MockGenericPackages.EXPECT().
-			PublishPackageFile("OWNER/REPO", "release-assets", "0.0.1", "test_file.txt", gomock.Any(), gomock.Any()).
+			PublishPackageFile("OWNER/REPO", "release-assets", "0.0.1", "test_file.txt", gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(&gitlab.GenericPackagesFile{}, nil, nil)
 
 		testClient.MockGenericPackages.EXPECT().
@@ -825,7 +825,7 @@ func TestReleaseCreate_UsePackageRegistryEnvVar(t *testing.T) {
 			Return("/api/v4/projects/OWNER/REPO/packages/generic/release-assets/0.0.1/test_file.txt", nil)
 
 		testClient.MockReleaseLinks.EXPECT().
-			CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any()).
+			CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
 			Return(&gitlab.ReleaseLink{ID: 1, Name: "test_file.txt"}, nil, nil)
 
 		exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false,

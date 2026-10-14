@@ -1,9 +1,12 @@
 package upload
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
+
+	"golang.org/x/sync/errgroup"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 
@@ -12,6 +15,8 @@ import (
 
 // DefaultReleasePackageName contains the name for the release asset package
 const DefaultReleasePackageName = "release-assets"
+
+const uploadConcurrency = 4
 
 // ConflictDirectAssetPathError is returned when both direct_asset_path and the deprecated filepath as specified for an asset link.
 type ConflictDirectAssetPathError struct {
@@ -45,7 +50,7 @@ type ReleaseFile struct {
 	Type  *gitlab.LinkTypeValue
 }
 
-func CreateLink(c *gitlab.Client, projectID, tagName string, asset *ReleaseAsset) (*gitlab.ReleaseLink, bool /* aliased deprecated filepath */, error) {
+func CreateLink(ctx context.Context, c *gitlab.Client, projectID, tagName string, asset *ReleaseAsset) (*gitlab.ReleaseLink, bool /* aliased deprecated filepath */, error) {
 	aliased, err := aliasFilePathToDirectAssetPath(asset)
 	if err != nil {
 		return nil, false, err
@@ -56,7 +61,7 @@ func CreateLink(c *gitlab.Client, projectID, tagName string, asset *ReleaseAsset
 		URL:             asset.URL,
 		DirectAssetPath: asset.DirectAssetPath,
 		LinkType:        asset.LinkType,
-	})
+	}, gitlab.WithContext(ctx))
 	if err != nil {
 		return nil, false, err
 	}
@@ -71,8 +76,9 @@ type Context struct {
 	AssetsLinks []*ReleaseAsset
 }
 
-// UploadFiles uploads a file into a release repository.
-func (c *Context) UploadFiles(projectID, tagName string, packageName string, usePackageRegistry bool) error {
+// UploadFiles uploads the asset files concurrently and then creates their
+// release links in input order, so the release lists assets deterministically.
+func (c *Context) UploadFiles(ctx context.Context, projectID, tagName string, packageName string, usePackageRegistry bool) error {
 	if c.AssetFiles == nil {
 		return nil
 	}
@@ -81,20 +87,34 @@ func (c *Context) UploadFiles(projectID, tagName string, packageName string, use
 		c.IO.LogInfof("%s Uploading to release\t%s=%s %s=%s\n",
 			color.ProgressIcon(), color.Blue("file"), file.Path,
 			color.Blue("name"), file.Name)
+	}
 
-		var releaseAsset *ReleaseAsset
-		var err error
-		if usePackageRegistry {
-			releaseAsset, err = c.uploadAsGenericPackage(projectID, tagName, packageName, file)
-		} else {
-			releaseAsset, err = c.uploadAsProjectMarkdownFile(projectID, file)
-		}
-		if err != nil {
-			return err
-		}
+	g, groupCtx := errgroup.WithContext(ctx)
+	g.SetLimit(uploadConcurrency)
+	releaseAssets := make([]*ReleaseAsset, len(c.AssetFiles))
+	for i, file := range c.AssetFiles {
+		g.Go(func() error {
+			if err := groupCtx.Err(); err != nil {
+				return err
+			}
+			var err error
+			if usePackageRegistry {
+				releaseAssets[i], err = c.uploadAsGenericPackage(groupCtx, projectID, tagName, packageName, file)
+			} else {
+				releaseAssets[i], err = c.uploadAsProjectMarkdownFile(groupCtx, projectID, file)
+			}
+			if err != nil {
+				return fmt.Errorf("uploading %s: %w", file.Path, err)
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
 
-		_, _, err = CreateLink(c.Client, projectID, tagName, releaseAsset)
-		if err != nil {
+	for _, releaseAsset := range releaseAssets {
+		if _, _, err := CreateLink(ctx, c.Client, projectID, tagName, releaseAsset); err != nil {
 			return err
 		}
 	}
@@ -103,14 +123,14 @@ func (c *Context) UploadFiles(projectID, tagName string, packageName string, use
 	return nil
 }
 
-func (c *Context) uploadAsGenericPackage(projectID, tagName string, packageName string, file *ReleaseFile) (*ReleaseAsset, error) {
+func (c *Context) uploadAsGenericPackage(ctx context.Context, projectID, tagName string, packageName string, file *ReleaseFile) (*ReleaseAsset, error) {
 	r, err := file.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
 
-	_, _, err = c.Client.GenericPackages.PublishPackageFile(projectID, packageName, tagName, file.Name, r, nil)
+	_, _, err = c.Client.GenericPackages.PublishPackageFile(projectID, packageName, tagName, file.Name, r, nil, gitlab.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +148,7 @@ func (c *Context) uploadAsGenericPackage(projectID, tagName string, packageName 
 	}, nil
 }
 
-func (c *Context) uploadAsProjectMarkdownFile(projectID string, file *ReleaseFile) (*ReleaseAsset, error) {
+func (c *Context) uploadAsProjectMarkdownFile(ctx context.Context, projectID string, file *ReleaseFile) (*ReleaseAsset, error) {
 	r, err := file.Open()
 	if err != nil {
 		return nil, err
@@ -139,7 +159,7 @@ func (c *Context) uploadAsProjectMarkdownFile(projectID string, file *ReleaseFil
 		projectID,
 		r,
 		file.Name,
-		nil,
+		gitlab.WithContext(ctx),
 	)
 	if err != nil {
 		return nil, err
@@ -167,13 +187,13 @@ func (c *Context) uploadAsProjectMarkdownFile(projectID string, file *ReleaseFil
 	}, nil
 }
 
-func (c *Context) CreateReleaseAssetLinks(projectID string, tagName string) error {
+func (c *Context) CreateReleaseAssetLinks(ctx context.Context, projectID string, tagName string) error {
 	if c.AssetsLinks == nil {
 		return nil
 	}
 	color := c.IO.Color()
 	for _, asset := range c.AssetsLinks {
-		releaseLink, aliased, err := CreateLink(c.Client, projectID, tagName, asset)
+		releaseLink, aliased, err := CreateLink(ctx, c.Client, projectID, tagName, asset)
 		if err != nil {
 			return err
 		}
