@@ -98,9 +98,9 @@ func newTestExec(t *testing.T, cfg config.Config) cmdtest.CmdExecFunc {
 }
 
 // newWriterTestExec wires NewCmd to an api.Client pointed at srv. Every writer
-// path (--maven, --gradle, --npm, --sbt) exchanges through options.apiClient,
-// which is f.ApiClient, so unlike newTestExec it needs no config: nothing on
-// those paths reads one. Only --docker does.
+// path (--maven, --gradle, --npm, --sbt, --yarn) exchanges through
+// options.apiClient, which is f.ApiClient, so unlike newTestExec it needs no
+// config: nothing on those paths reads one. Only --docker does.
 func newWriterTestExec(t *testing.T, srv *httptest.Server) cmdtest.CmdExecFunc {
 	t.Helper()
 
@@ -156,7 +156,7 @@ func TestLogin_NoToolFlag(t *testing.T) {
 // file, so a pair that slipped through the group would write two of them from
 // one exchange.
 func TestLogin_TwoToolFlags(t *testing.T) {
-	tools := []string{"--docker", "--maven", "--gradle", "--npm", "--sbt"}
+	tools := []string{"--docker", "--maven", "--gradle", "--npm", "--sbt", "--yarn"}
 
 	for i, first := range tools {
 		for _, second := range tools[i+1:] {
@@ -179,7 +179,7 @@ func TestLogin_ToolFlagFalseLeavesNoneSelected(t *testing.T) {
 	// tool actually selected.
 	_, err := exec("--docker=false --registry registry.example.com")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid --docker, --maven, --gradle, --npm, and --sbt: all false leaves no tool selected")
+	assert.Contains(t, err.Error(), "invalid --docker, --maven, --gradle, --npm, --sbt, and --yarn: all false leaves no tool selected")
 }
 
 func TestLogin_MissingRegistry(t *testing.T) {
@@ -226,6 +226,7 @@ func TestLogin_RegistryMustNotContainControlCharacters(t *testing.T) {
 		"gradle": {registry: "https://ar.example.com/\nEvil=1", gradle: true},
 		"npm":    {registry: "https://ar.example.com/\nEvil=1", npm: true},
 		"sbt":    {registry: "https://ar.example.com/\nEvil=1", sbt: true},
+		"yarn":   {registry: "https://ar.example.com/\nEvil=1", yarn: true},
 		"docker": {registry: "ar.example.com\nEvil=1", docker: true, supportedOS: supportedOS},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -306,13 +307,67 @@ func TestLogin_Sbt_RegistryMustHaveSchemeAndHost(t *testing.T) {
 	assert.Contains(t, err.Error(), "scheme and host")
 }
 
+func TestLogin_Yarn_RegistryMustHaveSchemeAndHost(t *testing.T) {
+	exec := cmdtest.SetupCmdForTest(t, NewCmd, false)
+
+	_, err := exec("--yarn --registry registry.example.com:8080")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scheme and host")
+}
+
+// TestLogin_Yarn_SuccessMessageClaimsOnlyTheToken pins that the message says a
+// token was written, not that Yarn was configured: Yarn keeps fetching from
+// its default registry until npmRegistryServer names this one.
+func TestLogin_Yarn_SuccessMessageClaimsOnlyTheToken(t *testing.T) {
+	setHome(t, t.TempDir())
+
+	token := artifactregistrytest.MakeJWT(t, jwt.RegisteredClaims{
+		Issuer:    "https://gitlab.example.com",
+		Subject:   "gid://gitlab/User/1",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour).Truncate(time.Second)),
+	})
+	var gotBody wireRequest
+	srv, _ := tokenServer(t, token, &gotBody)
+	exec := newWriterTestExec(t, srv)
+
+	out, err := exec("--yarn --registry https://ar.example.com")
+	require.NoError(t, err)
+	assert.Contains(t, out.OutBuf.String(), "Wrote a Yarn auth token for https://ar.example.com.")
+	assert.Contains(t, out.OutBuf.String(), "npmRegistryServer")
+	assert.NotContains(t, out.OutBuf.String(), "Configured")
+	assert.Empty(t, out.ErrBuf.String())
+}
+
+// TestLogin_Yarn_WarnsAboutAScopeWithItsOwnToken pins the warning for a scope
+// whose own npmAuthToken Yarn sends instead of the token this command wrote.
+func TestLogin_Yarn_WarnsAboutAScopeWithItsOwnToken(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	fixture := "npmScopes:\n  acme:\n    npmRegistryServer: \"https://ar.example.com\"\n    npmAuthToken: old\n"
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".yarnrc.yml"), []byte(fixture), 0o600))
+
+	token := artifactregistrytest.MakeJWT(t, jwt.RegisteredClaims{
+		Issuer:    "https://gitlab.example.com",
+		Subject:   "gid://gitlab/User/1",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour).Truncate(time.Second)),
+	})
+	var gotBody wireRequest
+	srv, _ := tokenServer(t, token, &gotBody)
+	exec := newWriterTestExec(t, srv)
+
+	out, err := exec("--yarn --registry https://ar.example.com")
+	require.NoError(t, err)
+	assert.Contains(t, out.OutBuf.String(), "Wrote a Yarn auth token for https://ar.example.com.")
+	assert.Contains(t, out.ErrBuf.String(), `The npmScopes entry "acme" in ~/.yarnrc.yml has its own npmAuthToken or npmAuthIdent, and Yarn sends that for @acme packages instead of this token.`)
+}
+
 // TestLogin_RegistryWithoutASchemeIsRejected pins the "scheme" half of the
-// message the three URL-shaped writers share. url.Parse gives a
+// message the four URL-shaped writers share. url.Parse gives a
 // scheme-relative "//ar.example.com" a host and no scheme, so a host-only
 // check would accept it, and --gradle would write it verbatim into {alias}Url
 // for Gradle to reject at build time.
 func TestLogin_RegistryWithoutASchemeIsRejected(t *testing.T) {
-	for _, flag := range []string{"--gradle", "--npm", "--sbt"} {
+	for _, flag := range []string{"--gradle", "--npm", "--sbt", "--yarn"} {
 		t.Run(flag, func(t *testing.T) {
 			exec := cmdtest.SetupCmdForTest(t, NewCmd, false)
 
@@ -340,6 +395,7 @@ func TestLogin_RegistryHostMustLookLikeAHost(t *testing.T) {
 			{registry: registry, gradle: true},
 			{registry: registry, npm: true},
 			{registry: registry, sbt: true},
+			{registry: registry, yarn: true},
 		} {
 			t.Run(name, func(t *testing.T) {
 				err := o.validate()
@@ -381,7 +437,7 @@ func TestLogin_RegistryHostAcceptsAnIPAddress(t *testing.T) {
 // directory, and each one reports the same failure, in the same words, when
 // it cannot be resolved.
 func TestLogin_UnresolvableHomeDirectoryIsReported(t *testing.T) {
-	for _, flag := range []string{"--gradle", "--npm", "--sbt"} {
+	for _, flag := range []string{"--gradle", "--npm", "--sbt", "--yarn"} {
 		t.Run(flag, func(t *testing.T) {
 			setHome(t, "")
 
@@ -409,6 +465,7 @@ var writerPaths = map[string]func(home string) string{
 	"--gradle": gradlePropertiesPath,
 	"--npm":    npmrcPath,
 	"--sbt":    sbtCredentialsPath,
+	"--yarn":   yarnrcPath,
 }
 
 // TestLogin_DispatchesToTheSelectedWriter pins which writer each tool flag

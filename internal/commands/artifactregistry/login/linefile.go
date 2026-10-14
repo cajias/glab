@@ -10,7 +10,7 @@ import (
 )
 
 // homeDir resolves the home directory every writer roots its target path in,
-// wrapping the failure once so all four writers report it in the same words.
+// wrapping the failure once so every writer reports it in the same words.
 func homeDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -21,18 +21,10 @@ func homeDir() (string, error) {
 
 // upsertLines reads path as newline-separated lines (treating a missing
 // file as empty), passes them to mutate for an in-place update-or-append,
-// then writes the result back with mode 0o600 via fsx.WriteOwnerOnly:
-// shared by loginGradle, loginNpm, and loginSbt, whose only difference is the
+// then writes the result back with writeCredentialFile. It is shared by
+// loginGradle, loginNpm, and loginSbt, whose only difference is the
 // upsert rule mutate implements. loginMaven doesn't use this: its target is
 // an XML block, not a line-oriented file.
-//
-// The write-back is atomic (temp file plus rename) on POSIX only. On Windows
-// fsx.WriteOwnerOnly degrades to a plain os.WriteFile, so a reader concurrent
-// with the write can observe a partial file there.
-//
-// The read-modify-write is not compare-and-swap: two concurrent logins
-// against the same file can race, and the last writer wins. Acceptable for
-// an interactively-invoked CLI.
 //
 // mutate returns an error for a file this command cannot edit safely, which
 // leaves path untouched. Writing something the tool will not read back is the
@@ -53,13 +45,25 @@ func upsertLines(path string, mutate func(lines []string) ([]string, error)) err
 		return fmt.Errorf("updating %s: %w", path, err)
 	}
 
+	return writeCredentialFile(path, []byte(strings.Join(lines, "\n")+"\n"))
+}
+
+// writeCredentialFile writes with mode 0o600 via fsx.WriteOwnerOnly. The
+// write is atomic (temp file plus rename) on POSIX only. On Windows
+// fsx.WriteOwnerOnly degrades to a plain os.WriteFile, so a reader concurrent
+// with the write can observe a partial file there.
+//
+// Its callers read, modify, then write, which is not compare-and-swap: two
+// concurrent logins against the same file can race, and the last writer wins.
+// Acceptable for an interactively-invoked CLI.
+func writeCredentialFile(path string, content []byte) error {
 	// Derived rather than taken as an argument: every target is a file inside
 	// the directory the writer has to create, so the two cannot disagree.
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", dir, err)
 	}
-	if err := fsx.WriteOwnerOnly(path, []byte(strings.Join(lines, "\n")+"\n")); err != nil {
+	if err := fsx.WriteOwnerOnly(path, content); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 
