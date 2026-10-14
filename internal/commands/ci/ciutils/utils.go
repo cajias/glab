@@ -217,6 +217,7 @@ func runTrace(ctx context.Context, apiClient *gitlab.Client, w io.Writer, pid an
 			continue
 		case string(gitlab.Skipped):
 			fmt.Fprintf(w, "%s has been skipped.\n", job.Name) //nolint:forbidigo // w is a generic io.Writer, not always StdOut/StdErr
+			return nil
 		}
 		once.Do(func() {
 			fmt.Fprintf(w, "Showing logs for %s job #%d.\n", job.Name, job.ID) //nolint:forbidigo // w is a generic io.Writer, not always StdOut/StdErr
