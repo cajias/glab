@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/d2lang/d2/d2graph"
+	"github.com/d2lang/d2/d2lib"
+	"github.com/d2lang/d2/d2oracle"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"oss.terrastruct.com/d2/d2graph"
-	"oss.terrastruct.com/d2/d2lib"
-	"oss.terrastruct.com/d2/d2oracle"
 
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 )

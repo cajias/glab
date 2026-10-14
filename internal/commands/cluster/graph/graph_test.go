@@ -4,9 +4,13 @@ package graph
 
 import (
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/d2lang/d2/d2format"
+	"github.com/d2lang/d2/lib/log"
+	"github.com/d2lang/d2/lib/textmeasure"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -136,4 +140,27 @@ func TestGraph_acceptsAccessToken(t *testing.T) {
 	require.Error(t, err)
 	require.NotErrorIs(t, err, errUnsupportedToken)
 	assert.ErrorContains(t, err, "GitLab metadata")
+}
+
+func TestGraph_rendersBuiltGraphToSVG(t *testing.T) {
+	ctx := log.With(t.Context(), slog.New(slog.DiscardHandler))
+	ios, _, _, _ := cmdtest.TestIOStreams()
+	b, err := newGraphBuilder(ctx, ios)
+	require.NoError(t, err)
+
+	deploy := vertex{Group: "apps", Version: "v1", Resource: "deployments", Namespace: "default", Name: "web"}
+	rs := vertex{Group: "apps", Version: "v1", Resource: "replicasets", Namespace: "default", Name: "web-1"}
+	err = b.applyActions([]jsonWatchGraphAction{
+		{SetVertex: &jsonSetVertex{Vertex: deploy}},
+		{SetVertex: &jsonSetVertex{Vertex: rs}},
+		{SetArc: &jsonSetArc{Arc: Arc{Source: rs, Destination: deploy, Type: ownerReferenceArcType}}},
+	})
+	require.NoError(t, err)
+
+	ruler, err := textmeasure.NewRuler()
+	require.NoError(t, err)
+	svg, err := renderSVG(ctx, ruler, d2format.Format(b.g.AST))
+	require.NoError(t, err)
+	assert.Contains(t, string(svg), "<svg")
+	assert.Contains(t, string(svg), "web-1")
 }

@@ -13,14 +13,14 @@ import (
 	"net/textproto"
 
 	"github.com/coder/websocket"
+	"github.com/d2lang/d2/d2format"
+	"github.com/d2lang/d2/d2graph"
+	"github.com/d2lang/d2/d2layouts/d2dagrelayout"
+	"github.com/d2lang/d2/d2lib"
+	"github.com/d2lang/d2/d2renderers/d2svg"
+	"github.com/d2lang/d2/lib/log"
+	"github.com/d2lang/d2/lib/textmeasure"
 	"github.com/pkg/browser"
-	"oss.terrastruct.com/d2/d2format"
-	"oss.terrastruct.com/d2/d2graph"
-	"oss.terrastruct.com/d2/d2layouts/d2dagrelayout"
-	"oss.terrastruct.com/d2/d2lib"
-	"oss.terrastruct.com/d2/d2renderers/d2svg"
-	"oss.terrastruct.com/d2/lib/log"
-	"oss.terrastruct.com/d2/lib/textmeasure"
 
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 )
@@ -170,13 +170,6 @@ func (s *server) renderAndWrite(ctx context.Context, w http.ResponseWriter, srcC
 		s.reportError(w, fmt.Errorf("textmeasure.NewRuler: %w", err), false)
 		return
 	}
-	compileOpts := &d2lib.CompileOptions{
-		Ruler: ruler,
-		LayoutResolver: func(engine string) (d2graph.LayoutGraph, error) {
-			return d2dagrelayout.DefaultLayout, nil
-		},
-	}
-	renderOpts := &d2svg.RenderOpts{}
 	flush := http.NewResponseController(w).Flush
 	header := textproto.MIMEHeader{
 		"Content-Type": []string{"image/svg+xml"},
@@ -197,20 +190,9 @@ func (s *server) renderAndWrite(ctx context.Context, w http.ResponseWriter, srcC
 				s.reportError(w, src.err, part != nil)
 				return
 			}
-			diagram, _, err := d2lib.Compile(
-				ctx,
-				src.data,
-				compileOpts,
-				renderOpts,
-			)
+			svgData, err := renderSVG(ctx, ruler, src.data)
 			if err != nil {
-				s.reportError(w, fmt.Errorf("d2lib.Compile: %w", err), part != nil)
-				return
-			}
-
-			svgData, err := d2svg.Render(diagram, renderOpts)
-			if err != nil {
-				s.reportError(w, fmt.Errorf("d2svg.Render: %w", err), part != nil)
+				s.reportError(w, err, part != nil)
 				return
 			}
 			if part == nil { // first part
@@ -242,6 +224,25 @@ func (s *server) renderAndWrite(ctx context.Context, w http.ResponseWriter, srcC
 			}
 		}
 	}
+}
+
+// renderSVG compiles D2 source with the dagre layout and renders it to SVG.
+func renderSVG(ctx context.Context, ruler *textmeasure.Ruler, src string) ([]byte, error) {
+	renderOpts := &d2svg.RenderOpts{}
+	diagram, _, err := d2lib.Compile(ctx, src, &d2lib.CompileOptions{
+		Ruler: ruler,
+		LayoutResolver: func(string) (d2graph.LayoutGraph, error) {
+			return d2dagrelayout.DefaultLayout, nil
+		},
+	}, renderOpts)
+	if err != nil {
+		return nil, fmt.Errorf("d2lib.Compile: %w", err)
+	}
+	svg, err := d2svg.Render(diagram, renderOpts)
+	if err != nil {
+		return nil, fmt.Errorf("d2svg.Render: %w", err)
+	}
+	return svg, nil
 }
 
 func (s *server) logWarnings(w []jsonWatchGraphWarning) {
