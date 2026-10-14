@@ -559,7 +559,7 @@ build_test:
       -v $PWD:/go/src/gitlab.com/gitlab-org/cli \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -w /go/src/gitlab.com/gitlab-org/cli \
-      goreleaser/goreleaser:nightly release --skip=sign --snapshot
+      goreleaser/goreleaser:v2.18.3 release --skip=sign --snapshot
   artifacts:
     name: goreleaser-artifacts
     paths:
@@ -621,7 +621,7 @@ release:
       -v /var/run/docker.sock:/var/run/docker.sock \
       -w /go/src/gitlab.com/gitlab-org/cli \
       --entrypoint "" \
-      goreleaser/goreleaser:nightly \
+      goreleaser/goreleaser:v2.18.3 \
       bash -c "
         docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
         docker login -u $DOCKER_IO_USER -p $DOCKER_IO_PASSWORD
