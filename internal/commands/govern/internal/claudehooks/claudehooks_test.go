@@ -95,3 +95,33 @@ func TestMarshalHooks_KeepsShellCharactersReadable(t *testing.T) {
 	assert.Contains(t, string(out), `>/dev/null 2>&1 &`)
 	assert.NotContains(t, string(out), `\u003e`)
 }
+
+func TestRemoveHook(t *testing.T) {
+	t.Parallel()
+
+	input := `{
+		"Stop": [
+			{"hooks": [{"type": "command", "command": "` + StopHookCommand + `"}]},
+			{"matcher": "Bash", "futureGroupField": {"x": 1}, "hooks": [
+				{"type": "command", "command": "` + StopHookCommand + `"},
+				{"type": "command", "command": "echo user-hook", "if": "Bash(git push*)"}
+			]}
+		],
+		"SessionEnd": [{"hooks": [{"type": "command", "command": "` + SessionEndHookCommand + `"}]}]
+	}`
+	var hooks map[string][]HookGroup
+	require.NoError(t, json.Unmarshal([]byte(input), &hooks))
+
+	assert.True(t, RemoveHook(hooks, "Stop", StopHookCommand))
+	assert.True(t, RemoveHook(hooks, "SessionEnd", SessionEndHookCommand))
+	assert.False(t, RemoveHook(hooks, "SessionEnd", SessionEndHookCommand), "removing twice changes nothing")
+	assert.False(t, RemoveHook(hooks, "PreToolUse", StopHookCommand), "an absent event changes nothing")
+
+	out, err := MarshalHooks(hooks)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"Stop": [{"matcher": "Bash", "futureGroupField": {"x": 1}, "hooks": [
+			{"type": "command", "command": "echo user-hook", "if": "Bash(git push*)"}
+		]}]
+	}`, string(out), "other hooks keep their group, matcher, and unknown fields, and emptied events are dropped")
+}

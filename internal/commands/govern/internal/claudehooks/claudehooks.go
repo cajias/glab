@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 const (
@@ -265,4 +266,32 @@ func SyncHookInstalled(path string) (bool, error) {
 		return false, err
 	}
 	return HookPresent(hooks, "Stop", StopHookCommand), nil
+}
+
+// RemoveHook removes every hook for event that runs command. Groups left
+// without hooks are dropped, and so is the event when no groups remain.
+// It mutates hooks in place and returns whether anything changed.
+func RemoveHook(hooks map[string][]HookGroup, event, command string) bool {
+	changed := false
+	var kept []HookGroup
+	for _, group := range hooks[event] {
+		entries := slices.DeleteFunc(slices.Clone(group.Hooks), func(e HookEntry) bool {
+			return e.Command == command
+		})
+		if len(entries) != len(group.Hooks) {
+			changed = true
+		}
+		if len(entries) > 0 {
+			group.Hooks = entries
+			kept = append(kept, group)
+		}
+	}
+	switch {
+	case !changed:
+	case len(kept) == 0:
+		delete(hooks, event)
+	default:
+		hooks[event] = kept
+	}
+	return changed
 }

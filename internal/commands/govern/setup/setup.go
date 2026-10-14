@@ -66,7 +66,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 			Safe to run multiple times: existing hooks are not duplicated, and an existing fallback periodic sync job is replaced. Run %[1]sglab govern doctor%[1]s afterwards to verify the setup.
 
-			Run %[1]sglab govern setup --uninstall%[1]s to remove the fallback periodic sync job. To remove the hooks, delete the %[1]sglab govern audit sync%[1]s entries from %[1]s~/.claude/settings.json%[1]s.
+			Run %[1]sglab govern setup --uninstall%[1]s to remove everything setup installed: the hooks, the fallback periodic sync job, and Codex and Cursor session syncing. Other hooks and settings in %[1]s~/.claude/settings.json%[1]s are left unchanged.
 		`, "`") + text.ExperimentalString,
 		Example: heredoc.Doc(`
 			# Configure hooks and the fallback periodic sync
@@ -78,7 +78,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			# Also sync Codex and Cursor sessions through the fallback periodic sync
 			$ glab govern setup --agents codex,cursor
 
-			# Remove the fallback periodic sync
+			# Remove the hooks and the fallback periodic sync
 			$ glab govern setup --uninstall
 		`),
 		Args:              cobra.NoArgs,
@@ -101,7 +101,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	fl := cmd.Flags()
 	fl.BoolVarP(&opts.yes, "yes", "y", false, "Skip confirmation prompt.")
 	fl.BoolVar(&opts.noFallbackSync, "no-fallback-sync", false, "Install only the hooks, without the fallback periodic sync job.")
-	fl.BoolVar(&opts.uninstall, "uninstall", false, "Remove the fallback periodic sync job and stop syncing Codex and Cursor sessions. The hooks are left in place.")
+	fl.BoolVar(&opts.uninstall, "uninstall", false, "Remove the hooks and the fallback periodic sync job, and stop syncing Codex and Cursor sessions.")
 	fl.StringSliceVar(&opts.agents, "agents", nil, fmt.Sprintf("Also sync sessions from these agents, found by the fallback periodic sync without hooks: %s. Replaces the agents enabled by an earlier run. Multiple agents can be comma-separated or specified by repeating the flag.", strings.Join(fallbacksync.DiscoverableAgents, ", ")))
 	cmd.MarkFlagsMutuallyExclusive("uninstall", "no-fallback-sync")
 	cmd.MarkFlagsMutuallyExclusive("agents", "no-fallback-sync")
@@ -122,10 +122,13 @@ func setupPrompt(goos string, noFallbackSync bool, agents []string) string {
 	return prompt + ". Do you wish to continue?"
 }
 
-func uninstallPrompt(agents []string) string {
+func uninstallPrompt(hooks bool, agents []string) string {
 	prompt := "glab will remove the fallback periodic sync job"
+	if hooks {
+		prompt = "glab will remove the Claude Code hooks from ~/.claude/settings.json and the fallback periodic sync job"
+	}
 	if len(agents) > 0 {
-		prompt += fmt.Sprintf(" and stop syncing %s sessions", strings.Join(agents, " and "))
+		prompt += fmt.Sprintf(", and stop syncing %s sessions", strings.Join(agents, " and "))
 	}
 	return prompt + ". Do you wish to continue?"
 }
@@ -222,12 +225,21 @@ func runUninstall(ctx context.Context, opts *options) error {
 		dbg.Debugf("could not read which agents are synced: %v", err)
 	}
 	jobPresent := jobMayBePresent(ctx, opts, home)
-	if !jobPresent && len(agents) == 0 && !unreadable {
-		io.LogInfo("No fallback periodic sync job found.")
+	// An unreadable settings file must not block removing the rest, but the
+	// user is told before confirming that its hooks will stay.
+	hooksPresent, hooksErr := claudeHooksInstalled(opts)
+	if !jobPresent && !hooksPresent && len(agents) == 0 && !unreadable {
+		if hooksErr != nil {
+			return fmt.Errorf("could not read Claude Code hooks: %w", hooksErr)
+		}
+		io.LogInfo("Nothing to uninstall: no hooks or fallback periodic sync job found.")
 		return nil
 	}
+	if hooksErr != nil {
+		io.LogErrorf("warning: could not read ~/%s, so its hooks will not be removed: %v\n", claudehooks.SettingsFile, hooksErr)
+	}
 
-	confirmed, err := confirm(ctx, opts, uninstallPrompt(agents))
+	confirmed, err := confirm(ctx, opts, uninstallPrompt(hooksPresent, agents))
 	if err != nil {
 		return err
 	}
@@ -247,19 +259,50 @@ func runUninstall(ctx context.Context, opts *options) error {
 		io.LogInfof("%s Stopped syncing %s sessions.\n", c.GreenCheck(), strings.Join(agents, ", "))
 	}
 
-	if !jobPresent {
-		return nil
+	if jobPresent {
+		removed, err := fallbacksync.Uninstall(ctx, opts.executor, opts.goos, home, os.Getuid())
+		switch {
+		case err != nil:
+			return fmt.Errorf("failed to remove fallback periodic sync: %w", err)
+		case removed:
+			io.LogInfof("%s Fallback periodic sync removed.\n", c.GreenCheck())
+		default:
+			io.LogInfo("No fallback periodic sync job found.")
+		}
 	}
-	removed, err := fallbacksync.Uninstall(ctx, opts.executor, opts.goos, home, os.Getuid())
-	switch {
-	case err != nil:
-		return fmt.Errorf("failed to remove fallback periodic sync: %w", err)
-	case removed:
-		io.LogInfof("%s Fallback periodic sync removed.\n", c.GreenCheck())
-	default:
-		io.LogInfo("No fallback periodic sync job found.")
+
+	if hooksPresent {
+		removed, err := removeClaudeHooks(opts)
+		switch {
+		case err != nil:
+			return fmt.Errorf("failed to remove Claude Code hooks: %w", err)
+		case removed:
+			io.LogInfof("%s Hooks removed from ~/%s\n", c.GreenCheck(), claudehooks.SettingsFile)
+		default:
+			io.LogInfo("No Claude Code hooks found.")
+		}
+	}
+	if hooksErr != nil {
+		return fmt.Errorf("the Claude Code hooks were not removed; fix ~/%s and run 'glab govern setup --uninstall' again: %w", claudehooks.SettingsFile, hooksErr)
 	}
 	return nil
+}
+
+func claudeHooksInstalled(opts *options) (bool, error) {
+	path, err := settingsPath(opts)
+	if err != nil {
+		return false, err
+	}
+	raw, err := claudehooks.LoadRawSettings(path)
+	if err != nil {
+		return false, err
+	}
+	hooks, err := claudehooks.HooksFromRaw(raw)
+	if err != nil {
+		return false, err
+	}
+	return claudehooks.HookPresent(hooks, "Stop", claudehooks.StopHookCommand) ||
+		claudehooks.HookPresent(hooks, "SessionEnd", claudehooks.SessionEndHookCommand), nil
 }
 
 // jobMayBePresent reports whether uninstall has anything to remove: the job's
@@ -323,6 +366,42 @@ func installClaudeHooks(opts *options) error {
 	raw["hooks"] = hooksJSON
 
 	return claudehooks.WriteSettings(path, raw)
+}
+
+func removeClaudeHooks(opts *options) (bool, error) {
+	path, err := settingsPath(opts)
+	if err != nil {
+		return false, err
+	}
+
+	raw, err := claudehooks.LoadRawSettings(path)
+	if err != nil {
+		return false, err
+	}
+
+	hooks, err := claudehooks.HooksFromRaw(raw)
+	if err != nil {
+		return false, err
+	}
+
+	changed := claudehooks.RemoveHook(hooks, "Stop", claudehooks.StopHookCommand)
+	changed = claudehooks.RemoveHook(hooks, "SessionEnd", claudehooks.SessionEndHookCommand) || changed
+	if !changed {
+		return false, nil
+	}
+
+	if len(hooks) == 0 {
+		delete(raw, "hooks")
+		return true, claudehooks.WriteSettings(path, raw)
+	}
+
+	hooksJSON, err := claudehooks.MarshalHooks(hooks)
+	if err != nil {
+		return false, fmt.Errorf("could not serialise hooks: %w", err)
+	}
+	raw["hooks"] = hooksJSON
+
+	return true, claudehooks.WriteSettings(path, raw)
 }
 
 func installFallbackSync(ctx context.Context, opts *options) error {
