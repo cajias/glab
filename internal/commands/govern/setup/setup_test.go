@@ -313,8 +313,116 @@ func TestRunUninstall(t *testing.T) {
 	require.NoError(t, err)
 	hooks, err := claudehooks.HooksFromRaw(raw)
 	require.NoError(t, err)
-	assert.True(t, claudehooks.HookPresent(hooks, "Stop", claudehooks.StopHookCommand), "uninstall leaves the hooks in place")
-	assert.True(t, claudehooks.HookPresent(hooks, "SessionEnd", claudehooks.SessionEndHookCommand), "uninstall leaves the hooks in place")
+	assert.False(t, claudehooks.HookPresent(hooks, "Stop", claudehooks.StopHookCommand))
+	assert.False(t, claudehooks.HookPresent(hooks, "SessionEnd", claudehooks.SessionEndHookCommand))
+	assert.Contains(t, stdout.String(), "Hooks removed")
+}
+
+func TestRunUninstall_HooksOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	path := filepath.Join(dir, ".claude", "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo user-hook"}]}]}}`), 0o644))
+
+	ios, _, stdout, _ := cmdtest.TestIOStreams()
+	opts := &options{io: ios, yes: true, noFallbackSync: true, settingsPathOverride: path}
+	require.NoError(t, runSetup(t.Context(), opts))
+
+	mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
+	mExec.EXPECT().
+		ExecWithCombinedOutput(gomock.Any(), "systemctl", []string{"--user", "is-active", "--quiet", "glab-govern-audit-sync.timer"}, nil).
+		Return(nil, &exec.ExitError{})
+	opts.executor = mExec
+	opts.goos = "linux"
+
+	require.NoError(t, runUninstall(t.Context(), opts), "hooks without a job are still removed")
+	assert.Contains(t, stdout.String(), "Hooks removed")
+	assert.NotContains(t, stdout.String(), "Fallback periodic sync removed")
+
+	raw, err := claudehooks.LoadRawSettings(path)
+	require.NoError(t, err)
+	hooks, err := claudehooks.HooksFromRaw(raw)
+	require.NoError(t, err)
+	assert.False(t, claudehooks.HookPresent(hooks, "Stop", claudehooks.StopHookCommand))
+	assert.False(t, claudehooks.HookPresent(hooks, "SessionEnd", claudehooks.SessionEndHookCommand))
+	assert.True(t, claudehooks.HookPresent(hooks, "Stop", "echo user-hook"))
+	assert.JSONEq(t, `"opus"`, string(raw["model"]))
+}
+
+func TestRunUninstall_RemovesEmptiedHooksKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	path := filepath.Join(dir, ".claude", "settings.json")
+
+	ios, _, _, _ := cmdtest.TestIOStreams()
+	opts := &options{io: ios, yes: true, noFallbackSync: true, settingsPathOverride: path}
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`{"model":"opus"}`), 0o644))
+	require.NoError(t, runSetup(t.Context(), opts))
+
+	mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
+	mExec.EXPECT().
+		ExecWithCombinedOutput(gomock.Any(), "systemctl", []string{"--user", "is-active", "--quiet", "glab-govern-audit-sync.timer"}, nil).
+		Return(nil, &exec.ExitError{})
+	opts.executor = mExec
+	opts.goos = "linux"
+
+	require.NoError(t, runUninstall(t.Context(), opts))
+
+	raw, err := claudehooks.LoadRawSettings(path)
+	require.NoError(t, err)
+	assert.NotContains(t, raw, "hooks", "a hooks key emptied by uninstall is removed, not left as {}")
+	assert.JSONEq(t, `"opus"`, string(raw["model"]))
+}
+
+func TestRunUninstall_CorruptSettings(t *testing.T) {
+	writeCorruptSettings := func(t *testing.T, dir string) string {
+		t.Helper()
+		path := filepath.Join(dir, ".claude", "settings.json")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o644))
+		return path
+	}
+	expectNoJob := func(t *testing.T) *cmdtest.MockExecutor {
+		t.Helper()
+		mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
+		mExec.EXPECT().
+			ExecWithCombinedOutput(gomock.Any(), "systemctl", []string{"--user", "is-active", "--quiet", "glab-govern-audit-sync.timer"}, nil).
+			Return(nil, &exec.ExitError{})
+		return mExec
+	}
+
+	t.Run("nothing else to remove fails before prompting", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		path := writeCorruptSettings(t, dir)
+
+		ios, _, _, _ := cmdtest.TestIOStreams()
+		// Without --yes and without a terminal, prompting would fail differently.
+		err := runUninstall(t.Context(), &options{io: ios, executor: expectNoJob(t), goos: "linux", settingsPathOverride: path})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "could not read Claude Code hooks")
+	})
+
+	t.Run("the rest is removed and the error says what is left", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		t.Setenv("GLAB_CONFIG_DIR", filepath.Join(dir, "glab"))
+		path := writeCorruptSettings(t, dir)
+		require.NoError(t, fallbacksync.SetDiscoveredAgents([]string{"codex"}))
+
+		ios, _, stdout, stderr := cmdtest.TestIOStreams()
+		err := runUninstall(t.Context(), &options{io: ios, executor: expectNoJob(t), goos: "linux", yes: true, settingsPathOverride: path})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "run 'glab govern setup --uninstall' again")
+		assert.Contains(t, stderr.String(), "its hooks will not be removed", "the user is warned before confirming")
+		assert.Contains(t, stdout.String(), "Stopped syncing codex sessions.")
+
+		agents, err := fallbacksync.DiscoveredAgents()
+		require.NoError(t, err)
+		assert.Empty(t, agents)
+	})
 }
 
 func TestRunUninstall_NothingInstalled(t *testing.T) {
@@ -336,7 +444,7 @@ func TestRunUninstall_NothingInstalled(t *testing.T) {
 	}
 
 	require.NoError(t, runUninstall(t.Context(), opts), "nothing to remove means nothing to confirm")
-	assert.Contains(t, stdout.String(), "No fallback periodic sync job found")
+	assert.Contains(t, stdout.String(), "Nothing to uninstall")
 }
 
 func TestRunUninstall_LoadedJobWithoutFiles(t *testing.T) {
@@ -549,9 +657,10 @@ func TestSetupPrompt(t *testing.T) {
 func TestUninstallPrompt(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "glab will remove the fallback periodic sync job. Do you wish to continue?", uninstallPrompt(nil))
-	assert.Equal(t, "glab will remove the fallback periodic sync job and stop syncing codex and cursor sessions. Do you wish to continue?",
-		uninstallPrompt([]string{"codex", "cursor"}))
+	assert.Equal(t, "glab will remove the Claude Code hooks from ~/.claude/settings.json and the fallback periodic sync job. Do you wish to continue?", uninstallPrompt(true, nil))
+	assert.Equal(t, "glab will remove the fallback periodic sync job. Do you wish to continue?", uninstallPrompt(false, nil))
+	assert.Equal(t, "glab will remove the Claude Code hooks from ~/.claude/settings.json and the fallback periodic sync job, and stop syncing codex and cursor sessions. Do you wish to continue?",
+		uninstallPrompt(true, []string{"codex", "cursor"}))
 }
 
 func TestRunSetup_NamesAgentsEnabledEarlier(t *testing.T) {
