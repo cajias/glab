@@ -1165,7 +1165,7 @@ func Test_handleNavigation(t *testing.T) {
 
 			var navi navigator
 			for _, e := range test.input {
-				navi.Navigate(jobs, e)
+				navi.Navigate(jobs, normalizeViKeys(e))
 			}
 			assert.Equal(t, test.expected, navi.idx)
 		})
@@ -1196,8 +1196,8 @@ func Test_navigatorSurvivesPipelineSwitch(t *testing.T) {
 	var navi navigator
 	// Park the cursor at the last job of the parent (idx 6).
 	navi.Navigate(parentJobs, tcell.NewEventKey(tcell.KeyRune, 'G', tcell.ModNone))
-	navi.Navigate(parentJobs, tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone))
-	navi.Navigate(parentJobs, tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone))
+	navi.Navigate(parentJobs, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	navi.Navigate(parentJobs, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	require.GreaterOrEqual(t, navi.idx, len(childJobs), "test setup: idx should exceed child size")
 
 	// Without a reset, the next Navigate against childJobs would panic at
@@ -1516,6 +1516,63 @@ func TestNormalizeCtrlM(t *testing.T) {
 
 	assert.Equal(t, tcell.KeyEnter, event.Key())
 	assert.Equal(t, tcell.ModNone, event.Modifiers())
+}
+
+func TestNormalizeViKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event *tcell.EventKey
+		want  tcell.Key
+	}{
+		{name: "h moves left", event: tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone), want: tcell.KeyLeft},
+		{name: "j moves down", event: tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), want: tcell.KeyDown},
+		{name: "k moves up", event: tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), want: tcell.KeyUp},
+		{name: "l moves right", event: tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone), want: tcell.KeyRight},
+		{name: "other rune passes through", event: tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone), want: tcell.KeyRune},
+		{name: "other key passes through", event: tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), want: tcell.KeyEnter},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, test.want, normalizeViKeys(test.event).Key())
+		})
+	}
+}
+
+func Test_inputCapture_viKeys(t *testing.T) {
+	// Cannot run in parallel: mutates the package-level view globals.
+	t.Cleanup(func() {
+		pipelines, curJob, jobs, logsVisible, modalVisible = nil, nil, nil, false, false
+	})
+	pipelines = []gitlab.PipelineInfo{{ID: 10, ProjectID: 7}}
+	jobs = nil
+	curJob = &ViewJob{ID: 55, Name: "build", Kind: Job, Status: string(gitlab.Success)}
+
+	tc := gitlabtesting.NewTestClient(t)
+	ios, _, _, _ := cmdtest.TestIOStreams()
+	handler := inputCapture(
+		t.Context(), tview.NewApplication(), tview.NewPages(), &navigator{},
+		make(chan struct{}, 1), make(chan bool, 1),
+		&options{io: ios}, tc.Client,
+	)
+
+	modalVisible = true
+	assert.Equal(t, tcell.KeyLeft, handler(tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone)).Key())
+	assert.Equal(t, tcell.KeyDown, handler(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone)).Key())
+	assert.Equal(t, tcell.KeyUp, handler(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone)).Key())
+	assert.Equal(t, tcell.KeyRight, handler(tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone)).Key())
+
+	modalVisible = false
+	jobs = []*ViewJob{
+		{ID: 1, Name: "build", Kind: Job, Stage: "build"},
+		{ID: 2, Name: "lint", Kind: Job, Stage: "build"},
+	}
+	got := handler(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone))
+	assert.Equal(t, tcell.KeyDown, got.Key())
+	assert.Equal(t, "lint", curJob.Name, "j still moves to the next job outside a modal")
 }
 
 // Test_bridgeWithoutDownstreamPipeline tests that we correctly handle bridge jobs
