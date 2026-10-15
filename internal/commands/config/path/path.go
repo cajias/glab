@@ -33,6 +33,8 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		Repository-local settings live in the repository's %[1]s.git/glab-cli/config.yml%[1]s and this command does not report them.
 
 		If no user configuration file exists, %[1]sglab%[1]s falls back to a read-only system-wide one. This command always reports the user location.
+
+		Your own configuration file must not be readable by anyone else, so it needs mode %[1]s600%[1]s. A system-wide one, in a directory listed in %[1]sXDG_CONFIG_DIRS%[1]s, is read whatever its read permissions, but is refused if it is writable by group or others.
 		`, "`"),
 		Example: heredoc.Doc(`
 			# Print the path to the global configuration file

@@ -221,18 +221,58 @@ func writeConfigFile(filename string, data []byte) error {
 	return WriteFile(filename, data, 0o600)
 }
 
+// isSharedConfigDir reports whether dir is a system-wide configuration
+// directory rather than the user's own.
+//
+// legacyConfigDir() is excluded by name because on macOS xdg.ConfigDirs
+// contains $HOME/.config, whose glab-cli subdirectory is that legacy user
+// directory -- membership alone would drop the 0600 rule for the file it
+// protects. Symlinks are resolved so two names for one directory compare equal.
+func isSharedConfigDir(dir string) bool {
+	resolved := resolvePath(dir)
+
+	if legacy := legacyConfigDir(); legacy != "" && resolvePath(legacy) == resolved {
+		return false
+	}
+
+	return slices.ContainsFunc(xdg.ConfigDirs, func(base string) bool {
+		return resolvePath(filepath.Join(base, "glab-cli")) == resolved
+	})
+}
+
+// resolvePath follows symlinks where it can and falls back to an absolute path,
+// so two names for one directory compare equal.
+func resolvePath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
 func ParseConfigFile(filename string) ([]byte, *yaml.Node, error) {
-	stat, err := os.Stat(filename)
 	// we want to check if there actually is a file, sometimes
 	// configs are just passed via stubs
-	if err == nil {
-		if !HasSecurePerms(stat.Mode().Perm()) {
-			return nil, nil,
-				fmt.Errorf("%s has the permissions %o, but glab requires 600.\nConsider running `chmod 600 %s`",
-					filename,
-					stat.Mode(),
-					filename,
+	if stat, err := os.Stat(filename); err == nil {
+		perm := stat.Mode().Perm()
+		// Classify on the directory: parseConfig also reads aliases.yml from it,
+		// and a permission error there is not ErrNotExist, so it fails all of glab.
+		if isSharedConfigDir(filepath.Dir(filename)) {
+			// A config file can run a command through custom_headers.valueFromCommand,
+			// so a shared file another account can write is code execution.
+			if !HasSafeSharedPerms(perm) {
+				return nil, nil, fmt.Errorf(
+					"%s has the permissions %o, but glab requires a system-wide configuration file not to be writable by group or others.\nConsider running `chmod go-w %s`",
+					filename, perm, filename,
 				)
+			}
+		} else if !HasSecurePerms(perm) {
+			return nil, nil, fmt.Errorf(
+				"%s has the permissions %o, but glab requires 600.\nConsider running `chmod 600 %s`",
+				filename, perm, filename,
+			)
 		}
 	}
 

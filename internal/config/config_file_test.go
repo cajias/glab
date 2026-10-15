@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/adrg/xdg"
@@ -640,4 +641,182 @@ func Test_checkForDuplicateConfigs_RealDuplicates(t *testing.T) {
 
 	assert.Contains(t, buf.String(), "Multiple config files found",
 		"Should warn about duplicates when config files are genuinely different")
+}
+
+// sharedConfigEnv points glab at a shared configuration directory outside the
+// test HOME, with the user's own XDG directory inside it, which is how a real
+// machine is laid out. It returns (sharedDir, userDir).
+//
+// xdg.Reload is undone on cleanup: t.Setenv restores the environment but not
+// the paths adrg/xdg already parsed from it, so without this a later test in
+// the same binary inherits these directories.
+func sharedConfigEnv(t *testing.T) (string, string) {
+	t.Helper()
+	home := setupTestHome(t)
+
+	sharedDir := t.TempDir() // outside HOME, like /etc/xdg
+	userDir := filepath.Join(home, ".config-xdg")
+	require.NoError(t, os.MkdirAll(userDir, 0o750))
+
+	t.Setenv("GLAB_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", userDir)
+	t.Setenv("XDG_CONFIG_DIRS", sharedDir)
+	xdg.Reload()
+	t.Cleanup(func() { xdg.Reload() })
+
+	return sharedDir, userDir
+}
+
+// writeConfigAt writes contents to <dir>/glab-cli/<name> with exactly perm.
+func writeConfigAt(t *testing.T, dir, name, contents string, perm os.FileMode) string {
+	t.Helper()
+	path := filepath.Join(dir, "glab-cli", name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(contents), perm))
+	// WriteFile is subject to the umask, so set the mode explicitly.
+	require.NoError(t, os.Chmod(path, perm))
+	return path
+}
+
+func TestHasSafeSharedPerms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not enforced on Windows")
+	}
+
+	assert.True(t, HasSafeSharedPerms(0o644))
+	assert.True(t, HasSafeSharedPerms(0o600))
+	assert.False(t, HasSafeSharedPerms(0o664))
+	assert.False(t, HasSafeSharedPerms(0o666))
+}
+
+func TestParseConfigFile_Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not enforced on Windows")
+	}
+
+	// A shared file has to be readable by every user, so the read mode is not
+	// checked. The write bits still are: a config can run a command through
+	// custom_headers.valueFromCommand, so one another account can write is
+	// code execution.
+	for _, tc := range []struct {
+		mode     os.FileMode
+		accepted bool
+	}{
+		{0o644, true},
+		{0o600, true},
+		{0o664, false},
+		{0o666, false},
+		{0o646, false},
+	} {
+		t.Run(fmt.Sprintf("shared mode %o", tc.mode), func(t *testing.T) {
+			shared, _ := sharedConfigEnv(t)
+			path := writeConfigAt(t, shared, "config.yml", "editor: vim\n", tc.mode)
+
+			_, root, err := ParseConfigFile(path)
+			if tc.accepted {
+				require.NoError(t, err)
+				assert.NotNil(t, root)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not to be writable by group or others")
+		})
+	}
+
+	t.Run("a credential in a world-readable shared file is read", func(t *testing.T) {
+		shared, _ := sharedConfigEnv(t)
+		path := writeConfigAt(t, shared, "config.yml", "hosts:\n  gitlab.com:\n    token: glpat-xxx\n", 0o644)
+
+		_, root, err := ParseConfigFile(path)
+		require.NoError(t, err)
+		assert.NotNil(t, root)
+	})
+
+	t.Run("a shared aliases.yml does not fail the whole CLI", func(t *testing.T) {
+		// parseConfig propagates a non-ErrNotExist error from aliases.yml, so
+		// holding it to the user rule fails every glab command, not just aliases.
+		shared, _ := sharedConfigEnv(t)
+		writeConfigAt(t, shared, "config.yml", "editor: vim\n", 0o644)
+		writeConfigAt(t, shared, "aliases.yml", "token: personal-access-token list\n", 0o644)
+
+		_, err := ParseDefaultConfig()
+		require.NoError(t, err)
+	})
+
+	t.Run("a shared config is readable with HOME unset", func(t *testing.T) {
+		// Containers, systemd units and cron jobs scrub the environment, and
+		// they are the setups that rely on a system-wide config.
+		shared, _ := sharedConfigEnv(t)
+		path := writeConfigAt(t, shared, "config.yml", "editor: vim\n", 0o644)
+		t.Setenv("HOME", "")
+
+		_, _, err := ParseConfigFile(path)
+		require.NoError(t, err)
+	})
+
+	t.Run("GLAB_CONFIG_DIR pointing at a shared directory stays shared", func(t *testing.T) {
+		// Pointing a fleet at a provisioned config must not reimpose 600.
+		shared, _ := sharedConfigEnv(t)
+		path := writeConfigAt(t, shared, "config.yml", "editor: vim\n", 0o644)
+		t.Setenv("GLAB_CONFIG_DIR", filepath.Join(shared, "glab-cli"))
+
+		_, _, err := ParseConfigFile(path)
+		require.NoError(t, err)
+	})
+
+	t.Run("a symlinked shared directory is still shared", func(t *testing.T) {
+		// filepath.Abs alone would compare the link unequal to its target and
+		// fall back to the 600 rule.
+		shared, _ := sharedConfigEnv(t)
+		writeConfigAt(t, shared, "config.yml", "editor: vim\n", 0o644)
+
+		link := filepath.Join(t.TempDir(), "link")
+		require.NoError(t, os.Symlink(shared, link))
+
+		_, _, err := ParseConfigFile(filepath.Join(link, "glab-cli", "config.yml"))
+		require.NoError(t, err)
+	})
+
+	t.Run("a user config is still held to 600", func(t *testing.T) {
+		_, user := sharedConfigEnv(t)
+		path := writeConfigAt(t, user, "config.yml", "editor: vim\n", 0o644)
+
+		_, _, err := ParseConfigFile(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "glab requires 600")
+	})
+
+	t.Run("an unreadable user config keeps the actionable error", func(t *testing.T) {
+		// Statting the open handle instead would report "permission denied"
+		// rather than the chmod advice.
+		_, user := sharedConfigEnv(t)
+		path := writeConfigAt(t, user, "config.yml", "editor: vim\n", 0o200)
+
+		_, _, err := ParseConfigFile(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "chmod 600")
+	})
+
+	t.Run("the legacy directory is a user config even when listed in ConfigDirs", func(t *testing.T) {
+		// On macOS adrg/xdg puts $HOME/.config in ConfigDirs, and that is glab's
+		// own legacy user directory, so membership alone would drop the 600 rule
+		// for exactly the file it protects.
+		home := setupTestHome(t)
+		legacy := filepath.Join(home, ".config")
+		require.NoError(t, os.MkdirAll(legacy, 0o750))
+
+		t.Setenv("GLAB_CONFIG_DIR", "")
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config-xdg"))
+		t.Setenv("XDG_CONFIG_DIRS", legacy)
+		xdg.Reload()
+		t.Cleanup(func() { xdg.Reload() })
+
+		require.Contains(t, xdg.ConfigDirs, legacy, "precondition: the legacy dir is in ConfigDirs")
+
+		path := writeConfigAt(t, legacy, "config.yml", "editor: vim\n", 0o644)
+
+		_, _, err := ParseConfigFile(path)
+		require.Error(t, err, "a user's own config must keep the 600 rule")
+		assert.Contains(t, err.Error(), "glab requires 600")
+	})
 }
