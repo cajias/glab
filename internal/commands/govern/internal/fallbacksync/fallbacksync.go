@@ -3,11 +3,13 @@
 package fallbacksync
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -16,7 +18,9 @@ import (
 	"strings"
 	"time"
 
+	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/commands/version"
 	"gitlab.com/gitlab-org/cli/internal/config"
 )
 
@@ -479,4 +483,19 @@ func DiscoveredAgents() ([]string, error) {
 		return nil, fmt.Errorf("could not parse discovered agents: %w", err)
 	}
 	return agents, nil
+}
+
+// BuildVersion returns what `glab version` prints for the build described by
+// info.
+func BuildVersion(info api.BuildInfo) string {
+	return strings.TrimSpace(version.Scheme(info.Version, info.Commit))
+}
+
+// BinaryVersion runs `glab version` with the glab binary at path.
+func BinaryVersion(ctx context.Context, executor cmdutils.Executor, path string) (string, error) {
+	var stdout bytes.Buffer
+	if err := executor.ExecWithIO(ctx, path, []string{"version"}, nil, nil, &stdout, io.Discard); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }

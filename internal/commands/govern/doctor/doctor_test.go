@@ -3,8 +3,11 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,7 +151,7 @@ func installTestJob(t *testing.T, home, glabPath string) {
 
 // linuxJobState returns an executor reporting the systemd timer as active or
 // not, and the service properties in show.
-func linuxJobState(t *testing.T, active bool, show string) cmdutils.Executor {
+func linuxJobState(t *testing.T, active bool, show string) *cmdtest.MockExecutor {
 	t.Helper()
 	mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
 	var activeErr error
@@ -166,6 +169,60 @@ func linuxJobState(t *testing.T, active bool, show string) cmdutils.Executor {
 	return mExec
 }
 
+var testBuild = api.BuildInfo{Version: "v1.121.0", Commit: "abc1234"}
+
+var testVersion = fallbacksync.BuildVersion(testBuild)
+
+// healthyLinuxJob returns an executor reporting the systemd timer as loaded
+// with a successful last run, and glab as reporting versionOutput.
+func healthyLinuxJob(t *testing.T, glab, versionOutput string) cmdutils.Executor {
+	t.Helper()
+	mExec := linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n")
+	expectVersion(mExec, glab, versionOutput, nil)
+	return mExec
+}
+
+func expectVersion(mExec *cmdtest.MockExecutor, glab, versionOutput string, err error) {
+	mExec.EXPECT().
+		ExecWithIO(gomock.Any(), glab, []string{"version"}, nil, nil, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _, _ []string, _ io.Reader, stdout, _ io.Writer) error {
+			_, _ = io.WriteString(stdout, versionOutput+"\n")
+			return err
+		})
+}
+
+func TestCheckFallbackSync_VersionDrift(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GLAB_CONFIG_DIR", home)
+	glab, err := os.Executable()
+	require.NoError(t, err)
+	installTestJob(t, home, glab)
+
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, "glab 1.100.0 (old1234)"), "linux", testBuild, time.Now())
+
+	assert.False(t, result.ok)
+	assert.Equal(t, fmt.Sprintf("the job runs %s, which reports %q, not %q like this glab", glab, "glab 1.100.0 (old1234)", testVersion), result.message)
+	assert.Equal(t, "Run: glab govern setup", result.fix)
+}
+
+func TestCheckFallbackSync_VersionUnreadable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	glab, err := os.Executable()
+	require.NoError(t, err)
+	installTestJob(t, home, glab)
+
+	mExec := linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n")
+	expectVersion(mExec, glab, "", errors.New("exec format error"))
+
+	result := checkFallbackSync(t.Context(), mExec, "linux", testBuild, time.Now())
+
+	assert.False(t, result.ok)
+	assert.Equal(t, fmt.Sprintf("could not run %s version: exec format error", glab), result.message)
+	assert.Equal(t, "Run: glab govern setup", result.fix)
+}
+
 func TestCheckFallbackSync_NotLoaded(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -173,7 +230,7 @@ func TestCheckFallbackSync_NotLoaded(t *testing.T) {
 	require.NoError(t, err)
 	installTestJob(t, home, glab)
 
-	result := checkFallbackSync(t.Context(), linuxJobState(t, false, ""), "linux", time.Now())
+	result := checkFallbackSync(t.Context(), linuxJobState(t, false, ""), "linux", testBuild, time.Now())
 
 	assert.False(t, result.ok)
 	assert.Equal(t, "the job is installed but not loaded, so it never runs", result.message)
@@ -189,7 +246,7 @@ func TestCheckFallbackSync_LastRunFailedToStart(t *testing.T) {
 	installTestJob(t, home, glab)
 
 	// An older glab without --all exits 1 before it can write a status.
-	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=1\n"), "linux", time.Now())
+	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=1\n"), "linux", testBuild, time.Now())
 
 	assert.False(t, result.ok)
 	assert.Equal(t, "the job's last run exited with code 1", result.message)
@@ -199,7 +256,7 @@ func TestCheckFallbackSync_LastRunFailedToStart(t *testing.T) {
 func TestCheckFallbackSync_NotInstalled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	result := checkFallbackSync(t.Context(), nil, "linux", time.Now())
+	result := checkFallbackSync(t.Context(), nil, "linux", testBuild, time.Now())
 
 	assert.True(t, result.ok, "a machine set up with --no-fallback-sync is healthy")
 	assert.Contains(t, result.message, "not installed; sessions sync only through the hooks")
@@ -209,7 +266,7 @@ func TestCheckFallbackSync_NotInstalled(t *testing.T) {
 func TestCheckFallbackSync_Unsupported(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	result := checkFallbackSync(t.Context(), nil, "windows", time.Now())
+	result := checkFallbackSync(t.Context(), nil, "windows", testBuild, time.Now())
 
 	assert.True(t, result.ok)
 	assert.Contains(t, result.message, "not supported on windows")
@@ -220,7 +277,7 @@ func TestCheckFallbackSync_BinaryMissing(t *testing.T) {
 	t.Setenv("HOME", home)
 	installTestJob(t, home, "/opt/homebrew/Cellar/glab/1.0.0/bin/glab")
 
-	result := checkFallbackSync(t.Context(), nil, "linux", time.Now())
+	result := checkFallbackSync(t.Context(), nil, "linux", testBuild, time.Now())
 
 	assert.False(t, result.ok)
 	assert.Contains(t, result.message, "/opt/homebrew/Cellar/glab/1.0.0/bin/glab, which no longer exists")
@@ -235,7 +292,7 @@ func TestCheckFallbackSync_NoRunYet(t *testing.T) {
 	require.NoError(t, err)
 	installTestJob(t, home, glab)
 
-	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n"), "linux", time.Now())
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, time.Now())
 
 	assert.True(t, result.ok)
 	assert.Equal(t, fmt.Sprintf("installed (%s); no run recorded yet", glab), result.message)
@@ -258,7 +315,7 @@ func TestCheckFallbackSync_LastRun(t *testing.T) {
 		Errors:            []string{"session a: could not resolve project"},
 	}))
 
-	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n"), "linux", now)
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
 
 	assert.True(t, result.ok)
 	assert.Equal(t,
@@ -283,7 +340,7 @@ func TestCheckFallbackSync_LastRunOnlyFailed(t *testing.T) {
 		},
 	}))
 
-	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n"), "linux", now)
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
 
 	assert.False(t, result.ok, "a run where every session failed must not look healthy")
 	assert.Equal(t,
@@ -318,7 +375,7 @@ func TestCheckFallbackSync_GovernanceNotEnabledStaysHealthy(t *testing.T) {
 		GovernanceNotEnabled: []string{"gitlab.com/me/dotfiles", "gitlab.com/gitlab-org/cli"},
 	}))
 
-	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n"), "linux", now)
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
 
 	assert.True(t, result.ok, "sessions in projects without governance are expected")
 	assert.Contains(t, result.message, "governance not enabled for 2 projects (gitlab.com/me/dotfiles, gitlab.com/gitlab-org/cli)")
@@ -338,7 +395,7 @@ func TestCheckFallbackSync_AgentTypeNotSupportedStaysHealthy(t *testing.T) {
 		Skipped:               []string{"the Cursor workspace x matches 2 directories (a, b), and its sessions do not show which"},
 	}))
 
-	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n"), "linux", now)
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
 
 	assert.True(t, result.ok)
 	assert.Contains(t, result.message, "not supported by GitLab yet: codex on gitlab.example.com")
@@ -356,7 +413,7 @@ func TestCheckFallbackSync_ShowsDiscoveredAgents(t *testing.T) {
 	require.NoError(t, fallbacksync.WriteStatus(fallbacksync.Status{FinishedAt: now}))
 	require.NoError(t, fallbacksync.SetDiscoveredAgents([]string{"codex", "cursor"}))
 
-	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n"), "linux", now)
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
 
 	assert.True(t, result.ok)
 	assert.True(t, strings.HasSuffix(result.message, "; also syncing codex, cursor sessions"), result.message)
@@ -376,7 +433,7 @@ func TestCheckFallbackSync_Overdue(t *testing.T) {
 		Paused:     []string{"claude-code: the glab Stop hook is not installed in ~/.claude/settings.json"},
 	}))
 
-	result := checkFallbackSync(t.Context(), linuxJobState(t, true, "ExecMainStartTimestampMonotonic=1234\nExecMainStatus=0\n"), "linux", now)
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
 
 	assert.Contains(t, result.message, "last run 3h0m0s ago (expected every 30 minutes; the job may not be running): 0 sessions synced, 0 completed, 0 events posted; paused for claude-code: the glab Stop hook is not installed")
 }
@@ -388,7 +445,7 @@ func TestChecks_ReportHomeDirError(t *testing.T) {
 	assert.False(t, hooks.ok)
 	assert.Contains(t, hooks.message, "could not determine home directory: $HOME is not defined")
 
-	fallback := checkFallbackSync(t.Context(), nil, "linux", time.Now())
+	fallback := checkFallbackSync(t.Context(), nil, "linux", testBuild, time.Now())
 	assert.False(t, fallback.ok)
 	assert.Contains(t, fallback.message, "could not determine home directory: $HOME is not defined")
 }

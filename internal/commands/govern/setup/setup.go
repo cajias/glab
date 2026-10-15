@@ -1,11 +1,9 @@
 package setup
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,7 +17,6 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/claudehooks"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/fallbacksync"
-	"gitlab.com/gitlab-org/cli/internal/commands/version"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
@@ -425,14 +422,12 @@ func installFallbackSync(ctx context.Context, opts *options) error {
 // version rather than by file, because a shim is a different file from the
 // binary it runs.
 func glabBinaryPath(ctx context.Context, executor cmdutils.Executor, running api.BuildInfo) (string, error) {
-	want := strings.TrimSpace(version.Scheme(running.Version, running.Commit))
+	want := fallbacksync.BuildVersion(running)
 	onPath, err := executor.LookPath("glab")
 	if err != nil {
 		dbg.Debugf("glab is not in PATH, scheduling the running glab: %v", err)
 	} else {
-		var stdout bytes.Buffer
-		err := executor.ExecWithIO(ctx, onPath, []string{"version"}, nil, nil, &stdout, io.Discard)
-		got := strings.TrimSpace(stdout.String())
+		got, err := fallbacksync.BinaryVersion(ctx, executor, onPath)
 		switch {
 		case err != nil:
 			dbg.Debugf("could not run %s version, scheduling the running glab: %v", onPath, err)

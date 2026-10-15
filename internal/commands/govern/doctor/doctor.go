@@ -40,6 +40,7 @@ type options struct {
 	config    func() config.Config
 	apiClient func(repoHost string) (*api.Client, error)
 	executor  cmdutils.Executor
+	buildInfo api.BuildInfo
 	hostname  string
 }
 
@@ -49,6 +50,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		config:    f.Config,
 		apiClient: f.ApiClient,
 		executor:  f.Executor(),
+		buildInfo: f.BuildInfo(),
 		hostname:  f.DefaultHostname(),
 	}
 
@@ -64,7 +66,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			- glab in PATH: the binary is findable so hooks will work
 			- Claude Code hooks: Stop and SessionEnd hooks are installed
 			- API connectivity: can reach the GitLab API
-			- Fallback periodic sync: whether the scheduled job is installed and loaded, whether the glab binary it runs still exists, and the result of its last run
+			- Fallback periodic sync: whether the scheduled job is installed and loaded, whether the glab binary it runs still exists and is the same build as this glab, and the result of its last run
 
 			Outputs a clear remediation command for any check that fails.
 		`) + text.ExperimentalString,
@@ -94,7 +96,7 @@ func runDoctor(ctx context.Context, opts *options) error {
 		checkAuthentication(opts),
 		checkClaudeHooks(),
 		checkAPIConnectivity(ctx, opts),
-		checkFallbackSync(ctx, opts.executor, runtime.GOOS, time.Now()),
+		checkFallbackSync(ctx, opts.executor, runtime.GOOS, opts.buildInfo, time.Now()),
 	}
 
 	allPassed := true
@@ -273,7 +275,7 @@ func checkAPIConnectivity(ctx context.Context, opts *options) checkResult {
 	}
 }
 
-func checkFallbackSync(ctx context.Context, executor cmdutils.Executor, goos string, now time.Time) checkResult {
+func checkFallbackSync(ctx context.Context, executor cmdutils.Executor, goos string, running api.BuildInfo, now time.Time) checkResult {
 	const name = "Fallback periodic sync"
 
 	home, err := os.UserHomeDir()
@@ -335,6 +337,27 @@ func checkFallbackSync(ctx context.Context, executor cmdutils.Executor, goos str
 			ok:      false,
 			message: fmt.Sprintf("the job's last run exited with code %d", state.ExitCode),
 			fix:     fmt.Sprintf("Run '%s govern audit sync --all' to see the error, then 'glab govern setup' to reinstall the job", glabPath),
+		}
+	}
+
+	// The job runs the binary setup chose. Upgrading glab updates it only when
+	// that binary is the package manager's stable path.
+	got, err := fallbacksync.BinaryVersion(ctx, executor, glabPath)
+	want := fallbacksync.BuildVersion(running)
+	switch {
+	case err != nil:
+		return checkResult{
+			name:    name,
+			ok:      false,
+			message: fmt.Sprintf("could not run %s version: %v", glabPath, err),
+			fix:     "Run: glab govern setup",
+		}
+	case got != want:
+		return checkResult{
+			name:    name,
+			ok:      false,
+			message: fmt.Sprintf("the job runs %s, which reports %q, not %q like this glab", glabPath, got, want),
+			fix:     "Run: glab govern setup",
 		}
 	}
 
