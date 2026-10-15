@@ -118,6 +118,50 @@ func TestWorkItemsUpdate_DescriptionFile(t *testing.T) {
 	}
 }
 
+func TestWorkItemsUpdate_Iteration(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          string
+		wantIteration *int64
+	}{
+		{
+			name:          "sets the iteration",
+			args:          "1 --iteration 123",
+			wantIteration: new(int64(123)),
+		},
+		{
+			name: "leaves the iteration unchanged without the flag",
+			args: "1 --title Test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := gitlabtesting.NewTestClient(t)
+
+			var gotIteration *int64
+			tc.MockWorkItems.EXPECT().
+				UpdateWorkItem(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ string, _ int64, opts *gitlab.UpdateWorkItemOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.WorkItem, *gitlab.Response, error) {
+					gotIteration = opts.IterationID
+					return &gitlab.WorkItem{IID: 1, WebURL: "https://gitlab.com/OWNER/REPO/-/work_items/1"}, &gitlab.Response{}, nil
+				})
+
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmd,
+				false,
+				cmdtest.WithGitLabClient(tc.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", glinstance.DefaultHostname),
+			)
+
+			_, err := exec(tt.args)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantIteration, gotIteration)
+		})
+	}
+}
+
 func TestWorkItemsUpdate_DescriptionFileConflictsWithDescription(t *testing.T) {
 	exec := cmdtest.SetupCmdForTest(
 		t,
@@ -142,6 +186,11 @@ func TestWorkItemsUpdate_FlagValidation(t *testing.T) {
 			name:    "invalid <iid> arg",
 			args:    "abc",
 			wantErr: "invalid work item ID",
+		},
+		{
+			name:    "non-numeric --iteration",
+			args:    "1 --iteration abc",
+			wantErr: "invalid argument \"abc\" for \"--iteration\"",
 		},
 	}
 

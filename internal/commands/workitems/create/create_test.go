@@ -137,6 +137,50 @@ func TestWorkItemsCreate_DescriptionFile(t *testing.T) {
 	}
 }
 
+func TestWorkItemsCreate_Iteration(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          string
+		wantIteration *int64
+	}{
+		{
+			name:          "sets the iteration",
+			args:          "--type issue --title Test --iteration 123",
+			wantIteration: new(int64(123)),
+		},
+		{
+			name: "leaves the iteration unset without the flag",
+			args: "--type issue --title Test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := gitlabtesting.NewTestClient(t)
+
+			var gotIteration *int64
+			tc.MockWorkItems.EXPECT().
+				CreateWorkItem(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ string, _ gitlab.WorkItemTypeID, opts *gitlab.CreateWorkItemOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.WorkItem, *gitlab.Response, error) {
+					gotIteration = opts.IterationID
+					return &gitlab.WorkItem{IID: 1, WebURL: "https://gitlab.com/OWNER/REPO/-/work_items/1"}, &gitlab.Response{}, nil
+				})
+
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmd,
+				false,
+				cmdtest.WithGitLabClient(tc.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", glinstance.DefaultHostname),
+			)
+
+			_, err := exec(tt.args)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantIteration, gotIteration)
+		})
+	}
+}
+
 func TestWorkItemsCreate_DescriptionFileConflictsWithDescription(t *testing.T) {
 	exec := cmdtest.SetupCmdForTest(
 		t,
@@ -171,6 +215,11 @@ func TestWorkItemsCreate_FlagValidation(t *testing.T) {
 			name:    "missing --title",
 			args:    "--type issue",
 			wantErr: "--title required",
+		},
+		{
+			name:    "non-numeric --iteration",
+			args:    "--type issue --title Test --iteration abc",
+			wantErr: "invalid argument \"abc\" for \"--iteration\"",
 		},
 	}
 

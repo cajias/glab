@@ -39,6 +39,7 @@ type options struct {
 	startDate   string
 	dueDate     string
 	weight      int64
+	iteration   int64
 
 	// internal state
 	scope *api.ScopeInfo
@@ -80,6 +81,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 					# Add a screenshot to the existing description
 					glab work-items update 42 --attach ./screenshot.png
+
+					# Move a work item to another iteration
+					glab work-items update 42 --iteration 123
 		`),
 		Args: cobra.ExactArgs(1),
 		Annotations: map[string]string{
@@ -109,6 +113,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	fl.StringVarP(&opts.milestone, "milestone", "m", "", "Update the work item milestone with the title or ID.")
 	fl.StringVar(&opts.startDate, "startdate", "", "Update the start date for the work item.")
 	fl.StringVar(&opts.dueDate, "duedate", "", "Update the due date for the work item.")
+	fl.Int64Var(&opts.iteration, "iteration", 0, "Move the work item to the iteration with this ID.")
 	cmdutils.AddDescriptionFileFlag(cmd, "work item")
 	cmdutils.AddAttachFlag(cmd, &opts.attach, "description")
 
@@ -240,6 +245,10 @@ func (opts *options) run(cmd *cobra.Command) error {
 
 	if cmd.Flags().Changed("weight") {
 		updateOpts.Weight = new(opts.weight)
+	}
+
+	if cmd.Flags().Changed("iteration") {
+		updateOpts.IterationID = new(opts.iteration)
 	}
 
 	wi, _, err := client.WorkItems.UpdateWorkItem(opts.scope.Path, opts.iid, &updateOpts, gitlab.WithContext(cmd.Context()))

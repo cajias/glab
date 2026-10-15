@@ -34,10 +34,12 @@ type options struct {
 	description  string
 	attach       []string
 	confidential bool
+	iteration    int64
 
 	// Internal state
-	needsPrompt bool
-	scope       *api.ScopeInfo
+	needsPrompt  bool
+	iterationSet bool
+	scope        *api.ScopeInfo
 
 	// Output
 	outputFormat string
@@ -74,6 +76,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 			# Attach a screenshot to the description
 			glab work-items create --type issue --title "Add feature" --attach ./screenshot.png
+
+			# Create a work item in an iteration
+			glab work-items create --type issue --title "Add feature" --iteration 123
 		`),
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
@@ -103,6 +108,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	cmd.Flags().StringVarP(&opts.title, "title", "t", "", "Add a title for the work item.")
 	cmd.Flags().StringVarP(&opts.description, "description", "d", "", "Description of the work item. Set to \"-\" to open an editor.")
 	cmd.Flags().BoolVarP(&opts.confidential, "confidential", "c", false, "Mark work item confidential.")
+	cmd.Flags().Int64Var(&opts.iteration, "iteration", 0, "Add the work item to the iteration with this ID.")
 
 	cmdutils.AddDescriptionFileFlag(cmd, "work item")
 	cmdutils.AddAttachFlag(cmd, &opts.attach, "description")
@@ -122,6 +128,7 @@ func (opts *options) complete(ctx context.Context, cmd *cobra.Command) error {
 	}
 	opts.group = group
 	opts.needsPrompt = !cmd.Flags().Changed("title")
+	opts.iterationSet = cmd.Flags().Changed("iteration")
 
 	if err := cmdutils.ResolveDescriptionFile(opts.io, cmd); err != nil {
 		return err
@@ -177,6 +184,10 @@ func (opts *options) run(ctx context.Context) error {
 
 	if opts.confidential {
 		createOpts.Confidential = new(true)
+	}
+
+	if opts.iterationSet {
+		createOpts.IterationID = new(opts.iteration)
 	}
 
 	wi, _, err := client.WorkItems.CreateWorkItem(opts.scope.Path, typeID, createOpts, gitlab.WithContext(ctx))
