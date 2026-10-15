@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
@@ -11,14 +12,18 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/commands/packages/helpers"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 	"gitlab.com/gitlab-org/cli/internal/mcpannotations"
 )
 
 type options struct {
-	forceDelete bool
-	packageID   int64
+	forceDelete    bool
+	packageID      int64
+	packageName    string
+	packageVersion string
+	packageType    string
 
 	io           *iostreams.IOStreams
 	gitlabClient func() (*gitlab.Client, error)
@@ -32,11 +37,12 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		baseRepo:     f.BaseRepo,
 	}
 	cmd := &cobra.Command{
-		Use:   "delete <id>",
+		Use:   "delete [<id> | --id <id> | --name <name>] [flags]",
 		Short: `Delete a package from a project's package registry.`,
 		Long: heredoc.Docf(`
-		Packages are identified by their numeric ID. Use %[1]sglab packages list%[1]s
-		to find the ID.
+		Identify the package by its numeric ID (as a positional argument or with
+		%[1]s--id%[1]s), or by %[1]s--name%[1]s and %[1]s--version%[1]s. When using %[1]s--name%[1]s,
+		%[1]s--package-type%[1]s defaults to %[1]sgeneric%[1]s.
 
 		The command asks for confirmation before deleting; use %[1]s-y%[1]s to skip
 		the prompt in scripts.
@@ -45,13 +51,21 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		to target another project.
 		`, "`"),
 		Aliases: []string{"rm"},
-		Args:    cobra.ExactArgs(1),
+		Args:    cobra.MaximumNArgs(1),
 		Example: heredoc.Doc(`
 			# Delete a package by ID
 			glab packages delete 1
+			glab packages delete --id 1
+
+			# Delete a generic package by name and version
+			glab packages delete --name example-generic --version 1.0.0
+
+			# Delete a package by name, version and type
+			glab packages delete --name example-maven --version 1.0.0 --package-type maven
 
 			# Skip the confirmation prompt
 			glab packages delete 1 -y
+			glab packages delete --name example-generic --version 1.0.0 --yes
 
 			# Use the 'rm' alias
 			glab packages rm 1
@@ -60,7 +74,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			mcpannotations.Destructive: "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := opts.complete(args); err != nil {
+			if err := opts.complete(cmd, args); err != nil {
 				return err
 			}
 
@@ -73,16 +87,67 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVarP(&opts.forceDelete, "yes", "y", false, "Skip the confirmation prompt.")
+	cmd.Flags().Int64("id", 0, "ID of the package to remove.")
+	cmd.Flags().String("name", "", "Name of the package to remove.")
+	cmd.Flags().String("version", "", "Version of the package.")
+
+	cmd.Flags().Var(
+		cmdutils.NewEnumValue(helpers.PackageTypes, helpers.DefaultPackageType, &opts.packageType),
+		"package-type",
+		fmt.Sprintf("Type of the package to remove, used with --name. One of: %s.", strings.Join(helpers.PackageTypes, ", ")),
+	)
+
+	cmd.MarkFlagsMutuallyExclusive("id", "name")
+	cmd.MarkFlagsRequiredTogether("name", "version")
 
 	return cmd
 }
 
-func (o *options) complete(args []string) error {
-	packageID, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil {
-		return fmt.Errorf("package ID must be an integer: %s", args[0])
+func (o *options) complete(cmd *cobra.Command, args []string) error {
+	// A positional ID and the --id/--name flags select the package in conflicting
+	// ways. Rejecting the combination avoids silently ignoring the argument and
+	// removing a different package than the one named on the command line.
+	if len(args) > 0 && (cmd.Flags().Changed("id") || cmd.Flags().Changed("name")) {
+		return &cmdutils.FlagError{
+			Err: fmt.Errorf("the package ID argument %q cannot be combined with --id or --name", args[0]),
+		}
 	}
-	o.packageID = packageID
+
+	name, err := cmd.Flags().GetString("name")
+	if err != nil {
+		return fmt.Errorf("unable to get name flag: %w", err)
+	}
+
+	version, err := cmd.Flags().GetString("version")
+	if err != nil {
+		return fmt.Errorf("unable to get version flag: %w", err)
+	}
+
+	if name != "" {
+		o.packageName = name
+		o.packageVersion = version
+
+		return nil
+	}
+
+	if cmd.Flags().Changed("package-type") {
+		return &cmdutils.FlagError{Err: fmt.Errorf("--package-type can only be used with --name")}
+	}
+
+	if cmd.Flags().Changed("id") {
+		o.packageID, err = cmd.Flags().GetInt64("id")
+		if err != nil {
+			return fmt.Errorf("unable to get id flag: %w", err)
+		}
+	} else {
+		if len(args) == 0 {
+			return &cmdutils.FlagError{Err: fmt.Errorf("provide a package ID argument, or the --id or --name flag")}
+		}
+		o.packageID, err = strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return fmt.Errorf("package ID must be an integer: %s", args[0])
+		}
+	}
 
 	return nil
 }
@@ -106,10 +171,21 @@ func (o *options) run(ctx context.Context) error {
 		return err
 	}
 
+	target := fmt.Sprintf("package %d", o.packageID)
+	if o.packageName != "" {
+		pkg, err := helpers.GetPackageByName(ctx, client, o.packageName, o.packageType, o.packageVersion, repo.FullName())
+		if err != nil {
+			return err
+		}
+
+		o.packageID = pkg.ID
+		target = fmt.Sprintf("package %d (%s %s, type %s)", pkg.ID, pkg.Name, pkg.Version, pkg.PackageType)
+	}
+
 	confirmed := o.forceDelete
 	if !confirmed && o.io.PromptEnabled() {
-		o.io.LogInfof("This action will permanently delete package %d immediately.\n\n", o.packageID)
-		if err := o.io.Confirm(ctx, &confirmed, fmt.Sprintf("Are you ABSOLUTELY SURE you wish to delete this package %d?", o.packageID)); err != nil {
+		o.io.LogInfof("This action will permanently delete %s immediately.\n\n", target)
+		if err := o.io.Confirm(ctx, &confirmed, fmt.Sprintf("Are you ABSOLUTELY SURE you wish to delete this %s?", target)); err != nil {
 			return cmdutils.WrapError(err, "could not prompt")
 		}
 	}
