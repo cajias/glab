@@ -119,8 +119,8 @@ func NewCmdView(f cmdutils.Factory) *cobra.Command {
 		- %[1]sEnter%[1]s to toggle through a job's logs / traces, or display a child pipeline.
 		  Trigger jobs are marked with a %[1]s»%[1]s.
 		- %[1]sEsc%[1]s or %[1]sq%[1]s to close the logs or trace, or return to the parent pipeline.
-		- %[1]sCtrl+R%[1]s, %[1]sCtrl+P%[1]s to run, retry, or play a job. Use %[1]sTab%[1]s or arrow keys to
-		  navigate the modal, and %[1]sEnter%[1]s to confirm.
+		- %[1]sCtrl+R%[1]s, %[1]sCtrl+P%[1]s to run, retry, or play a job. Use %[1]sTab%[1]s, arrow keys, or
+		  %[1]sh%[1]s/%[1]sj%[1]s/%[1]sk%[1]s/%[1]sl%[1]s to navigate the modal, and %[1]sEnter%[1]s to confirm.
 		- %[1]sCtrl+D%[1]s to cancel a job. If the selected job isn't running or pending,
 		  quits the CI/CD view.
 		- %[1]sCtrl+S%[1]s to show the full name of the selected job.
@@ -382,6 +382,7 @@ func inputCapture(
 				return nil
 			}
 		}
+		event = normalizeViKeys(event)
 		if !modalVisible && !logsVisible && len(jobs) > 0 {
 			curJob = navi.Navigate(jobs, event)
 			root.SendToFront("jobs-" + curJob.Name)
@@ -581,6 +582,23 @@ func normalizeCtrlM(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
+var viKeys = map[rune]tcell.Key{
+	'h': tcell.KeyLeft,
+	'j': tcell.KeyDown,
+	'k': tcell.KeyUp,
+	'l': tcell.KeyRight,
+}
+
+func normalizeViKeys(event *tcell.EventKey) *tcell.EventKey {
+	if event.Key() != tcell.KeyRune {
+		return event
+	}
+	if key, ok := viKeys[event.Rune()]; ok {
+		return tcell.NewEventKey(key, 0, event.Modifiers())
+	}
+	return event
+}
+
 var (
 	logsVisible, modalVisible bool
 	curJob                    *ViewJob
@@ -752,12 +770,6 @@ func (n *navigator) Navigate(jobs []*ViewJob, event *tcell.EventKey) *ViewJob {
 	case tcell.KeyRight:
 		stage = next
 	}
-	switch event.Rune() {
-	case 'h':
-		stage = prev
-	case 'l':
-		stage = next
-	}
 	l, u := stageBounds(jobs, stage)
 
 	switch event.Key() {
@@ -770,13 +782,6 @@ func (n *navigator) Navigate(jobs []*ViewJob, event *tcell.EventKey) *ViewJob {
 		n.depth--
 	}
 	switch event.Rune() {
-	case 'j':
-		n.depth++
-		if n.depth > u-l {
-			n.depth = u - l
-		}
-	case 'k':
-		n.depth--
 	case 'g':
 		n.depth = 0
 	case 'G':
