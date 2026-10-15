@@ -246,6 +246,10 @@ func printTTYMRPreview(opts *options, mr *gitlab.MergeRequest, mrApprovals *gitl
 		opts.io.LogInfof("%s", c.Bold("Milestone: "))
 		opts.io.LogInfo(mr.Milestone.Title)
 	}
+	if timeStats := utils.FormatTimeStats(mr.TimeStats); timeStats != "" {
+		opts.io.LogInfof("%s", c.Bold("Time tracking: "))
+		opts.io.LogInfo(timeStats)
+	}
 	if mr.State == "closed" {
 		if mr.ClosedBy != nil {
 			opts.io.LogInfof("Closed by: %s %s\n", mr.ClosedBy.Username, mrTimeAgo)
@@ -333,6 +337,14 @@ func rawMRPreview(opts *options, mr *gitlab.MergeRequest, discussions []*gitlab.
 	fmt.Fprintf(&out, "comments:\t%d\n", mr.UserNotesCount)         //nolint:forbidigo // writing to strings.Builder, not stdout/stderr
 	if mr.Milestone != nil {
 		fmt.Fprintf(&out, "milestone:\t%s\n", mr.Milestone.Title) //nolint:forbidigo // writing to strings.Builder, not stdout/stderr
+	}
+	if ts := mr.TimeStats; ts != nil {
+		if ts.HumanTimeEstimate != "" {
+			fmt.Fprintf(&out, "time_estimate:\t%s\n", ts.HumanTimeEstimate) //nolint:forbidigo // writing to strings.Builder, not stdout/stderr
+		}
+		if ts.HumanTotalTimeSpent != "" {
+			fmt.Fprintf(&out, "time_spent:\t%s\n", ts.HumanTotalTimeSpent) //nolint:forbidigo // writing to strings.Builder, not stdout/stderr
+		}
 	}
 	fmt.Fprintf(&out, "number:\t%d\n", mr.IID) //nolint:forbidigo // writing to strings.Builder, not stdout/stderr
 	fmt.Fprintf(&out, "url:\t%s\n", mr.WebURL) //nolint:forbidigo // writing to strings.Builder, not stdout/stderr

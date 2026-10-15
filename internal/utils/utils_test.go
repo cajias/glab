@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 )
 
 func Test_PrettyTimeAgo(t *testing.T) {
@@ -296,4 +298,39 @@ func Test_HelperFuncs(t *testing.T) {
 		got := ReplaceNonAlphaNumericChars("profclems-glab", "/")
 		require.Equal(t, "profclems/glab", got)
 	})
+}
+
+func TestFormatTimeStats(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   *gitlab.TimeStats
+		want string
+	}{
+		{name: "nil", ts: nil, want: ""},
+		{name: "nothing tracked", ts: &gitlab.TimeStats{}, want: ""},
+		{
+			name: "time spent only",
+			ts:   &gitlab.TimeStats{HumanTotalTimeSpent: "1h 30m", TotalTimeSpent: 5400},
+			want: "1h 30m spent",
+		},
+		{
+			name: "estimate only",
+			ts:   &gitlab.TimeStats{HumanTimeEstimate: "2d", TimeEstimate: 57600},
+			want: "2d estimated",
+		},
+		{
+			name: "time spent and estimate",
+			ts: &gitlab.TimeStats{
+				HumanTotalTimeSpent: "1h 30m", TotalTimeSpent: 5400,
+				HumanTimeEstimate: "2d", TimeEstimate: 57600,
+			},
+			want: "1h 30m spent of 2d estimated",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, FormatTimeStats(tt.ts))
+		})
+	}
 }

@@ -241,6 +241,22 @@ func FormatDueDate(date *gitlab.ISOTime) string {
 	return date.String()
 }
 
+// FormatTimeStats summarizes time tracking, for example "1h 30m spent of 2d
+// estimated". It returns an empty string when nothing is tracked.
+func FormatTimeStats(ts *gitlab.TimeStats) string {
+	if ts == nil {
+		return ""
+	}
+	var parts []string
+	if ts.HumanTotalTimeSpent != "" {
+		parts = append(parts, ts.HumanTotalTimeSpent+" spent")
+	}
+	if ts.HumanTimeEstimate != "" {
+		parts = append(parts, ts.HumanTimeEstimate+" estimated")
+	}
+	return strings.Join(parts, " of ")
+}
+
 // ParseEditorCommand parses an editor command string into separate command and arguments.
 // This is useful when passing editor commands to libraries like huh that expect separate
 // command and argument parameters.

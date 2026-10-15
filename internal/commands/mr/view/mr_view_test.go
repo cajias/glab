@@ -773,3 +773,75 @@ func TestMRViewWeb(t *testing.T) {
 		})
 	}
 }
+
+func Test_mrPreview_timeTracking(t *testing.T) {
+	createdAt, _ := time.Parse(time.RFC3339, "2024-01-01T12:00:00Z")
+
+	tests := []struct {
+		name      string
+		timeStats *gitlab.TimeStats
+		wantTTY   []string
+		wantRaw   []string
+		wantOmits []string
+	}{
+		{
+			name:      "no time stats",
+			timeStats: nil,
+			wantOmits: []string{"Time tracking:", "time_estimate:", "time_spent:"},
+		},
+		{
+			name:      "nothing tracked",
+			timeStats: &gitlab.TimeStats{},
+			wantOmits: []string{"Time tracking:", "time_estimate:", "time_spent:"},
+		},
+		{
+			name:      "estimate only",
+			timeStats: &gitlab.TimeStats{HumanTimeEstimate: "2d", TimeEstimate: 57600},
+			wantTTY:   []string{"Time tracking: 2d estimated\n"},
+			wantRaw:   []string{"time_estimate:\t2d\n"},
+			wantOmits: []string{"spent", "time_spent:"},
+		},
+		{
+			name: "time spent and estimate",
+			timeStats: &gitlab.TimeStats{
+				HumanTotalTimeSpent: "1h 30m", TotalTimeSpent: 5400,
+				HumanTimeEstimate: "2d", TimeEstimate: 57600,
+			},
+			wantTTY: []string{"Time tracking: 1h 30m spent of 2d estimated\n"},
+			wantRaw: []string{"time_estimate:\t2d\n", "time_spent:\t1h 30m\n"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ios, _, stdout, _ := cmdtest.TestIOStreams(cmdtest.WithTestIOStreamsAsTTY(true))
+			opts := &options{io: ios}
+			mr := &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					IID:       505,
+					Title:     "MR title",
+					State:     "opened",
+					Author:    &gitlab.BasicUser{Username: "alice"},
+					CreatedAt: &createdAt,
+					WebURL:    "https://gitlab.com/OWNER/REPO/-/merge_requests/505",
+					TimeStats: tt.timeStats,
+				},
+			}
+
+			printTTYMRPreview(opts, mr, nil, nil)
+			tty := stripansi.Strip(stdout.String())
+			raw := rawMRPreview(opts, mr, nil)
+
+			for _, want := range tt.wantTTY {
+				assert.Contains(t, tty, want)
+			}
+			for _, want := range tt.wantRaw {
+				assert.Contains(t, raw, want)
+			}
+			for _, omit := range tt.wantOmits {
+				assert.NotContains(t, tty, omit)
+				assert.NotContains(t, raw, omit)
+			}
+		})
+	}
+}

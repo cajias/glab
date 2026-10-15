@@ -223,6 +223,10 @@ func printTTYIssuePreview(opts *options) {
 		opts.io.LogInfof("%s", c.Bold("Milestone: "))
 		opts.io.LogInfo(opts.issue.Milestone.Title)
 	}
+	if timeStats := utils.FormatTimeStats(opts.issue.TimeStats); timeStats != "" {
+		opts.io.LogInfof("%s", c.Bold("Time tracking: "))
+		opts.io.LogInfo(timeStats)
+	}
 	if opts.issue.State == "closed" && opts.issue.ClosedBy != nil {
 		if opts.issue.ClosedAt != nil {
 			opts.io.LogInfof("Closed by: %s %s\n", opts.issue.ClosedBy.Username, utils.TimeToPrettyTimeAgo(*opts.issue.ClosedAt))
@@ -282,6 +286,14 @@ func rawIssuePreview(opts *options) string {
 	out += fmt.Sprintf("assignees:\t%s\n", assignees)
 	if opts.issue.Milestone != nil {
 		out += fmt.Sprintf("milestone:\t%s\n", opts.issue.Milestone.Title)
+	}
+	if ts := opts.issue.TimeStats; ts != nil {
+		if ts.HumanTimeEstimate != "" {
+			out += fmt.Sprintf("time_estimate:\t%s\n", ts.HumanTimeEstimate)
+		}
+		if ts.HumanTotalTimeSpent != "" {
+			out += fmt.Sprintf("time_spent:\t%s\n", ts.HumanTotalTimeSpent)
+		}
 	}
 
 	out += "--\n"
