@@ -17,13 +17,12 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/commands/packages/helpers"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 	"gitlab.com/gitlab-org/cli/internal/mcpannotations"
 	"gitlab.com/gitlab-org/cli/internal/utils"
 )
-
-const genericPackageType = "generic"
 
 type options struct {
 	io           *iostreams.IOStreams
@@ -268,38 +267,16 @@ func (o *options) saveFile(ctx context.Context, client *gitlab.Client, root *os.
 }
 
 // fetchChecksum looks up the SHA256 stored in the registry for the given file,
-// since DownloadPackageFile returns no metadata. The package name and version
-// are filtered server-side; the lookup paginates in case many packages or
-// files share the filter.
+// since DownloadPackageFile returns no metadata. The package is resolved
+// by helpers.GetPackageByName; its files are paginated in case many share the package.
 func fetchChecksum(ctx context.Context, client *gitlab.Client, repoName, name, version, fileName string) (string, error) {
-	packageType := genericPackageType
-	packages, err := gitlab.ScanAndCollect(func(p gitlab.PaginationOptionFunc) ([]*gitlab.Package, *gitlab.Response, error) {
-		return client.Packages.ListProjectPackages(repoName, &gitlab.ListProjectPackagesOptions{
-			PackageType:    &packageType,
-			PackageName:    &name,
-			PackageVersion: &version,
-		}, p, gitlab.WithContext(ctx))
-	})
+	pkg, err := helpers.GetPackageByName(ctx, client, name, helpers.DefaultPackageType, version, repoName)
 	if err != nil {
 		return "", fmt.Errorf("failed to look up package: %w", err)
 	}
 
-	var packageID int64
-	found := false
-	for _, pkg := range packages {
-		if pkg.Name == name && pkg.Version == version {
-			packageID = pkg.ID
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		return "", fmt.Errorf("couldn't locate package %s version %s", name, version)
-	}
-
 	files, err := gitlab.ScanAndCollect(func(p gitlab.PaginationOptionFunc) ([]*gitlab.PackageFile, *gitlab.Response, error) {
-		return client.Packages.ListPackageFiles(repoName, packageID, &gitlab.ListPackageFilesOptions{}, p, gitlab.WithContext(ctx))
+		return client.Packages.ListPackageFiles(repoName, pkg.ID, &gitlab.ListPackageFilesOptions{}, p, gitlab.WithContext(ctx))
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to look up package files: %w", err)

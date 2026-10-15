@@ -27,7 +27,7 @@ const (
 func mockChecksumLookup(tc *gitlabtesting.TestClient, checksum string) {
 	tc.MockPackages.EXPECT().
 		ListProjectPackages(repoName, gomock.Any(), gomock.Any(), gomock.Any()).
-		Return([]*gitlab.Package{{ID: 7, Name: "my-package", Version: "1.0.0"}}, &gitlab.Response{}, nil)
+		Return([]*gitlab.Package{{ID: 7, Name: "my-package", Version: "1.0.0", PackageType: "generic"}}, &gitlab.Response{}, nil)
 	tc.MockPackages.EXPECT().
 		ListPackageFiles(repoName, int64(7), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return([]*gitlab.PackageFile{{ID: 1, FileName: "app.zip", FileSHA256: checksum}}, &gitlab.Response{}, nil)
@@ -155,6 +155,37 @@ func Test_PackagesDownload(t *testing.T) {
 				tc.MockGenericPackages.EXPECT().
 					DownloadPackageFile(repoName, "my-package", "1.0.0", "app.zip", gomock.Any()).
 					Return(nil, nil, fmt.Errorf("GET https://gitlab.com/api/v4/projects/OWNER%%2FREPO/packages/generic: 404"))
+			},
+		},
+		{
+			name:       "Download but package not found",
+			cli:        "--name my-package --version 1.0.0 --filename app.zip",
+			wantErr:    true,
+			wantStderr: "failed to look up package: couldn't locate package \"my-package\" with package-type \"generic\" and version \"1.0.0\"",
+			setupMocks: func(tc *gitlabtesting.TestClient) {
+				tc.MockGenericPackages.EXPECT().
+					DownloadPackageFile(repoName, "my-package", "1.0.0", "app.zip", gomock.Any()).
+					Return([]byte(fileContents), nil, nil)
+				tc.MockPackages.EXPECT().
+					ListProjectPackages(repoName, gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(nil, &gitlab.Response{}, nil)
+			},
+		},
+		{
+			name:       "Download but several packages match",
+			cli:        "--name my-package --version 1.0.0 --filename app.zip",
+			wantErr:    true,
+			wantStderr: "failed to look up package: found 2 packages named \"my-package\" with package-type \"generic\" and version \"1.0.0\" (IDs: 7, 8)",
+			setupMocks: func(tc *gitlabtesting.TestClient) {
+				tc.MockGenericPackages.EXPECT().
+					DownloadPackageFile(repoName, "my-package", "1.0.0", "app.zip", gomock.Any()).
+					Return([]byte(fileContents), nil, nil)
+				tc.MockPackages.EXPECT().
+					ListProjectPackages(repoName, gomock.Any(), gomock.Any(), gomock.Any()).
+					Return([]*gitlab.Package{
+						{ID: 7, Name: "my-package", Version: "1.0.0", PackageType: "generic"},
+						{ID: 8, Name: "my-package", Version: "1.0.0", PackageType: "generic"},
+					}, &gitlab.Response{}, nil)
 			},
 		},
 		{

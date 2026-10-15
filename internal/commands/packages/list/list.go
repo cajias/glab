@@ -12,6 +12,7 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/commands/packages/helpers"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 	"gitlab.com/gitlab-org/cli/internal/mcpannotations"
@@ -22,6 +23,7 @@ type options struct {
 	gitlabClient func() (*gitlab.Client, error)
 	baseRepo     func() (glrepo.Interface, error)
 
+	packageType string
 	listOptions *gitlab.ListProjectPackagesOptions
 }
 
@@ -78,20 +80,11 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	fl.IntP("per-page", "P", int(api.DefaultListLimit), "Number of items to list per page.")
 	fl.StringP("name", "n", "", "Filter packages by name (substring match).")
 
-	pkgTypes := []string{
-		"composer",
-		"conan",
-		"debian",
-		"generic",
-		"golang",
-		"helm",
-		"maven",
-		"npm",
-		"nuget",
-		"pypi",
-		"terraform_module",
-	}
-	fl.String("package-type", "", fmt.Sprintf("Filter packages by type. One of: %s.", strings.Join(pkgTypes, ", ")))
+	fl.Var(
+		cmdutils.NewEnumValue(helpers.PackageTypes, "", &opts.packageType),
+		"package-type",
+		fmt.Sprintf("Filter packages by type. One of: %s.", strings.Join(helpers.PackageTypes, ", ")),
+	)
 
 	cmdutils.AddJQFlag(cmd, f.IO())
 	return cmd
@@ -132,11 +125,7 @@ func (o *options) complete(cmd *cobra.Command) error {
 	}
 
 	if fl.Changed("package-type") {
-		pkgType, err := fl.GetString("package-type")
-		if err != nil {
-			return err
-		}
-		o.listOptions.PackageType = &pkgType
+		o.listOptions.PackageType = &o.packageType
 	}
 
 	return nil

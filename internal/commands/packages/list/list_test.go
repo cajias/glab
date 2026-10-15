@@ -102,6 +102,17 @@ func TestPackagesList(t *testing.T) {
 		assert.Equal(t, "npm", *gotOpts.PackageType)
 	})
 
+	t.Run("rejects an unknown --package-type without calling the API", func(t *testing.T) {
+		t.Parallel()
+
+		tc := gitlabtesting.NewTestClient(t)
+		exec := cmdtest.SetupCmdForTest(t, NewCmd, false, cmdtest.WithGitLabClient(tc.Client))
+
+		_, err := exec("--package-type bogus")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `invalid argument "bogus" for "--package-type" flag: must be one of`)
+	})
+
 	t.Run("leaves package type unset when --package-type is absent", func(t *testing.T) {
 		t.Parallel()
 
