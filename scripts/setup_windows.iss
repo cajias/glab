@@ -56,10 +56,14 @@ SolidCompression=yes
 WizardStyle=modern dynamic
 ; Restrict the ARM64 installer to ARM64 hosts. The x86_64 installer is
 ; intentionally left unrestricted so it continues to run on ARM64 under
-; x64 emulation for users who pick it explicitly.
+; x64 emulation for users who pick it explicitly. Both installers run in
+; 64-bit install mode so {autopf} resolves to "Program Files" instead of
+; "Program Files (x86)".
 #if Arch == "arm64"
 ArchitecturesAllowed=arm64
 ArchitecturesInstallIn64BitMode=arm64
+#else
+ArchitecturesInstallIn64BitMode=x64compatible
 #endif
 
 [Languages]
@@ -259,6 +263,39 @@ begin
   else
     LogFmt('Application path not found in registry key %s\%s\Path, no cleanup needed', [RegRootKeyStr, RegSubkeyPath]);
 end;
+
+#if Arch != "arm64"
+// Releases before the x86_64 installer switched to 64-bit install mode
+// registered their uninstaller in the 32-bit registry view, which 64-bit
+// mode does not search for a previous install. Remove that install first
+// so upgrades do not leave a second copy and PATH entry behind.
+procedure UninstallLegacy32BitModeInstall;
+var
+  UninstallKey: string;
+  UninstallString: string;
+  ResultCode: Integer;
+begin
+  if not (IsAdminInstallMode and Is64BitInstallMode) then
+    exit;
+
+  UninstallKey := ExpandConstant('Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppGuid}_is1');
+  if not RegQueryStringValue(HKLM32, UninstallKey, 'UninstallString', UninstallString) then
+    exit;
+
+  LogFmt('Uninstalling previous 32-bit mode install with %s', [UninstallString]);
+  if not Exec(RemoveQuotes(UninstallString), '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '',
+              SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    LogFmt('[ERROR] Failed to run previous uninstaller: %s', [SysErrorMessage(ResultCode)])
+  else if ResultCode <> 0 then
+    LogFmt('[ERROR] Previous uninstaller exited with code %d', [ResultCode]);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  UninstallLegacy32BitModeInstall();
+  Result := '';
+end;
+#endif
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
