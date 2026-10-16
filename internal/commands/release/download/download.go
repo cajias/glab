@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/MakeNowJust/heredoc/v2"
@@ -234,6 +235,15 @@ func downloadAsset(ctx context.Context, client *gitlab.Client, assetURL, destina
 	// check if authenticated GitLab client should be used or not.
 	gitlabBaseURL := client.BaseURL()
 	if gitlabBaseURL.Scheme == baseURL.Scheme && gitlabBaseURL.Host == baseURL.Host {
+		// `glab release create` stores an uploaded file as a project Markdown
+		// upload, and the link it saves is a web route. Only a browser session
+		// authenticates that route, so a token request is redirected to the
+		// sign-in page, which answers 404 for a private project. The uploads
+		// API serves the same file and accepts the token.
+		if upload, ok := parseMarkdownUploadRef(gitlabBaseURL, baseURL); ok {
+			return downloadMarkdownUpload(ctx, client, upload, f)
+		}
+
 		r, err := client.NewRequestToURL(http.MethodGet, baseURL, http.NoBody, []gitlab.RequestOptionFunc{
 			gitlab.WithContext(ctx),
 			gitlab.WithHeader("Accept", "application/octet-stream"),
@@ -265,4 +275,77 @@ func downloadAsset(ctx context.Context, client *gitlab.Client, assetURL, destina
 		_, err = io.Copy(f, resp.Body)
 		return err
 	}
+}
+
+// markdownUploadRef identifies a project Markdown upload behind a release
+// asset link.
+type markdownUploadRef struct {
+	project  string // numeric project ID, or a namespace and project path
+	secret   string
+	filename string
+}
+
+// parseMarkdownUploadRef recognizes the two link shapes GitLab stores for a
+// project Markdown upload:
+//
+//	/-/project/<project_id>/uploads/<secret>/<filename>  GitLab 17.0 and later
+//	/<namespace>/<project>/uploads/<secret>/<filename>   earlier versions
+//
+// Any other link returns false, which keeps package registry links, release
+// evidence, and source archives on their existing download path.
+func parseMarkdownUploadRef(baseURL, assetURL *url.URL) (markdownUploadRef, bool) {
+	assetPath := strings.TrimPrefix(assetURL.EscapedPath(), instanceBasePath(baseURL))
+	segments := strings.Split(strings.Trim(assetPath, "/"), "/")
+
+	// The shortest match is <namespace>/<project>/uploads/<secret>/<filename>.
+	if len(segments) < 5 {
+		return markdownUploadRef{}, false
+	}
+
+	uploadsAt := len(segments) - 3
+	if segments[uploadsAt] != "uploads" {
+		return markdownUploadRef{}, false
+	}
+
+	secret, err := url.PathUnescape(segments[uploadsAt+1])
+	if err != nil || secret == "" {
+		return markdownUploadRef{}, false
+	}
+
+	filename, err := url.PathUnescape(segments[uploadsAt+2])
+	if err != nil || filename == "" {
+		return markdownUploadRef{}, false
+	}
+
+	project := segments[:uploadsAt]
+	if len(project) == 3 && project[0] == "-" && project[1] == "project" {
+		return markdownUploadRef{project: project[2], secret: secret, filename: filename}, true
+	}
+
+	// A project always sits in a namespace, so a single segment cannot be one.
+	// GitLab reserves `-` as a path name: it ends the project path and starts
+	// a project route, such as /-/raw/ or /-/blob/, which is not an upload.
+	if len(project) < 2 || slices.Contains(project, "-") {
+		return markdownUploadRef{}, false
+	}
+	return markdownUploadRef{project: strings.Join(project, "/"), secret: secret, filename: filename}, true
+}
+
+// instanceBasePath returns the path prefix of an instance that is served from
+// a subfolder. client.BaseURL points at the API root, so the API segments are
+// removed to leave that prefix.
+func instanceBasePath(baseURL *url.URL) string {
+	return strings.TrimSuffix(strings.TrimSuffix(baseURL.EscapedPath(), "/"), "/api/v4")
+}
+
+func downloadMarkdownUpload(ctx context.Context, client *gitlab.Client, ref markdownUploadRef, w io.Writer) error {
+	body, _, err := client.ProjectMarkdownUploads.DownloadProjectMarkdownUploadBySecretAndFilename(
+		ref.project, ref.secret, ref.filename, gitlab.WithContext(ctx))
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+
+	_, err = io.Copy(w, body)
+	return err
 }
