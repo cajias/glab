@@ -33,7 +33,7 @@ func blockResponse(ecosystem, reason string) string {
 // 403 error carrying reason.
 func blockBody(ecosystem, reason string) (string, string) {
 	switch ecosystem {
-	case "npm":
+	case "npm", "nuget":
 		//nolint:forbidigo // serializing a small error body for an HTTP response, not stdout
 		payload, _ := json.Marshal(map[string]string{"error": reason})
 		return "application/json", string(payload)
