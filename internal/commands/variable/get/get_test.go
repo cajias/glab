@@ -86,6 +86,23 @@ func Test_NewCmdGet(t *testing.T) {
 			cli:      "good_key --group",
 			wantsErr: true,
 		},
+		{
+			name: "inherited",
+			cli:  "--inherited good_key",
+			wants: options{
+				key:       "good_key",
+				inherited: true,
+			},
+		},
+		{
+			name: "inherited from a group",
+			cli:  "-g group --inherited good_key",
+			wants: options{
+				key:       "good_key",
+				group:     "group",
+				inherited: true,
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -115,6 +132,7 @@ func Test_NewCmdGet(t *testing.T) {
 
 			assert.Equal(t, test.wants.key, gotOpts.key)
 			assert.Equal(t, test.wants.group, gotOpts.group)
+			assert.Equal(t, test.wants.inherited, gotOpts.inherited)
 		})
 	}
 }
