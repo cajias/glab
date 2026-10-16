@@ -30,6 +30,11 @@ parts:
       LDFLAGS='' make -j2
       cp bin/glab $SNAPCRAFT_PART_INSTALL/
       bin/glab completion -s bash > $SNAPCRAFT_PART_INSTALL/completion.sh
+plugs:
+  kube-config:
+    interface: personal-files
+    write:
+    - $HOME/.kube
 apps:
   glab:
     command: glab
@@ -41,6 +46,8 @@ apps:
     - ssh-keys
     # Manual-connect only: `sudo snap connect glab:password-manager-service`.
     - password-manager-service
+    # Manual-connect only: `sudo snap connect glab:kube-config`.
+    - kube-config
     completer: completion.sh
     environment:
       GIT_EDITOR: nano
