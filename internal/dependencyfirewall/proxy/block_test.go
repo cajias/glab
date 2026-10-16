@@ -57,3 +57,14 @@ func TestBlockResponseMavenIsHTML(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, "text/html", resp.Header.Get("Content-Type"))
 }
+
+func TestBlockResponseNuGetIsJSON(t *testing.T) {
+	t.Parallel()
+	raw := blockResponse("nuget", "blocked by policy")
+	resp := parseBlock(t, raw)
+	defer resp.Body.Close()
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "blocked by policy")
+}
