@@ -153,7 +153,7 @@ func NewCmdList(f cmdutils.Factory, runE func(opts *ListOptions) error, issueTyp
 		},
 	}
 	cmdutils.EnableRepoOverride(issueListCmd, f)
-	issueListCmd.Flags().StringVarP(&opts.Assignee, "assignee", "a", "", fmt.Sprintf("Filter %s by assignee <username>.", issueType))
+	issueListCmd.Flags().StringVarP(&opts.Assignee, "assignee", "a", "", fmt.Sprintf("Filter %s by assignee <username>, @me, @none (unassigned), or @any (assigned).", issueType))
 	issueListCmd.Flags().StringVar(&opts.NotAssignee, "not-assignee", "", fmt.Sprintf("Filter %s by not being assigned to <username>.", issueType))
 	issueListCmd.Flags().StringVar(&opts.Author, "author", "", fmt.Sprintf("Filter %s by author <username>.", issueType))
 	issueListCmd.Flags().StringVar(&opts.NotAuthor, "not-author", "", fmt.Sprintf("Filter %s by not being by author(s) <username>.", issueType))
@@ -219,12 +219,18 @@ func listRun(opts *ListOptions) error {
 	}
 
 	if opts.Assignee != "" {
-		uid, err := userID(client, opts.Assignee)
-		if err != nil {
-			return err
+		switch opts.Assignee {
+		case "@none":
+			listOpts.AssigneeID = gitlab.AssigneeID(gitlab.UserIDNone)
+		case "@any":
+			listOpts.AssigneeID = gitlab.AssigneeID(gitlab.UserIDAny)
+		default:
+			uid, err := userID(client, opts.Assignee)
+			if err != nil {
+				return err
+			}
+			listOpts.AssigneeID = gitlab.AssigneeID(uid)
 		}
-
-		listOpts.AssigneeID = gitlab.AssigneeID(uid)
 	}
 
 	if opts.NotAssignee != "" {
@@ -465,6 +471,12 @@ func hasAssignee(issue *gitlab.Issue, userID *gitlab.AssigneeIDValue) bool {
 	v := url.Values{}
 	if err := userID.EncodeValues("dummy", &v); err != nil {
 		return false
+	}
+	switch v.Get("dummy") {
+	case string(gitlab.UserIDNone):
+		return len(issue.Assignees) == 0
+	case string(gitlab.UserIDAny):
+		return len(issue.Assignees) > 0
 	}
 	targetID, err := strconv.ParseInt(v.Get("dummy"), 10, 64)
 	if err != nil {
