@@ -44,7 +44,7 @@ func NewCmdServe(_ cmdutils.Factory) *cobra.Command {
 		`, "```") + text.ExperimentalString,
 		Example: heredoc.Doc(`
 			glab mcp serve`),
-		Deprecated:        "use the GitLab MCP Server (https://docs.gitlab.com/user/model_context_protocol/mcp_server/) instead.",
+		Deprecated:        "use the GitLab MCP Server (https://docs.gitlab.com/user/model_context_protocol/mcp_server/) instead. Share feedback in https://gitlab.com/gitlab-org/cli/-/work_items/8618.",
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		Annotations: map[string]string{
