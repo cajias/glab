@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -1333,4 +1336,109 @@ func TestListGitLabTemplates(t *testing.T) {
 			assert.Equal(t, test.wantTemplates, gotTemplates, "Templates got didn't match")
 		})
 	}
+}
+
+func TestLoadGitLabTemplate(t *testing.T) {
+	// Cannot use t.Parallel(): subtests mutate git.ToplevelDir, a package-level variable.
+	origToplevelDir := git.ToplevelDir
+	t.Cleanup(func() { git.ToplevelDir = origToplevelDir })
+
+	repoDir := t.TempDir()
+	repoTemplateDir := filepath.Join(repoDir, ".gitlab", IssueTemplate)
+	require.NoError(t, os.MkdirAll(repoTemplateDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoTemplateDir, "bug.md"), []byte("\nrepo template\n"), 0o644))
+
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "team", "bug.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(outsideFile), 0o755))
+	require.NoError(t, os.WriteFile(outsideFile, []byte("\noutside template\n"), 0o644))
+
+	inRepo := func() { git.ToplevelDir = func() (string, error) { return repoDir, nil } }
+	outsideRepo := func() {
+		git.ToplevelDir = func() (string, error) { return "", errors.New("not a git repository") }
+	}
+
+	t.Run("bare name resolves in repository", func(t *testing.T) {
+		inRepo()
+
+		got, err := LoadGitLabTemplate(IssueTemplate, "bug")
+		require.NoError(t, err)
+		assert.Equal(t, "repo template", got)
+	})
+
+	t.Run("bare name with extension resolves in repository", func(t *testing.T) {
+		inRepo()
+
+		got, err := LoadGitLabTemplate(IssueTemplate, "bug.md")
+		require.NoError(t, err)
+		assert.Equal(t, "repo template", got)
+	})
+
+	t.Run("missing bare name returns empty string", func(t *testing.T) {
+		inRepo()
+
+		got, err := LoadGitLabTemplate(IssueTemplate, "nonexistent")
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("bare name outside repository returns error", func(t *testing.T) {
+		outsideRepo()
+
+		_, err := LoadGitLabTemplate(IssueTemplate, "bug")
+		assert.ErrorContains(t, err, "not a git repository")
+	})
+
+	t.Run("absolute path outside repository", func(t *testing.T) {
+		outsideRepo()
+
+		got, err := LoadGitLabTemplate(IssueTemplate, outsideFile)
+		require.NoError(t, err)
+		assert.Equal(t, "outside template", got)
+	})
+
+	t.Run("relative path with separator", func(t *testing.T) {
+		inRepo()
+		t.Chdir(outsideDir)
+
+		got, err := LoadGitLabTemplate(IssueTemplate, "team/bug.md")
+		require.NoError(t, err)
+		assert.Equal(t, "outside template", got)
+	})
+
+	t.Run("home directory path", func(t *testing.T) {
+		outsideRepo()
+		t.Setenv("HOME", outsideDir)
+		t.Setenv("USERPROFILE", outsideDir)
+
+		got, err := LoadGitLabTemplate(IssueTemplate, "~/team/bug.md")
+		require.NoError(t, err)
+		assert.Equal(t, "outside template", got)
+	})
+
+	t.Run("path is read verbatim without appending extension", func(t *testing.T) {
+		outsideRepo()
+
+		_, err := LoadGitLabTemplate(IssueTemplate, filepath.Join(outsideDir, "team", "bug"))
+		assert.ErrorIs(t, err, fs.ErrNotExist)
+	})
+
+	t.Run("missing path returns error", func(t *testing.T) {
+		inRepo()
+
+		_, err := LoadGitLabTemplate(IssueTemplate, filepath.Join(outsideDir, "missing.md"))
+		assert.ErrorIs(t, err, fs.ErrNotExist)
+	})
+
+	t.Run("empty or whitespace-only path returns error", func(t *testing.T) {
+		inRepo()
+
+		for name, content := range map[string]string{"empty": "", "whitespace": " \n\t\n"} {
+			file := filepath.Join(outsideDir, name+".md")
+			require.NoError(t, os.WriteFile(file, []byte(content), 0o644))
+
+			_, err := LoadGitLabTemplate(IssueTemplate, file)
+			assert.ErrorContains(t, err, "is empty")
+		}
+	})
 }

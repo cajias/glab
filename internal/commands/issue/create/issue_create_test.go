@@ -3,7 +3,9 @@
 package create
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -112,6 +114,58 @@ func TestIssueCreate_TemplateWithMdExtension(t *testing.T) {
 	output, err := exec(`--title "Test Issue" --template bug.md --yes`)
 	require.NoError(t, err)
 	assert.Contains(t, output.String(), "https://gitlab.com/OWNER/REPO/-/issues/1")
+}
+
+func TestIssueCreate_TemplateFilePath(t *testing.T) {
+	// Cannot use t.Parallel(): test mutates git.ToplevelDir, a package-level variable.
+	t.Setenv("NO_COLOR", "true")
+
+	templateFile := filepath.Join(t.TempDir(), "bug.md")
+	require.NoError(t, os.WriteFile(templateFile, []byte("## Team Bug Report"), 0o644))
+
+	origToplevelDir := git.ToplevelDir
+	git.ToplevelDir = func() (string, error) { return "", errors.New("not a git repository") }
+	t.Cleanup(func() { git.ToplevelDir = origToplevelDir })
+
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockProjects.EXPECT().
+		GetProject("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.Project{
+			ID:                37777023,
+			PathWithNamespace: "OWNER/REPO",
+			IssuesEnabled:     true,
+		}, nil, nil)
+	testClient.MockIssues.EXPECT().
+		CreateIssue("OWNER/REPO", gomock.Any()).
+		DoAndReturn(func(_ any, opts *gitlab.CreateIssueOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.Issue, *gitlab.Response, error) {
+			assert.Equal(t, "## Team Bug Report", *opts.Description)
+			return &gitlab.Issue{IID: 1, Title: "Test Issue", WebURL: "https://gitlab.com/OWNER/REPO/-/issues/1"}, nil, nil
+		})
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false, cmdtest.WithGitLabClient(testClient.Client))
+
+	output, err := exec(fmt.Sprintf(`--title "Test Issue" --template %q --yes`, templateFile))
+	require.NoError(t, err)
+	assert.Contains(t, output.String(), "https://gitlab.com/OWNER/REPO/-/issues/1")
+}
+
+func TestIssueCreate_TemplateFilePathNotFound(t *testing.T) {
+	t.Parallel()
+
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockProjects.EXPECT().
+		GetProject("OWNER/REPO", gomock.Any()).
+		Return(&gitlab.Project{
+			ID:                37777023,
+			PathWithNamespace: "OWNER/REPO",
+			IssuesEnabled:     true,
+		}, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false, cmdtest.WithGitLabClient(testClient.Client))
+
+	missing := filepath.Join(t.TempDir(), "missing.md")
+	_, err := exec(fmt.Sprintf(`--title "Test Issue" --template %q --yes`, missing))
+	assert.ErrorIs(t, err, fs.ErrNotExist)
 }
 
 func TestIssueCreate_TemplateNotFound(t *testing.T) {
