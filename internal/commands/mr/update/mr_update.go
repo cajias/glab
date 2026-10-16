@@ -25,6 +25,7 @@ import (
 
 func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 	var attach []string
+	var state string
 
 	mrUpdateCmd := &cobra.Command{
 		Use:   "update [<id> | <branch>]",
@@ -44,6 +45,9 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 
 		# Updates the merge request for the current branch
 		glab mr update --draft
+
+		# Select the open merge request when a branch also has merged requests
+		glab mr update feature-branch --state opened --ready
 
 		# Update merge request with commit information
 		glab mr update 23 --fill --fill-commit-body --yes
@@ -122,7 +126,7 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 				return err
 			}
 
-			mr, repo, err := mrutils.MRFromArgs(cmd.Context(), f, args, "any")
+			mr, repo, err := mrutils.MRFromArgs(cmd.Context(), f, args, state)
 			if err != nil {
 				return err
 			}
@@ -375,6 +379,7 @@ func NewCmdUpdate(f cmdutils.Factory) *cobra.Command {
 		},
 	}
 
+	mrUpdateCmd.Flags().Var(cmdutils.NewEnumValue([]string{"opened", "closed", "merged", "locked", "any"}, "any", &state), "state", "Filter by state when selecting a merge request by branch: opened, closed, merged, locked, any. Ignored for IDs and URLs.")
 	mrUpdateCmd.Flags().BoolP("draft", "", false, "Mark merge request as a draft.")
 	mrUpdateCmd.Flags().BoolP("ready", "r", false, "Mark merge request as ready to be reviewed and merged.")
 	mrUpdateCmd.Flags().BoolP("wip", "", false, "Mark merge request as a work in progress. Alternative to --draft.")

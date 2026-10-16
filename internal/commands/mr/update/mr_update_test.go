@@ -38,6 +38,10 @@ func TestUpdateMergeRequest(t *testing.T) {
 		    token: OTOKEN
 	`))))
 	oldUpdateMr := api.UpdateMR
+	oldGetMR, oldListMRs := api.GetMR, api.ListMRs
+	t.Cleanup(func() {
+		api.UpdateMR, api.GetMR, api.ListMRs = oldUpdateMr, oldGetMR, oldListMRs
+	})
 	timer, _ := time.Parse(time.RFC3339, "2014-11-12T11:45:26.371Z")
 	toggle := false
 
