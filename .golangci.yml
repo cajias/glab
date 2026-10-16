@@ -61,7 +61,7 @@ linters:
           text: "stdout and stderr output"
         # TODO: surfaced by staticcheck in golangci-lint 2.13.x; drop these once
         # the deprecated fields are migrated and the token cache nil check is fixed.
-        - path: (internal/api/milestone|internal/cmdutils/cmdutils|internal/commands/issue/create/issue_create_test|internal/commands/issue/create/issue_create_attach_test|internal/commands/mr/create/mr_create_test|internal/commands/mr/create/mr_create_attach_test|internal/commands/project/create/project_create)\.go
+        - path: (internal/api/milestone|internal/cmdutils/cmdutils|internal/commands/issue/create/issue_create_test|internal/commands/issue/create/issue_create_attach_test|internal/commands/mr/create/mr_create_test|internal/commands/mr/create/mr_create_attach_test)\.go
           linters:
             - staticcheck
           text: "SA1019"

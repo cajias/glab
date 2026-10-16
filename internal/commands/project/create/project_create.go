@@ -91,7 +91,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 	projectCreateCmd.Flags().StringP("description", "d", "", "Description of the new project. Set to \"-\" to open an editor.")
 	projectCreateCmd.Flags().String("defaultBranch", "", "Branch name for the new project, overriding both the GitLab instance default and your local git configuration.")
 	projectCreateCmd.Flags().String("remoteName", "origin", "Remote name for the Git repository you're in. Defaults to `origin` if not provided.")
-	projectCreateCmd.Flags().StringArrayP("tag", "t", []string{}, "The list of tags for the project.")
+	projectCreateCmd.Flags().StringArrayP("tag", "t", []string{}, "The list of topics for the project.")
 	projectCreateCmd.Flags().Bool("internal", false, "Make project internal: visible to any authenticated user.")
 	projectCreateCmd.Flags().BoolP("private", "p", false, "Make project private: visible only to project members.")
 	projectCreateCmd.Flags().BoolP("public", "P", false, "Make project public: visible without any authentication.")
@@ -241,7 +241,7 @@ func runCreateProject(cmd *cobra.Command, args []string, f cmdutils.Factory) err
 		Path:                 new(projectPath),
 		Description:          new(description),
 		DefaultBranch:        new(defaultBranch),
-		TagList:              &tags,
+		Topics:               &tags,
 		InitializeWithReadme: new(readme),
 	}
 

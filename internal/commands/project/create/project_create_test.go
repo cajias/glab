@@ -657,3 +657,52 @@ func Test_projectCreateCmd_SkipGitInit(t *testing.T) {
 		assert.NotContains(t, stripansi.Strip(stdout.String()), "Initialized repository")
 	})
 }
+
+func Test_projectCreateCmd_TagsSentAsTopics(t *testing.T) {
+	// Cannot use t.Parallel(): this test replaces package-level mocks and chdir.
+	origCreateProject := createProject
+	origCurrentUser := currentUser
+
+	t.Cleanup(func() {
+		createProject = origCreateProject
+		currentUser = origCurrentUser
+	})
+
+	t.Chdir(t.TempDir())
+
+	var gotOpts *gitlab.CreateProjectOptions
+	createProject = func(client *gitlab.Client, opts *gitlab.CreateProjectOptions) (*gitlab.Project, error) {
+		gotOpts = opts
+		return &gitlab.Project{
+			ID:                1,
+			Name:              "test-project",
+			Path:              "test-project",
+			NameWithNamespace: "username/test-project",
+			SSHURLToRepo:      "git@gitlab.com:username/test-project.git",
+			WebURL:            "https://gitlab.com/username/test-project",
+		}, nil
+	}
+	currentUser = func(client *gitlab.Client) (*gitlab.User, error) {
+		return &gitlab.User{ID: 1, Username: "username", Name: "name"}, nil
+	}
+
+	io, _, _, _ := cmdtest.TestIOStreams()
+	f := cmdtest.NewTestFactory(io, cmdtest.WithConfig(config.NewFromString(heredoc.Doc(`
+		hosts:
+		  gitlab.com:
+		    username: monalisa
+		    token: OTOKEN
+		no_prompt: true
+	`))))
+
+	cmd := NewCmdCreate(f)
+	cmdutils.EnableRepoOverride(cmd, f)
+	cmd.SetArgs([]string{"test-project", "--skipGitInit", "--tag", "go", "--tag", "cli"})
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+
+	require.NotNil(t, gotOpts)
+	require.NotNil(t, gotOpts.Topics)
+	assert.Equal(t, []string{"go", "cli"}, *gotOpts.Topics)
+}
