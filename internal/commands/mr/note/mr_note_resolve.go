@@ -29,12 +29,15 @@ type resolveOptions struct {
 	past         string
 
 	// Populated in complete.
+	repoOverride     string
 	mrArgs           []string
 	discussionPrefix string
-	client           *gitlab.Client
-	mr               *gitlab.MergeRequest
-	repo             glrepo.Interface
-	discussionID     string
+
+	// Populated in run.
+	client       *gitlab.Client
+	mr           *gitlab.MergeRequest
+	repo         glrepo.Interface
+	discussionID string
 }
 
 func NewCmdResolve(f cmdutils.Factory) *cobra.Command {
@@ -73,27 +76,36 @@ func newResolveCmd(f cmdutils.Factory, resolve bool) *cobra.Command {
 			- Discussion ID: full 40-character hex string or an 8+ character prefix
 			- Note ID: integer note ID (looks up the parent discussion automatically)
 
+			The merge request comes first, then the discussion. Without a merge request, the merge request for the current branch is used. With --repo, the merge request is required.
+
 			If a prefix matches multiple discussions, an error is returned with the ambiguous matches.
 		`, capitalize(action)) + text.ExperimentalString,
 		Example: heredoc.Docf(`
-			# %s a discussion on merge request 123 by prefix
-			glab mr note %s 123 abc12345
+			# %[1]s a discussion on merge request 123 by prefix
+			glab mr note %[2]s 123 abc12345
 
-			# %s a discussion by note ID
-			glab mr note %s 3107030349
+			# %[1]s a discussion on merge request 123 in another repository
+			glab mr note %[2]s 123 abc12345 -R OWNER/REPO
 
-			# %s a discussion by prefix (8+ chars, auto-detects merge request from branch)
-			glab mr note %s abc12345
+			# %[1]s a discussion by note ID
+			glab mr note %[2]s 3107030349
 
-			# %s a discussion by full ID
-			glab mr note %s abc12345deadbeef1234567890abcdef12345678
-		`, capitalize(action), action, capitalize(action), action, capitalize(action), action, capitalize(action), action),
+			# %[1]s a discussion by prefix (8+ chars, auto-detects merge request from branch)
+			glab mr note %[2]s abc12345
+
+			# %[1]s a discussion by full ID
+			glab mr note %[2]s abc12345deadbeef1234567890abcdef12345678
+		`, capitalize(action), action),
 		Args: cobra.RangeArgs(1, 2),
 		Annotations: map[string]string{
 			mcpannotations.Destructive: "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := opts.complete(cmd.Context(), args); err != nil {
+			if err := opts.complete(cmd, args); err != nil {
+				return err
+			}
+
+			if err := opts.validate(); err != nil {
 				return err
 			}
 
@@ -104,12 +116,28 @@ func newResolveCmd(f cmdutils.Factory, resolve bool) *cobra.Command {
 	return cmd
 }
 
-func (o *resolveOptions) complete(ctx context.Context, args []string) error {
+func (o *resolveOptions) complete(cmd *cobra.Command, args []string) error {
+	repoOverride, err := cmd.Flags().GetString("repo")
+	if err != nil {
+		return err
+	}
+	o.repoOverride = repoOverride
 	o.discussionPrefix = args[len(args)-1]
 	if len(args) == 2 {
 		o.mrArgs = args[:1]
 	}
 
+	return nil
+}
+
+func (o *resolveOptions) validate() error {
+	if o.repoOverride != "" && len(o.mrArgs) == 0 {
+		return &cmdutils.FlagError{Err: fmt.Errorf("a merge request ID or branch is required with --repo: glab mr note %s <id> <discussion-id> -R %s", o.action, o.repoOverride)}
+	}
+	return nil
+}
+
+func (o *resolveOptions) lookup(ctx context.Context) error {
 	client, err := o.gitlabClient()
 	if err != nil {
 		return err
@@ -143,6 +171,10 @@ func (o *resolveOptions) complete(ctx context.Context, args []string) error {
 }
 
 func (o *resolveOptions) run(ctx context.Context) error {
+	if err := o.lookup(ctx); err != nil {
+		return err
+	}
+
 	_, _, err := o.client.Discussions.ResolveMergeRequestDiscussion(
 		o.repo.FullName(),
 		o.mr.IID,
