@@ -2,7 +2,9 @@ package update_kubeconfig
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,8 @@ const (
 	flagCheckRevoked           = "check-revoked"
 	tokenExpiryDurationDefault = 24 * time.Hour
 	minTokenExpiryDuration     = 24 * time.Hour
+
+	snapRealHomeEnvVar = "SNAP_REAL_HOME"
 )
 
 var sanitizeReplacer = strings.NewReplacer("/", "_", ".", "_")
@@ -48,7 +52,7 @@ type options struct {
 }
 
 func NewCmdAgentUpdateKubeconfig(f cmdutils.Factory) *cobra.Command {
-	pathOptions := clientcmd.NewDefaultPathOptions()
+	pathOptions := newPathOptions()
 	if pathOptions.ExplicitFileFlag == "" {
 		pathOptions.ExplicitFileFlag = clientcmd.RecommendedConfigPathFlag
 	}
@@ -100,6 +104,36 @@ func NewCmdAgentUpdateKubeconfig(f cmdutils.Factory) *cobra.Command {
 	cobra.CheckErr(agentUpdateKubeconfigCmd.MarkFlagRequired(flagAgent))
 
 	return agentUpdateKubeconfigCmd
+}
+
+// newPathOptions resolves the default kubeconfig against SNAP_REAL_HOME when
+// running as a strictly confined snap, because snapd rewrites HOME to the
+// per-revision snap data directory, which kubectl never reads.
+func newPathOptions() *clientcmd.PathOptions {
+	pathOptions := clientcmd.NewDefaultPathOptions()
+	if realHome := os.Getenv(snapRealHomeEnvVar); realHome != "" {
+		pathOptions.GlobalFile = filepath.Join(realHome, clientcmd.RecommendedHomeDir, clientcmd.RecommendedFileName)
+		pathOptions.LoadingRules.MigrationRules = nil
+	}
+	return pathOptions
+}
+
+// client-go formats kubeconfig read errors with %v, so errors.Is cannot see
+// the underlying permission error and the message has to be matched instead.
+func withSnapPermissionHint(err error, kubeconfigFiles []string) error {
+	realHome := os.Getenv(snapRealHomeEnvVar)
+	if realHome == "" || len(kubeconfigFiles) == 0 || !strings.Contains(err.Error(), fs.ErrPermission.Error()) {
+		return err
+	}
+	// The kube-config plug only grants access to ~/.kube, so connecting it can't fix other paths.
+	kubeDir := filepath.Join(realHome, clientcmd.RecommendedHomeDir)
+	for _, file := range kubeconfigFiles {
+		rel, relErr := filepath.Rel(kubeDir, file)
+		if relErr != nil || !filepath.IsLocal(rel) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w\nTo allow the glab snap to access ~/.kube, run: sudo snap connect glab:kube-config", err)
 }
 
 func (o *options) validate() error {
@@ -154,7 +188,7 @@ func (o *options) run() error {
 
 	startingConfig, err := o.configAccess.GetStartingConfig()
 	if err != nil {
-		return err
+		return withSnapPermissionHint(err, o.configAccess.GetLoadingPrecedence())
 	}
 
 	params := updateKubeconfigParams{
@@ -176,7 +210,7 @@ func (o *options) run() error {
 	}
 
 	if err := clientcmd.ModifyConfig(o.configAccess, config, true); err != nil {
-		return err
+		return withSnapPermissionHint(err, o.configAccess.GetLoadingPrecedence())
 	}
 
 	o.io.LogInfof("Updated context %s.\n", contextName)
