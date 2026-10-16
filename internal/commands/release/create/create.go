@@ -296,7 +296,7 @@ func resolveNotesFile(opts *options) (string, error) {
 	return string(b), nil
 }
 
-func resolveNotesFileOrText(opts *options) (string, error) {
+func resolveNotesFileOrText(opts *options) (_ string, err error) {
 	// Rules from: https://docs.gitlab.com/ci/yaml/#releasedescription
 
 	// Rule 1: A file path can't have spaces
@@ -313,6 +313,7 @@ func resolveNotesFileOrText(opts *options) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer func() { err = errors.Join(err, root.Close()) }()
 
 	f, err := root.Open(opts.experimentalNotesTextOrFile)
 	if err != nil {
@@ -325,10 +326,7 @@ func resolveNotesFileOrText(opts *options) (string, error) {
 		return "", fmt.Errorf("could not open file %q: %w", opts.experimentalNotesTextOrFile, err)
 	}
 	defer func() {
-		cerr := f.Close()
-		if err == nil {
-			err = cerr
-		}
+		err = errors.Join(err, f.Close())
 	}()
 
 	b, err := io.ReadAll(f)
