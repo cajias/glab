@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -222,11 +221,11 @@ func TestLogin_RegistryMustNotBeEmpty(t *testing.T) {
 // than exec().
 func TestLogin_RegistryMustNotContainControlCharacters(t *testing.T) {
 	for name, o := range map[string]*options{
-		"maven":  {registry: "https://ar.example.com/\nEvil=1", maven: true},
-		"gradle": {registry: "https://ar.example.com/\nEvil=1", gradle: true},
-		"npm":    {registry: "https://ar.example.com/\nEvil=1", npm: true},
-		"sbt":    {registry: "https://ar.example.com/\nEvil=1", sbt: true},
-		"yarn":   {registry: "https://ar.example.com/\nEvil=1", yarn: true},
+		"maven":  {registry: "https://ar.example.com/\nEvil=1", writer: writerForFlag("maven")},
+		"gradle": {registry: "https://ar.example.com/\nEvil=1", writer: writerForFlag("gradle")},
+		"npm":    {registry: "https://ar.example.com/\nEvil=1", writer: writerForFlag("npm")},
+		"sbt":    {registry: "https://ar.example.com/\nEvil=1", writer: writerForFlag("sbt")},
+		"yarn":   {registry: "https://ar.example.com/\nEvil=1", writer: writerForFlag("yarn")},
 		"docker": {registry: "ar.example.com\nEvil=1", docker: true, supportedOS: supportedOS},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -392,10 +391,10 @@ func TestLogin_RegistryHostMustLookLikeAHost(t *testing.T) {
 		"unicode host":    `https://münchen.example.com/`,
 	} {
 		for _, o := range []*options{
-			{registry: registry, gradle: true},
-			{registry: registry, npm: true},
-			{registry: registry, sbt: true},
-			{registry: registry, yarn: true},
+			{registry: registry, writer: writerForFlag("gradle")},
+			{registry: registry, writer: writerForFlag("npm")},
+			{registry: registry, writer: writerForFlag("sbt")},
+			{registry: registry, writer: writerForFlag("yarn")},
 		} {
 			t.Run(name, func(t *testing.T) {
 				err := o.validate()
@@ -516,14 +515,11 @@ func TestLogin_DispatchesToTheSelectedWriter(t *testing.T) {
 	//
 	// --docker is the one tool flag with no writerPaths entry: it registers a
 	// credential helper rather than writing a credential file of its own.
-	cmd := NewCmd(cmdtest.NewTestFactory(nil))
-	cmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if f.Value.Type() != "bool" || f.Name == "docker" || f.Name == "help" {
-			return
-		}
-		_, ok := paths["--"+f.Name]
-		assert.True(t, ok, "--%s writes a credential file but has no writerPaths entry", f.Name)
-	})
+	for _, w := range writers {
+		_, ok := paths["--"+w.flag]
+		assert.True(t, ok, "--%s writes a credential file but has no writerPaths entry", w.flag)
+	}
+	assert.Len(t, paths, len(writers), "writers table and writerPaths must have the same number of entries")
 }
 
 // TestLogin_TokenWithALineBreakReachesNoWriter pins that a token carrying a line
