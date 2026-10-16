@@ -15,6 +15,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/mr/mrutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
+	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/git"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
@@ -168,9 +169,18 @@ func (o *options) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	repoURL, err := glrepo.RemoteURL(mrProject, gitProtocol)
+	fetchRemote, err := glrepo.RemoteURL(mrProject, gitProtocol)
 	if err != nil {
 		return err
+	}
+
+	// Git only writes refs/remotes/<remote>/<branch> when it fetches through a
+	// named remote, so a URL fetch leaves branch.<name>.remote with nothing for
+	// @{u} to resolve to.
+	if strings.HasPrefix(mrRef, "refs/heads/") {
+		if remoteName := o.matchingRemoteName(mrProject); remoteName != "" {
+			fetchRemote = remoteName
+		}
 	}
 
 	localSHA := o.localBranchSHA()
@@ -184,9 +194,9 @@ func (o *options) run(ctx context.Context) error {
 		o.io.LogInfof("Created branch %q from local commit, skipping fetch.\n", o.branch)
 	default:
 		fetchRefSpec := fmt.Sprintf("%s:%s", mrRef, o.branch)
-		if err := o.gr.GitWithIO(o.io.StdOut, o.io.StdErr, "fetch", "--", repoURL, fetchRefSpec); err != nil {
+		if err := o.gr.GitWithIO(o.io.StdOut, o.io.StdErr, "fetch", "--", fetchRemote, fetchRefSpec); err != nil {
 			// Remote diverged from local. Fall back to fetching just the ref (FETCH_HEAD only).
-			if err := o.gr.GitWithIO(o.io.StdOut, o.io.StdErr, "fetch", "--", repoURL, mrRef); err != nil {
+			if err := o.gr.GitWithIO(o.io.StdOut, o.io.StdErr, "fetch", "--", fetchRemote, mrRef); err != nil {
 				return err
 			}
 			if err := o.resolveDivergence(ctx); err != nil {
@@ -198,11 +208,11 @@ func (o *options) run(ctx context.Context) error {
 	// .remote is needed for `git pull` to work
 	// .pushRemote is needed for `git push` to work, if user has set `remote.pushDefault`.
 	// see https://git-scm.com/docs/git-config#Documentation/git-config.txt-branchltnamegtremote
-	if _, err := o.gr.Git("config", fmt.Sprintf("branch.%s.remote", o.branch), repoURL); err != nil {
+	if _, err := o.gr.Git("config", fmt.Sprintf("branch.%s.remote", o.branch), fetchRemote); err != nil {
 		return err
 	}
 	if o.mr.AllowCollaboration {
-		if _, err := o.gr.Git("config", fmt.Sprintf("branch.%s.pushRemote", o.branch), repoURL); err != nil {
+		if _, err := o.gr.Git("config", fmt.Sprintf("branch.%s.pushRemote", o.branch), fetchRemote); err != nil {
 			return err
 		}
 	}
@@ -237,6 +247,27 @@ func (o *options) localBranchSHA() string {
 func (o *options) mrHeadIsLocal() bool {
 	_, err := o.gr.Git("rev-parse", "--verify", o.mr.SHA+"^{commit}")
 	return err == nil
+}
+
+// matchingRemoteName returns the name of a locally configured git remote that
+// points at mrProject, or an empty string if none matches.
+func (o *options) matchingRemoteName(mrProject *gitlab.Project) string {
+	remotes, err := o.remotes()
+	if err != nil {
+		dbg.Debug("could not read git remotes:", err.Error())
+		return ""
+	}
+	mrRepo, err := glrepo.FromFullName(mrProject.PathWithNamespace, o.baseRepo.RepoHost(), o.config())
+	if err != nil {
+		dbg.Debug("could not resolve merge request project:", err.Error())
+		return ""
+	}
+	for _, remote := range remotes {
+		if glrepo.IsSame(remote.Repo, mrRepo) {
+			return remote.Name
+		}
+	}
+	return ""
 }
 
 // resolveDivergence is called after the fallback fetch wrote FETCH_HEAD but the

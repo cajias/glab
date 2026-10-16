@@ -19,6 +19,9 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 	gitlabtesting "gitlab.com/gitlab-org/api/client-go/v3/testing"
 
+	"gitlab.com/gitlab-org/cli/internal/git"
+	"gitlab.com/gitlab-org/cli/internal/glinstance"
+	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
 
@@ -86,7 +89,7 @@ func Test_MRCheckout_RealGitOutput_Integration(t *testing.T) {
 		}, nil, nil)
 
 	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	f := cmdtest.NewTestFactory(ios, cmdtest.WithGitLabClient(testClient.Client))
+	f := cmdtest.NewTestFactory(ios, cmdtest.WithGitLabClient(testClient.Client), noRemotes)
 
 	cmd := NewCmdCheckout(f)
 	argv, err := shlex.Split("123")
@@ -210,10 +213,16 @@ func mockCheckoutMR(t *testing.T, originDir string) *gitlabtesting.TestClient {
 	return testClient
 }
 
+func noRemotes(f *cmdtest.Factory) {
+	f.RemotesStub = func() (glrepo.Remotes, error) {
+		return glrepo.Remotes{}, nil
+	}
+}
+
 func execCheckout(t *testing.T, testClient *gitlabtesting.TestClient, cli string) error {
 	t.Helper()
 	ios, _, stdout, stderr := cmdtest.TestIOStreams()
-	f := cmdtest.NewTestFactory(ios, cmdtest.WithGitLabClient(testClient.Client))
+	f := cmdtest.NewTestFactory(ios, cmdtest.WithGitLabClient(testClient.Client), noRemotes)
 	_, err := cmdtest.ExecuteCommand(NewCmdCheckout(f), cli, stdout, stderr)
 	return err
 }
@@ -304,4 +313,46 @@ func Test_MRCheckout_Force_Integration(t *testing.T) {
 		assert.Equal(t, "feat-new-mr", gitOutput(t, workDir, "symbolic-ref", "--short", "HEAD"))
 		assert.Equal(t, remoteSHA, gitOutput(t, workDir, "rev-parse", "HEAD"))
 	})
+}
+
+func Test_MRCheckout_TracksMatchingRemote_Integration(t *testing.T) {
+	originDir, workDir, _, _ := setupDivergedRepo(t)
+	runGit(t, workDir, "checkout", "main")
+	runGit(t, workDir, "branch", "-D", "feat-new-mr")
+	remoteSHA := gitOutput(t, originDir, "rev-parse", "refs/heads/feat-new-mr")
+	originURL := serveOrigin(t, originDir)
+	runGit(t, workDir, "remote", "add", "origin", originURL)
+	t.Chdir(workDir)
+
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID: 123, IID: 123, ProjectID: 3, SourceProjectID: 3,
+				SourceBranch: "feat-new-mr", State: "opened", SHA: remoteSHA,
+			},
+		}, nil, nil)
+	testClient.MockProjects.EXPECT().
+		GetProject(gomock.Any(), gomock.Any()).
+		Return(&gitlab.Project{
+			ID: 3, PathWithNamespace: "OWNER/REPO",
+			SSHURLToRepo: originURL, HTTPURLToRepo: originURL,
+		}, nil, nil)
+
+	withRemote := func(f *cmdtest.Factory) {
+		f.RemotesStub = func() (glrepo.Remotes, error) {
+			return glrepo.Remotes{{
+				Remote: &git.Remote{Name: "origin", Resolved: "base"},
+				Repo:   glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+			}}, nil
+		}
+	}
+	ios, _, stdout, stderr := cmdtest.TestIOStreams()
+	f := cmdtest.NewTestFactory(ios, cmdtest.WithGitLabClient(testClient.Client), withRemote)
+	_, err := cmdtest.ExecuteCommand(NewCmdCheckout(f), "123", stdout, stderr)
+	require.NoError(t, err, "stderr=%s", stderr.String())
+
+	assert.Equal(t, "origin", gitOutput(t, workDir, "config", "branch.feat-new-mr.remote"))
+	assert.Equal(t, "origin/feat-new-mr", gitOutput(t, workDir, "rev-parse", "--abbrev-ref", "feat-new-mr@{u}"))
 }
