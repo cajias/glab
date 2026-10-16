@@ -25,12 +25,16 @@ const (
 )
 
 func mockChecksumLookup(tc *gitlabtesting.TestClient, checksum string) {
+	mockChecksumLookupFiles(tc, []*gitlab.PackageFile{{ID: 1, FileName: "app.zip", FileSHA256: checksum}})
+}
+
+func mockChecksumLookupFiles(tc *gitlabtesting.TestClient, files []*gitlab.PackageFile) {
 	tc.MockPackages.EXPECT().
 		ListProjectPackages(repoName, gomock.Any(), gomock.Any(), gomock.Any()).
 		Return([]*gitlab.Package{{ID: 7, Name: "my-package", Version: "1.0.0"}}, &gitlab.Response{}, nil)
 	tc.MockPackages.EXPECT().
 		ListPackageFiles(repoName, int64(7), gomock.Any(), gomock.Any(), gomock.Any()).
-		Return([]*gitlab.PackageFile{{ID: 1, FileName: "app.zip", FileSHA256: checksum}}, &gitlab.Response{}, nil)
+		Return(files, &gitlab.Response{}, nil)
 }
 
 func Test_PackagesDownload(t *testing.T) {
@@ -54,6 +58,39 @@ func Test_PackagesDownload(t *testing.T) {
 					DownloadPackageFile(repoName, "my-package", "1.0.0", "app.zip", gomock.Any()).
 					Return([]byte(fileContents), nil, nil)
 				mockChecksumLookup(tc, fileContentsChecksum)
+			},
+		},
+		{
+			name:             "Republished file verifies against the most recent upload",
+			cli:              "--name my-package --version 1.0.0 --filename app.zip",
+			expectedMsg:      []string{"Downloaded package file to 'app.zip' (Package: my-package, Version: 1.0.0)\n"},
+			expectedFileName: "app.zip",
+			setupMocks: func(tc *gitlabtesting.TestClient) {
+				// The download endpoint serves the newest file with a given name,
+				// while the package files list is ordered by ID ascending.
+				tc.MockGenericPackages.EXPECT().
+					DownloadPackageFile(repoName, "my-package", "1.0.0", "app.zip", gomock.Any()).
+					Return([]byte(fileContents), nil, nil)
+				mockChecksumLookupFiles(tc, []*gitlab.PackageFile{
+					{ID: 1, FileName: "app.zip", FileSHA256: "checksum_of_the_old_upload"},
+					{ID: 2, FileName: "app.zip", FileSHA256: fileContentsChecksum},
+					{ID: 3, FileName: "other.zip", FileSHA256: "checksum_of_another_file"},
+				})
+			},
+		},
+		{
+			name:             "Republished file verifies against the highest ID in any list order",
+			cli:              "--name my-package --version 1.0.0 --filename app.zip",
+			expectedMsg:      []string{"Downloaded package file to 'app.zip' (Package: my-package, Version: 1.0.0)\n"},
+			expectedFileName: "app.zip",
+			setupMocks: func(tc *gitlabtesting.TestClient) {
+				tc.MockGenericPackages.EXPECT().
+					DownloadPackageFile(repoName, "my-package", "1.0.0", "app.zip", gomock.Any()).
+					Return([]byte(fileContents), nil, nil)
+				mockChecksumLookupFiles(tc, []*gitlab.PackageFile{
+					{ID: 9, FileName: "app.zip", FileSHA256: fileContentsChecksum},
+					{ID: 4, FileName: "app.zip", FileSHA256: "checksum_of_the_old_upload"},
+				})
 			},
 		},
 		{

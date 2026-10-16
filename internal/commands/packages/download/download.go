@@ -305,10 +305,17 @@ func fetchChecksum(ctx context.Context, client *gitlab.Client, repoName, name, v
 		return "", fmt.Errorf("failed to look up package files: %w", err)
 	}
 
+	// A package can hold several files with the same name, because generic
+	// packages accept duplicates by default. The download endpoint serves the
+	// most recent one, so verify against the matching file with the highest ID.
+	var latest *gitlab.PackageFile
 	for _, file := range files {
-		if file.FileName == fileName {
-			return file.FileSHA256, nil
+		if file.FileName == fileName && (latest == nil || file.ID > latest.ID) {
+			latest = file
 		}
+	}
+	if latest != nil {
+		return latest.FileSHA256, nil
 	}
 
 	return "", fmt.Errorf("couldn't locate file %s in package %s version %s", fileName, name, version)
