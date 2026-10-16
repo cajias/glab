@@ -53,6 +53,8 @@ type LoginOptions struct {
 	DeviceLogin     bool
 	UseKeyring      bool // Deprecated: keyring storage is now the default.
 	InsecureStorage bool
+
+	SetupGitCredentialHelper bool
 }
 
 var opts *LoginOptions
@@ -103,6 +105,8 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 
 			To pass a token on standard input, use %[1]s--stdin%[1]s.
 
+			To configure glab as the Git credential helper for the host without a prompt, for example in a CI/CD job, use %[1]s--setup-git-credential-helper%[1]s.
+
 			In interactive mode, glab detects GitLab instances from your Git remotes
 			and lists them as options, so you do not have to type the hostname manually.
 
@@ -148,6 +152,9 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 
 			# CI/CD setup with manual login: use when the command does not support CI job tokens, or you need a personal access token
 			glab auth login --hostname $CI_SERVER_FQDN --job-token $CI_JOB_TOKEN --api-protocol $CI_SERVER_PROTOCOL
+
+			# Non-interactive setup that also lets Git push and pull with the same token
+			glab auth login --hostname $CI_SERVER_FQDN --token $GITLAB_TOKEN --setup-git-credential-helper
 		`, "`"),
 		Annotations: map[string]string{
 			mcpannotations.Exclude: "true",
@@ -215,6 +222,7 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 	cmd.Flags().StringVarP(&opts.GitProtocol, "git-protocol", "g", "", "Git protocol. Options: ssh, https, http.")
 	cmd.Flags().StringVar(&opts.SSHHostname, "ssh-hostname", "", "SSH hostname for instances with a different SSH endpoint. A port is not required; Git uses the port from the remote URL. Also skips the SSH hostname prompt in interactive mode.")
 	cmd.Flags().StringVar(&opts.ContainerRegistryDomains, "container-registry-domains", "", "Container registry and image dependency proxy domains, comma-separated.")
+	cmd.Flags().BoolVar(&opts.SetupGitCredentialHelper, "setup-git-credential-helper", false, "Configure glab as the Git credential helper for this host without prompting. Use this in non-interactive runs, such as CI/CD jobs.")
 
 	cmd.MarkFlagsMutuallyExclusive("token", "stdin", "job-token", "web", "device")
 	cmd.MarkFlagsMutuallyExclusive("use-keyring", "insecure-storage")
@@ -239,6 +247,15 @@ func lookupUsername(ctx context.Context, opts *LoginOptions, hostname string) (s
 		return "", err
 	}
 	return user.Username, nil
+}
+
+// glabExecutable returns the path Git should call back into for the credential
+// helper, and falls back to the command name when the path is unavailable.
+func glabExecutable() string {
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return "glab"
 }
 
 func loginRun(ctx context.Context, opts *LoginOptions) error {
@@ -338,6 +355,9 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 		if err := cfg.Write(); err != nil {
 			return err
 		}
+		if err := setupGitCredentialHelper(opts, hostname, opts.GitProtocol); err != nil {
+			return err
+		}
 		logCredentialStorage(opts.IO, keyringPref)
 		warnEnvTokenPrecedence(opts.IO)
 		return nil
@@ -392,6 +412,9 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 		}
 
 		if err := cfg.Write(); err != nil {
+			return err
+		}
+		if err := setupGitCredentialHelper(opts, hostname, opts.GitProtocol); err != nil {
 			return err
 		}
 		logCredentialStorage(opts.IO, keyringPref)
@@ -688,11 +711,7 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 	}
 	apiProtocol := "https"
 
-	glabExecutable := "glab"
-	if exe, err := os.Executable(); err == nil {
-		glabExecutable = exe
-	}
-	credentialFlow := &authutils.GitCredentialFlow{Executable: glabExecutable}
+	credentialFlow := &authutils.GitCredentialFlow{Executable: glabExecutable()}
 
 	// Persist --git-protocol / --api-protocol before the interactive block so
 	// the flags aren't silently dropped when stdin isn't a TTY (--web /
@@ -723,7 +742,8 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 			gitProtocol = strings.ToLower(gitProtocol)
 		}
 
-		if gitProtocol != "ssh" {
+		// --setup-git-credential-helper already answers this prompt.
+		if gitProtocol != "ssh" && !opts.SetupGitCredentialHelper {
 			if err := credentialFlow.Prompt(ctx, opts.IO, hostname, gitProtocol); err != nil {
 				return err
 			}
@@ -759,6 +779,8 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 		}
 
 		opts.IO.LogErrorf("%s Configured API protocol.\n", c.GreenCheck())
+	} else if opts.GitProtocol != "" {
+		gitProtocol = strings.ToLower(opts.GitProtocol)
 	}
 	username, err := lookupUsername(ctx, opts, hostname)
 	if err != nil {
@@ -779,6 +801,9 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 		if err != nil {
 			return err
 		}
+	}
+	if err := setupGitCredentialHelper(opts, hostname, gitProtocol); err != nil {
+		return err
 	}
 
 	opts.IO.LogErrorf("%s Logged in as %s\n", c.GreenCheck(), c.Bold(username))

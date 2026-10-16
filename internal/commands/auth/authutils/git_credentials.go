@@ -49,10 +49,31 @@ func (gc *GitCredentialFlow) Setup(hostname, protocol, username, authToken strin
 	return gc.gitCredentialSetup(hostname, protocol, username, authToken)
 }
 
+// SetupHelper configures glab as the Git credential helper for hostname
+// without prompting, for callers that already know the user's intent: a
+// non-interactive login cannot answer Prompt, but still needs Git to
+// authenticate. It is safe to run again: the host key is rewritten rather than
+// appended to, whatever the executable is called.
+func (gc *GitCredentialFlow) SetupHelper(hostname, protocol string) error {
+	helper, _ := gitCredentialHelper(hostname, protocol)
+	if isOurCredentialHelper(helper) {
+		return nil
+	}
+
+	// An empty helper selects the branch in gitCredentialSetup that makes glab
+	// the helper for this host. Any other helper would only receive the
+	// credentials instead, which is not what the caller asked for.
+	gc.helper = ""
+	return gc.gitCredentialSetup(hostname, protocol, "", "")
+}
+
 func (gc *GitCredentialFlow) gitCredentialSetup(hostname, protocol, username, password string) error {
 	if gc.helper == "" {
-		// first use a blank value to indicate to git we want to sever the chain of credential helpers
-		preConfigureCmd := git.GitCommand("config", "--global", gitCredentialHelperKey(hostname, protocol), "")
+		// first use a blank value to indicate to git we want to sever the chain of credential helpers.
+		// --replace-all also collapses a key that holds several values, for example
+		// glab installed under another executable name by an earlier run, which a
+		// plain `git config` refuses to overwrite.
+		preConfigureCmd := git.GitCommand("config", "--global", "--replace-all", gitCredentialHelperKey(hostname, protocol), "")
 		if err := run.PrepareCmd(preConfigureCmd).Run(); err != nil {
 			return err
 		}
