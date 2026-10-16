@@ -70,6 +70,7 @@ func PipelineJobsWithID(client *gitlab.Client, pid any, ppid int64) ([]*gitlab.J
 	// reset
 	opts.Page = 0
 	bridgesList, err := gitlab.ScanAndCollect(func(p gitlab.PaginationOptionFunc) ([]*gitlab.Bridge, *gitlab.Response, error) {
+		//nolint:staticcheck // ListPipelineTriggerJobs needs GitLab 19.2+; keep bridges for older instances until client-go v4.
 		return client.Jobs.ListPipelineBridges(pid, ppid, opts, p)
 	})
 	if err != nil {
