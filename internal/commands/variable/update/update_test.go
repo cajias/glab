@@ -250,3 +250,188 @@ func Test_updateRun_group(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "✓ Updated variable TEST_VARIABLE for group mygroup.\n", stdout.String())
 }
+
+func Test_NewCmdUpdate_changedFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		cli  string
+		want options
+	}{
+		{
+			name: "no optional flags",
+			cli:  `cool_secret -v"a secret"`,
+			want: options{},
+		},
+		{
+			name: "protected only",
+			cli:  `cool_secret -v"a secret" -p`,
+			want: options{protectedChanged: true},
+		},
+		{
+			name: "explicitly disabled boolean flag counts as changed",
+			cli:  `cool_secret -v"a secret" --protected=false --masked=false --raw=false`,
+			want: options{protectedChanged: true, maskedChanged: true, rawChanged: true},
+		},
+		{
+			name: "type and description",
+			cli:  `cool_secret -v"a secret" -t file -d ""`,
+			want: options{typeChanged: true, descriptionChanged: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			io, _, _, _ := cmdtest.TestIOStreams()
+			f := cmdtest.NewTestFactory(io)
+
+			argv, err := shlex.Split(tt.cli)
+			require.NoError(t, err)
+
+			var gotOpts *options
+			cmd := NewCmdUpdate(f, func(opts *options) error {
+				gotOpts = opts
+				return nil
+			})
+			cmd.SetArgs(argv)
+			cmd.SetIn(&bytes.Buffer{})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+
+			_, err = cmd.ExecuteC()
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want.typeChanged, gotOpts.typeChanged)
+			assert.Equal(t, tt.want.protectedChanged, gotOpts.protectedChanged)
+			assert.Equal(t, tt.want.maskedChanged, gotOpts.maskedChanged)
+			assert.Equal(t, tt.want.rawChanged, gotOpts.rawChanged)
+			assert.Equal(t, tt.want.descriptionChanged, gotOpts.descriptionChanged)
+		})
+	}
+}
+
+func Test_updateRun_project_onlySendsChangedAttributes(t *testing.T) {
+	tests := []struct {
+		name  string
+		cli   string
+		check func(t *testing.T, got *gitlab.UpdateProjectVariableOptions)
+	}{
+		{
+			name: "value only leaves every other attribute unset",
+			cli:  `TEST_VARIABLE -v"foo"`,
+			check: func(t *testing.T, got *gitlab.UpdateProjectVariableOptions) {
+				t.Helper()
+				assert.Equal(t, "foo", *got.Value)
+				assert.Nil(t, got.VariableType)
+				assert.Nil(t, got.Protected)
+				assert.Nil(t, got.Masked)
+				assert.Nil(t, got.Raw)
+				assert.Nil(t, got.Description)
+			},
+		},
+		{
+			name: "only the passed attributes are sent",
+			cli:  `TEST_VARIABLE -v"foo" -p -d"new description"`,
+			check: func(t *testing.T, got *gitlab.UpdateProjectVariableOptions) {
+				t.Helper()
+				require.NotNil(t, got.Protected)
+				assert.True(t, *got.Protected)
+				require.NotNil(t, got.Description)
+				assert.Equal(t, "new description", *got.Description)
+				assert.Nil(t, got.VariableType)
+				assert.Nil(t, got.Masked)
+				assert.Nil(t, got.Raw)
+			},
+		},
+		{
+			name: "attributes can be turned off explicitly",
+			cli:  `TEST_VARIABLE -v"foo" --protected=false --masked=false --raw=false`,
+			check: func(t *testing.T, got *gitlab.UpdateProjectVariableOptions) {
+				t.Helper()
+				require.NotNil(t, got.Protected)
+				assert.False(t, *got.Protected)
+				require.NotNil(t, got.Masked)
+				assert.False(t, *got.Masked)
+				require.NotNil(t, got.Raw)
+				assert.False(t, *got.Raw)
+			},
+		},
+		{
+			name: "type and an empty description are sent when passed",
+			cli:  `TEST_VARIABLE -v"foo" -t file -d ""`,
+			check: func(t *testing.T, got *gitlab.UpdateProjectVariableOptions) {
+				t.Helper()
+				require.NotNil(t, got.VariableType)
+				assert.Equal(t, gitlab.FileVariableType, *got.VariableType)
+				require.NotNil(t, got.Description)
+				assert.Empty(t, *got.Description)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got *gitlab.UpdateProjectVariableOptions
+			testClient := gitlabtesting.NewTestClient(t)
+			testClient.MockProjectVariables.EXPECT().
+				UpdateVariable("owner/repo", "TEST_VARIABLE", gomock.Any()).
+				DoAndReturn(func(_ any, _ string, opt *gitlab.UpdateProjectVariableOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.ProjectVariable, *gitlab.Response, error) {
+					got = opt
+					return &gitlab.ProjectVariable{Key: "TEST_VARIABLE"}, nil, nil
+				})
+
+			io, _, _, _ := cmdtest.TestIOStreams()
+			f := cmdtest.NewTestFactory(io,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "gitlab.com", api.WithGitLabClient(testClient.Client))),
+				cmdtest.WithBaseRepo("owner", "repo", "gitlab.com"),
+			)
+
+			argv, err := shlex.Split(tt.cli)
+			require.NoError(t, err)
+
+			cmd := NewCmdUpdate(f, nil)
+			cmd.SetArgs(argv)
+			cmd.SetIn(&bytes.Buffer{})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+
+			_, err = cmd.ExecuteC()
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			tt.check(t, got)
+		})
+	}
+}
+
+func Test_updateRun_group_onlySendsChangedAttributes(t *testing.T) {
+	var got *gitlab.UpdateGroupVariableOptions
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockGroupVariables.EXPECT().
+		UpdateVariable("mygroup", "TEST_VARIABLE", gomock.Any()).
+		DoAndReturn(func(_ any, _ string, opt *gitlab.UpdateGroupVariableOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.GroupVariable, *gitlab.Response, error) {
+			got = opt
+			return &gitlab.GroupVariable{Key: "TEST_VARIABLE"}, nil, nil
+		})
+
+	io, _, _, _ := cmdtest.TestIOStreams()
+	f := cmdtest.NewTestFactory(io,
+		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "gitlab.com", api.WithGitLabClient(testClient.Client))),
+		cmdtest.WithBaseRepo("owner", "repo", "gitlab.com"),
+	)
+
+	cmd := NewCmdUpdate(f, nil)
+	cmd.SetArgs([]string{"TEST_VARIABLE", "-v", "foo", "--group", "mygroup", "-m"})
+	cmd.SetIn(&bytes.Buffer{})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	require.NotNil(t, got.Masked)
+	assert.True(t, *got.Masked)
+	assert.Nil(t, got.Protected)
+	assert.Nil(t, got.Raw)
+	assert.Nil(t, got.VariableType)
+	assert.Nil(t, got.Description)
+}
