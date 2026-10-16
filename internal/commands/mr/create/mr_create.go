@@ -140,6 +140,9 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 			glab mr create -t "Fix login bug" --template bug_fix
 			glab mr create -t "Security patch" --template security_fix.md --yes
 
+			# Use a template file from outside the repository
+			glab mr create -t "Fix login bug" --template ~/team-templates/bug_fix.md
+
 			# Create against another project without a local clone. All inputs must be passed as flags; no --push, --fill, or --template.
 			glab mr create --repo group/project --source-branch feature-branch --target-branch main --title "Add feature" --description "Details..." --yes
 
@@ -239,7 +242,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 	_ = mrCreateCmd.Flags().MarkHidden("target-project")
 	_ = mrCreateCmd.Flags().MarkDeprecated("target-project", "Use --repo instead.")
 
-	mrCreateCmd.Flags().StringVar(&opts.Template, "template", "", "Name of a template in '.gitlab/merge_request_templates/' to pre-populate the description. The '.md' extension is optional. Templates are loaded from the local repository only.")
+	mrCreateCmd.Flags().StringVar(&opts.Template, "template", "", "Template to pre-populate the description. A name is looked up in '.gitlab/merge_request_templates/' of the local repository, and the '.md' extension is optional. A value that is absolute or contains a path separator is read as a file path, for example '~/templates/feature.md'.")
 	cmdutils.AddDescriptionFileFlag(mrCreateCmd, "merge request")
 	cmdutils.AddAttachFlag(mrCreateCmd, &opts.Attach, "description")
 	mrCreateCmd.MarkFlagsMutuallyExclusive("template", "description")

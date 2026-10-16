@@ -110,6 +110,9 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 			glab issue create -t "Bug Report" --template bug
 			glab issue create -t "Feature Request" --template feature_proposal.md --yes
 
+			# Use a template file from outside the repository
+			glab issue create -t "Bug Report" --template ~/team-templates/bug.md
+
 			# Read the description from a file
 			glab issue create -t "we need this feature" --description-file description.md
 
@@ -201,7 +204,7 @@ func NewCmdCreate(f cmdutils.Factory) *cobra.Command {
 	issueCreateCmd.Flags().BoolVar(&opts.recover, "recover", false, "Save the options to a file if the issue fails to be created. If the file exists, the options will be loaded from the recovery file. (EXPERIMENTAL)")
 	issueCreateCmd.Flags().Int64VarP(&opts.EpicID, "epic", "", 0, "ID of the epic to add the issue to.")
 	issueCreateCmd.Flags().StringVarP(&opts.DueDate, "due-date", "", "", "A date in 'YYYY-MM-DD' format.")
-	issueCreateCmd.Flags().StringVar(&opts.Template, "template", "", "Name of a template in '.gitlab/issue_templates/' to pre-populate the description. The '.md' extension is optional. Templates are loaded from the local repository only.")
+	issueCreateCmd.Flags().StringVar(&opts.Template, "template", "", "Template to pre-populate the description. A name is looked up in '.gitlab/issue_templates/' of the local repository, and the '.md' extension is optional. A value that is absolute or contains a path separator is read as a file path, for example '~/templates/bug.md'.")
 	cmdutils.AddDescriptionFileFlag(issueCreateCmd, "issue")
 	issueCreateCmd.MarkFlagsMutuallyExclusive("template", "description")
 	issueCreateCmd.MarkFlagsMutuallyExclusive("template", "description-file")

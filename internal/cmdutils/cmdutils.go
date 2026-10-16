@@ -94,12 +94,21 @@ var listProjectMembers = func(ctx context.Context, client *gitlab.Client, projec
 	})
 }
 
-// LoadGitLabTemplate finds and loads the GitLab template from the working git directory
-// Follows the format officially supported by GitLab
-// https://docs.gitlab.com/user/project/description_templates/#set-a-default-template-for-merge-requests-and-issues.
+// LoadGitLabTemplate loads a description template. A bare name is looked up
+// in `.gitlab/<tmplType>/` of the working git directory, following
+// https://docs.gitlab.com/user/project/description_templates/#set-a-default-template-for-merge-requests-and-issues,
+// and returns an empty string when missing.
+//
+// GitLab only reads templates directly under `.gitlab/<tmplType>/`, so a name
+// that is absolute or contains a path separator is read as a file path
+// instead, and a missing file is an error.
 //
 // TODO: load from remote repository if repo is overridden by -R flag
 func LoadGitLabTemplate(tmplType, tmplName string) (string, error) {
+	if filepath.IsAbs(tmplName) || strings.ContainsAny(tmplName, "/"+string(filepath.Separator)) {
+		return loadTemplateFile(tmplName)
+	}
+
 	wdir, err := git.ToplevelDir()
 	if err != nil {
 		return "", err
@@ -124,6 +133,28 @@ func LoadGitLabTemplate(tmplType, tmplName string) (string, error) {
 	}
 
 	return strings.TrimSpace(string(tmpl)), nil
+}
+
+func loadTemplateFile(path string) (string, error) {
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, rest)
+	}
+
+	tmpl, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read template file: %w", err)
+	}
+
+	content := strings.TrimSpace(string(tmpl))
+	if content == "" {
+		return "", fmt.Errorf("template file %q is empty", path)
+	}
+
+	return content, nil
 }
 
 // TODO: properly handle errors in this function.
