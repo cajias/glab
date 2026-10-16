@@ -3,6 +3,7 @@
 package list
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -1072,4 +1073,52 @@ func TestMergeRequestList_ExplicitSortOverridesDefault(t *testing.T) {
 
 	// THEN
 	require.NoError(t, err)
+}
+
+func TestMergeRequestList_SingleUserPreservesAPIOrder(t *testing.T) {
+	for _, group := range []bool{false, true} {
+		for _, filter := range []string{"assignee", "reviewer"} {
+			t.Run(fmt.Sprintf("group=%t/%s", group, filter), func(t *testing.T) {
+				testClient := gitlabtesting.NewTestClient(t)
+				testClient.MockUsers.EXPECT().CurrentUser(gomock.Any()).Return(&gitlab.User{ID: 1}, nil, nil)
+				mrs := make([]*gitlab.BasicMergeRequest, 20)
+				for i := range mrs {
+					created := time.Date(2026, time.October, i+1, 0, 0, 0, 0, time.UTC)
+					mrs[i] = &gitlab.BasicMergeRequest{ID: int64(i + 1), IID: int64(i + 1), CreatedAt: &created}
+				}
+				if group {
+					testClient.MockMergeRequests.EXPECT().ListGroupMergeRequests("GROUP", gomock.Any()).
+						DoAndReturn(func(_ any, opts *gitlab.ListGroupMergeRequestsOptions, _ ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+							assert.Equal(t, "created_at", *opts.OrderBy)
+							assert.Equal(t, "asc", *opts.Sort)
+							return mrs, nil, nil
+						})
+				} else {
+					testClient.MockMergeRequests.EXPECT().ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+						DoAndReturn(func(_ any, opts *gitlab.ListProjectMergeRequestsOptions, _ ...gitlab.RequestOptionFunc) ([]*gitlab.BasicMergeRequest, *gitlab.Response, error) {
+							assert.Equal(t, "created_at", *opts.OrderBy)
+							assert.Equal(t, "asc", *opts.Sort)
+							return mrs, nil, nil
+						})
+				}
+				exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command { return NewCmdList(f, nil) }, false,
+					cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+					cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+				)
+				flags := "--" + filter + " @me --order created_at --sort asc --output json"
+				if group {
+					flags += " --group GROUP"
+				}
+				output, err := exec(flags)
+				require.NoError(t, err)
+				var got []*gitlab.BasicMergeRequest
+				require.NoError(t, json.Unmarshal([]byte(output.String()), &got))
+				require.Len(t, got, len(mrs))
+				for i := range got {
+					assert.Equal(t, mrs[i].IID, got[i].IID)
+				}
+				assert.Empty(t, output.Stderr())
+			})
+		}
+	}
 }

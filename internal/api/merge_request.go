@@ -38,6 +38,15 @@ func ListGroupMRs(client *gitlab.Client, projectID any, opts *gitlab.ListGroupMe
 	composedListOpts := composeCliListMROptions(listOpts...)
 	assigneeIds, reviewerIds := composedListOpts.assigneeIds, composedListOpts.reviewerIds
 
+	if len(assigneeIds) == 1 && len(reviewerIds) == 0 {
+		opts.AssigneeID = gitlab.AssigneeID(assigneeIds[0])
+		return listGroupMRsBase(client, projectID, opts)
+	}
+	if len(reviewerIds) == 1 && len(assigneeIds) == 0 {
+		opts.ReviewerID = gitlab.ReviewerID(reviewerIds[0])
+		return listGroupMRsBase(client, projectID, opts)
+	}
+
 	if len(assigneeIds) > 0 || len(reviewerIds) > 0 {
 		return listGroupMRsWithAssigneesOrReviewers(client, projectID, opts, assigneeIds, reviewerIds)
 	} else {
@@ -122,6 +131,15 @@ func listGroupMRsWithAssigneesOrReviewers(client *gitlab.Client, projectID any, 
 var ListMRs = func(client *gitlab.Client, projectID any, opts *gitlab.ListProjectMergeRequestsOptions, listOpts ...CliListMROption) ([]*gitlab.BasicMergeRequest, error) {
 	composedListOpts := composeCliListMROptions(listOpts...)
 	assigneeIds, reviewerIds := composedListOpts.assigneeIds, composedListOpts.reviewerIds
+
+	if len(assigneeIds) == 1 && len(reviewerIds) == 0 {
+		opts.AssigneeID = gitlab.AssigneeID(assigneeIds[0])
+		return listMRsBase(client, projectID, opts)
+	}
+	if len(reviewerIds) == 1 && len(assigneeIds) == 0 {
+		opts.ReviewerID = gitlab.ReviewerID(reviewerIds[0])
+		return listMRsBase(client, projectID, opts)
+	}
 
 	if len(assigneeIds) > 0 || len(reviewerIds) > 0 {
 		return listMRsWithAssigneesOrReviewers(client, projectID, opts, assigneeIds, reviewerIds)
