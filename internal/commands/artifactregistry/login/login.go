@@ -51,6 +51,108 @@ var registryAliasRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 // npm never reads.
 var registryHostRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+type writer struct {
+	flag       string
+	usage      string
+	needsAlias bool
+	needsURL   bool
+	login      func(o *options, alias string, result *artifactregistry.ExchangeResult) error
+}
+
+var writers = []writer{
+	{
+		flag:       "maven",
+		usage:      "Configure Maven to authenticate against the registry. Writes to ~/.m2/settings.xml.",
+		needsAlias: true,
+		needsURL:   false,
+		login: func(o *options, alias string, result *artifactregistry.ExchangeResult) error {
+			if err := loginMaven(alias, result.Token); err != nil {
+				return err
+			}
+			o.io.LogInfof("%s Configured Maven server %q for %s. Token expires at %s.\n", o.io.Color().GreenCheck(), alias, o.registry, result.ExpiresAt.Format(time.RFC3339))
+			return nil
+		},
+	},
+	{
+		flag:       "gradle",
+		usage:      "Configure Gradle to authenticate against the registry. Writes to ~/.gradle/gradle.properties.",
+		needsAlias: true,
+		needsURL:   true,
+		login: func(o *options, alias string, result *artifactregistry.ExchangeResult) error {
+			if err := loginGradle(o.registry, alias, result.Token); err != nil {
+				return err
+			}
+			// Names the three property keys, not just the file: the alias is what the
+			// user has to type into build.gradle, and it is the one writer whose
+			// output is unusable without knowing it.
+			o.io.LogInfof("%s Configured Gradle properties %sUrl, %sUsername and %sPassword for %s. Token expires at %s.\n",
+				o.io.Color().GreenCheck(), alias, alias, alias, o.registry, result.ExpiresAt.Format(time.RFC3339))
+			return nil
+		},
+	},
+	{
+		flag:       "npm",
+		usage:      "Configure npm to authenticate against the registry. Writes to ~/.npmrc.",
+		needsAlias: false,
+		needsURL:   true,
+		login: func(o *options, alias string, result *artifactregistry.ExchangeResult) error {
+			if err := loginNpm(o.registryURL, result.Token); err != nil {
+				return err
+			}
+			// Says "auth token", not "configured npm": all this writes is the
+			// credential. npm still resolves packages from its default registry
+			// until the user points it at this one, so a message claiming npm was
+			// configured would be describing a step the user still has to take.
+			o.io.LogInfof("%s Wrote an npm auth token for %s. Point npm at that registry with a `registry=` or `@scope:registry=` line if you have not already. Token expires at %s.\n",
+				o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
+			return nil
+		},
+	},
+	{
+		flag:       "sbt",
+		usage:      "Configure sbt to authenticate against the registry. Writes to ~/.sbt/1.0/credentials.sbt.",
+		needsAlias: false,
+		needsURL:   true,
+		login: func(o *options, alias string, result *artifactregistry.ExchangeResult) error {
+			if err := loginSbt(o.registryURL, result.Token); err != nil {
+				return err
+			}
+			o.io.LogInfof("%s Configured sbt for %s. Token expires at %s.\n", o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
+			return nil
+		},
+	},
+	{
+		flag:       "yarn",
+		usage:      "Configure Yarn 2 or later to authenticate against the registry. Writes to ~/.yarnrc.yml. For Yarn 1, use --npm.",
+		needsAlias: false,
+		needsURL:   true,
+		login: func(o *options, alias string, result *artifactregistry.ExchangeResult) error {
+			shadowed, err := loginYarn(o.registryURL, result.Token)
+			if err != nil {
+				return err
+			}
+			// Like --npm, says only what was written: Yarn keeps fetching from its
+			// default registry until npmRegistryServer names this one.
+			o.io.LogInfof("%s Wrote a Yarn auth token for %s. Point Yarn at that registry with `npmRegistryServer`, at the top level or under `npmScopes`, if you have not already. Token expires at %s.\n",
+				o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
+			for _, scope := range shadowed {
+				o.io.LogErrorf("%s The npmScopes entry %q in ~/.yarnrc.yml has its own npmAuthToken or npmAuthIdent, and Yarn sends that for @%s packages instead of this token. Remove it from the scope to use this login.\n",
+					o.io.Color().WarnIcon(), scope, scope)
+			}
+			return nil
+		},
+	},
+}
+
+func writerForFlag(flag string) *writer {
+	for i := range writers {
+		if writers[i].flag == flag {
+			return &writers[i]
+		}
+	}
+	return nil
+}
+
 type options struct {
 	io *iostreams.IOStreams
 	// apiClient builds the client for an exchange whose token this command
@@ -88,11 +190,7 @@ type options struct {
 	registryAlias string
 
 	docker bool
-	maven  bool
-	gradle bool
-	npm    bool
-	sbt    bool
-	yarn   bool
+	writer *writer
 }
 
 // NewCmd returns the `glab artifact-registry login` command.
@@ -116,6 +214,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		supportedOS:     dockercredhelper.Supported,
 	}
 
+	toolFlags := make([]bool, len(writers))
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate a package manager against the GitLab Artifact Registry. (EXPERIMENTAL)",
@@ -212,7 +311,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			`),
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			opts.complete(cmd)
+			opts.complete(cmd, toolFlags)
 
 			if err := opts.validate(); err != nil {
 				return err
@@ -221,14 +320,15 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		},
 	}
 
+	flagNames := make([]string, 0, len(writers)+1)
+	flagNames = append(flagNames, "docker")
 	cmd.Flags().BoolVar(&opts.docker, "docker", false, "Configure Docker to authenticate against the registry. Writes to $DOCKER_CONFIG, or ~/.docker when it is unset.")
-	cmd.Flags().BoolVar(&opts.maven, "maven", false, "Configure Maven to authenticate against the registry. Writes to ~/.m2/settings.xml.")
-	cmd.Flags().BoolVar(&opts.gradle, "gradle", false, "Configure Gradle to authenticate against the registry. Writes to ~/.gradle/gradle.properties.")
-	cmd.Flags().BoolVar(&opts.npm, "npm", false, "Configure npm to authenticate against the registry. Writes to ~/.npmrc.")
-	cmd.Flags().BoolVar(&opts.sbt, "sbt", false, "Configure sbt to authenticate against the registry. Writes to ~/.sbt/1.0/credentials.sbt.")
-	cmd.Flags().BoolVar(&opts.yarn, "yarn", false, "Configure Yarn 2 or later to authenticate against the registry. Writes to ~/.yarnrc.yml. For Yarn 1, use --npm.")
-	cmd.MarkFlagsMutuallyExclusive("docker", "maven", "gradle", "npm", "sbt", "yarn")
-	cmd.MarkFlagsOneRequired("docker", "maven", "gradle", "npm", "sbt", "yarn")
+	for i := range writers {
+		flagNames = append(flagNames, writers[i].flag)
+		cmd.Flags().BoolVar(&toolFlags[i], writers[i].flag, false, writers[i].usage)
+	}
+	cmd.MarkFlagsMutuallyExclusive(flagNames...)
+	cmd.MarkFlagsOneRequired(flagNames...)
 
 	cmd.Flags().StringVar(&opts.registry, "registry", "", "Registry to authenticate against. For --docker, a bare hostname; for others, typically a URL.")
 	cobra.CheckErr(cmd.MarkFlagRequired("registry"))
@@ -248,8 +348,14 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 // complete reads the state that lives on the parsed command rather than in a
 // flag variable.
-func (o *options) complete(cmd *cobra.Command) {
+func (o *options) complete(cmd *cobra.Command, toolFlags []bool) {
 	o.durationChanged = cmd.Flags().Changed("duration")
+	for i := range writers {
+		if i < len(toolFlags) && toolFlags[i] {
+			o.writer = &writers[i]
+			break
+		}
+	}
 }
 
 // validate rejects everything that makes the login impossible, before any
@@ -272,11 +378,11 @@ func (o *options) validate() error {
 	// MarkFlagsOneRequired only checks that one of the tool flags was passed, so
 	// --docker=false alone (all others left at their false default) reaches here
 	// with no tool actually selected.
-	if !o.docker && !o.maven && !o.gradle && !o.npm && !o.sbt && !o.yarn {
+	if !o.docker && o.writer == nil {
 		return &cmdutils.FlagError{Err: fmt.Errorf("invalid --docker, --maven, --gradle, --npm, --sbt, and --yarn: all false leaves no tool selected; pass one of them as true")}
 	}
 
-	if o.registryAlias != "" && (o.maven || o.gradle) && !registryAliasRe.MatchString(o.registryAlias) {
+	if o.registryAlias != "" && o.writer != nil && o.writer.needsAlias && !registryAliasRe.MatchString(o.registryAlias) {
 		return &cmdutils.FlagError{Err: fmt.Errorf("invalid --registry-alias: must contain only letters, digits, '.', '_', and '-' (got %q)", o.registryAlias)}
 	}
 
@@ -355,7 +461,7 @@ func (o *options) validate() error {
 	// message says so: url.Parse gives "//ar.example.com" a host and no scheme,
 	// and --gradle writes that value verbatim into {alias}Url, where Gradle
 	// rejects it as a repository URL at build time.
-	if o.gradle || o.npm || o.sbt || o.yarn {
+	if o.writer != nil && o.writer.needsURL {
 		u, err := url.Parse(o.registry)
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			return &cmdutils.FlagError{Err: fmt.Errorf("invalid --registry: must be a URL with a scheme and host, for example https://registry.example.com (got %q)", o.registry)}
@@ -387,7 +493,7 @@ func hasWhitespaceOrControl(s string) bool {
 }
 
 func (o *options) run(ctx context.Context) error {
-	if o.registryAlias != "" && !o.maven && !o.gradle {
+	if o.registryAlias != "" && (o.writer == nil || !o.writer.needsAlias) {
 		o.io.LogErrorf("%s --registry-alias is ignored outside --maven/--gradle logins.\n", o.io.Color().WarnIcon())
 	}
 
@@ -445,52 +551,7 @@ func (o *options) run(ctx context.Context) error {
 		return fmt.Errorf("failed to get artifact registry token: %w", err)
 	}
 
-	switch {
-	case o.maven:
-		if err := loginMaven(alias, result.Token); err != nil {
-			return err
-		}
-		o.io.LogInfof("%s Configured Maven server %q for %s. Token expires at %s.\n", o.io.Color().GreenCheck(), alias, o.registry, result.ExpiresAt.Format(time.RFC3339))
-	case o.gradle:
-		if err := loginGradle(o.registry, alias, result.Token); err != nil {
-			return err
-		}
-		// Names the three property keys, not just the file: the alias is what the
-		// user has to type into build.gradle, and it is the one writer whose
-		// output is unusable without knowing it.
-		o.io.LogInfof("%s Configured Gradle properties %sUrl, %sUsername and %sPassword for %s. Token expires at %s.\n",
-			o.io.Color().GreenCheck(), alias, alias, alias, o.registry, result.ExpiresAt.Format(time.RFC3339))
-	case o.npm:
-		if err := loginNpm(o.registryURL, result.Token); err != nil {
-			return err
-		}
-		// Says "auth token", not "configured npm": all this writes is the
-		// credential. npm still resolves packages from its default registry
-		// until the user points it at this one, so a message claiming npm was
-		// configured would be describing a step the user still has to take.
-		o.io.LogInfof("%s Wrote an npm auth token for %s. Point npm at that registry with a `registry=` or `@scope:registry=` line if you have not already. Token expires at %s.\n",
-			o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
-	case o.sbt:
-		if err := loginSbt(o.registryURL, result.Token); err != nil {
-			return err
-		}
-		o.io.LogInfof("%s Configured sbt for %s. Token expires at %s.\n", o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
-	case o.yarn:
-		shadowed, err := loginYarn(o.registryURL, result.Token)
-		if err != nil {
-			return err
-		}
-		// Like --npm, says only what was written: Yarn keeps fetching from its
-		// default registry until npmRegistryServer names this one.
-		o.io.LogInfof("%s Wrote a Yarn auth token for %s. Point Yarn at that registry with `npmRegistryServer`, at the top level or under `npmScopes`, if you have not already. Token expires at %s.\n",
-			o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
-		for _, scope := range shadowed {
-			o.io.LogErrorf("%s The npmScopes entry %q in ~/.yarnrc.yml has its own npmAuthToken or npmAuthIdent, and Yarn sends that for @%s packages instead of this token. Remove it from the scope to use this login.\n",
-				o.io.Color().WarnIcon(), scope, scope)
-		}
-	}
-
-	return nil
+	return o.writer.login(o, alias, result)
 }
 
 // defaultRegistryAlias derives a default alias/ID from registry, which may
