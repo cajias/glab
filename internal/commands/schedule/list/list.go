@@ -14,9 +14,8 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/utils"
 )
 
-var getSchedules = func(client *gitlab.Client, l *gitlab.ListPipelineSchedulesOptions, repo string) ([]*gitlab.PipelineSchedule, error) {
-	schedules, _, err := client.PipelineSchedules.ListPipelineSchedules(repo, l)
-	return schedules, err
+var getSchedules = func(client *gitlab.Client, l *gitlab.ListPipelineSchedulesOptions, repo string) ([]*gitlab.PipelineSchedule, *gitlab.Response, error) {
+	return client.PipelineSchedules.ListPipelineSchedules(repo, l)
 }
 
 type options struct {
@@ -77,7 +76,7 @@ func NewCmdList(f cmdutils.Factory) *cobra.Command {
 			perPage, _ := cmd.Flags().GetInt("per-page")
 			l.PerPage = int64(perPage)
 
-			schedules, err := getSchedules(client, l, repo.FullName())
+			schedules, resp, err := getSchedules(client, l, repo.FullName())
 			if err != nil {
 				return err
 			}
@@ -90,6 +89,9 @@ func NewCmdList(f cmdutils.Factory) *cobra.Command {
 			title.RepoName = repo.FullName()
 			title.Page = int(l.Page)
 			title.CurrentPageTotal = len(schedules)
+			if resp != nil {
+				title.Total = int(resp.TotalItems)
+			}
 
 			opts.io.LogInfof("%s\n%s\n", title.Describe(), ciutils.DisplaySchedules(opts.io, schedules, repo.FullName()))
 			return nil
