@@ -594,7 +594,11 @@ func createRun(opts *options) error {
 }
 
 func releaseFailedErr(err error, start time.Time) error {
-	return cmdutils.WrapError(err, fmt.Sprintf("release failed after %0.2f seconds.", time.Since(start).Seconds()))
+	message := fmt.Sprintf("release failed after %0.2f seconds.", time.Since(start).Seconds())
+	if gitlab.HasStatusCode(err, http.StatusUnprocessableEntity) && strings.Contains(strings.ToLower(err.Error()), "semver must follow semantic version") {
+		err = fmt.Errorf("%w. Use a MAJOR.MINOR.PATCH tag such as 1.0.0, v1.0.0, or 1.0.0-alpha. Only a lowercase v prefix is allowed, and numeric identifiers must not have leading zeros. See https://docs.gitlab.com/ci/components/#semantic-versioning", err)
+	}
+	return cmdutils.WrapError(err, message)
 }
 
 func getMilestoneByTitle(c *options, title string) (*gitlab.Milestone, error) {
