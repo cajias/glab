@@ -31,6 +31,14 @@ type options struct {
 	raw         bool
 	group       string
 	description string
+
+	// Attributes that were not passed on the command line are left out of the
+	// request, so the API keeps their current values.
+	typeChanged        bool
+	protectedChanged   bool
+	maskedChanged      bool
+	rawChanged         bool
+	descriptionChanged bool
 }
 
 func NewCmdUpdate(f cmdutils.Factory, runE func(opts *options) error) *cobra.Command {
@@ -47,6 +55,11 @@ func NewCmdUpdate(f cmdutils.Factory, runE func(opts *options) error) *cobra.Com
 			You can pass the variable value from standard input. Use %[1]s--group%[1]s
 			to update a variable for a group instead of the current project.
 			The %[1]s--scope%[1]s flag does not apply to group variables.
+
+			Only the attributes you pass are changed. For example, %[1]s--protected%[1]s,
+			%[1]s--masked%[1]s, %[1]s--raw%[1]s, %[1]s--type%[1]s and %[1]s--description%[1]s keep their
+			current values unless you set them. To turn a boolean attribute off, use
+			%[1]s--protected=false%[1]s.
 		`, "`"),
 		Args: cobra.RangeArgs(1, 2),
 		Example: heredoc.Doc(`
@@ -91,6 +104,12 @@ func (o *options) complete(args []string) {
 }
 
 func (o *options) validate(cmd *cobra.Command, args []string) error {
+	o.typeChanged = cmd.Flags().Changed("type")
+	o.protectedChanged = cmd.Flags().Changed("protected")
+	o.maskedChanged = cmd.Flags().Changed("masked")
+	o.rawChanged = cmd.Flags().Changed("raw")
+	o.descriptionChanged = cmd.Flags().Changed("description")
+
 	if !variableutils.IsValidKey(o.key) {
 		return cmdutils.FlagError{Err: fmt.Errorf("invalid key provided: %s", variableutils.ValidKeyMsg)}
 	}
@@ -136,17 +155,7 @@ func (o *options) run() error {
 
 	if o.group != "" {
 		// update group-level variable
-		updateGroupVarOpts := &gitlab.UpdateGroupVariableOptions{
-			Value:            new(o.value),
-			VariableType:     new(gitlab.VariableTypeValue(o.typ)),
-			Masked:           new(o.masked),
-			Protected:        new(o.protected),
-			Raw:              new(o.raw),
-			EnvironmentScope: new(o.scope),
-			Description:      new(o.description),
-		}
-
-		_, _, err = client.GroupVariables.UpdateVariable(o.group, o.key, updateGroupVarOpts)
+		_, _, err = client.GroupVariables.UpdateVariable(o.group, o.key, o.groupUpdateOptions())
 		if err != nil {
 			return err
 		}
@@ -161,21 +170,58 @@ func (o *options) run() error {
 		return err
 	}
 
-	updateProjectVarOpts := &gitlab.UpdateProjectVariableOptions{
-		Value:            new(o.value),
-		VariableType:     new(gitlab.VariableTypeValue(o.typ)),
-		Masked:           new(o.masked),
-		Protected:        new(o.protected),
-		Raw:              new(o.raw),
-		EnvironmentScope: new(o.scope),
-		Filter:           &gitlab.VariableFilter{EnvironmentScope: o.scope},
-		Description:      new(o.description),
-	}
-	_, _, err = client.ProjectVariables.UpdateVariable(baseRepo.FullName(), o.key, updateProjectVarOpts)
+	_, _, err = client.ProjectVariables.UpdateVariable(baseRepo.FullName(), o.key, o.projectUpdateOptions())
 	if err != nil {
 		return err
 	}
 
 	o.io.LogInfof("%s Updated variable %s for project %s with scope %s.\n", c.GreenCheck(), o.key, baseRepo.FullName(), o.scope)
 	return nil
+}
+
+func (o *options) groupUpdateOptions() *gitlab.UpdateGroupVariableOptions {
+	opts := &gitlab.UpdateGroupVariableOptions{
+		Value:            new(o.value),
+		EnvironmentScope: new(o.scope),
+	}
+	if o.typeChanged {
+		opts.VariableType = new(gitlab.VariableTypeValue(o.typ))
+	}
+	if o.maskedChanged {
+		opts.Masked = new(o.masked)
+	}
+	if o.protectedChanged {
+		opts.Protected = new(o.protected)
+	}
+	if o.rawChanged {
+		opts.Raw = new(o.raw)
+	}
+	if o.descriptionChanged {
+		opts.Description = new(o.description)
+	}
+	return opts
+}
+
+func (o *options) projectUpdateOptions() *gitlab.UpdateProjectVariableOptions {
+	opts := &gitlab.UpdateProjectVariableOptions{
+		Value:            new(o.value),
+		EnvironmentScope: new(o.scope),
+		Filter:           &gitlab.VariableFilter{EnvironmentScope: o.scope},
+	}
+	if o.typeChanged {
+		opts.VariableType = new(gitlab.VariableTypeValue(o.typ))
+	}
+	if o.maskedChanged {
+		opts.Masked = new(o.masked)
+	}
+	if o.protectedChanged {
+		opts.Protected = new(o.protected)
+	}
+	if o.rawChanged {
+		opts.Raw = new(o.raw)
+	}
+	if o.descriptionChanged {
+		opts.Description = new(o.description)
+	}
+	return opts
 }
