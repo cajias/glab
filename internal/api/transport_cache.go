@@ -115,6 +115,7 @@ func newTransport(key transportKey) (*http.Transport, error) {
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   25,
 		IdleConnTimeout:       idleTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
