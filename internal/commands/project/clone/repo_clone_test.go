@@ -326,6 +326,40 @@ func TestCloneFullURLMakesNoAPICall(t *testing.T) {
 	assert.Equal(t, "git clone -- https://gitlab.example.com/mygroup/myrepo.git", strings.Join(cs.Calls[0].Args, " "))
 }
 
+func TestCloneWikiFromFullURLUsesURLHost(t *testing.T) {
+	io, _, _, _ := cmdtest.TestIOStreams()
+
+	var apiClientHost string
+	fac := cmdtest.NewTestFactory(io, func(f *cmdtest.Factory) {
+		f.ApiClientStub = func(repoHost string) (*api.Client, error) {
+			apiClientHost = repoHost
+			tc := gitlabtesting.NewTestClient(t)
+			tc.MockProjects.EXPECT().GetProject("mygroup/myrepo", gomock.Any()).Return(
+				&gitlab.Project{
+					PathWithNamespace: "mygroup/myrepo",
+					SSHURLToRepo:      "git@gitlab.example.com:mygroup/myrepo.git",
+					HTTPURLToRepo:     "https://gitlab.example.com/mygroup/myrepo.git",
+					WikiAccessLevel:   gitlab.EnabledAccessControl,
+				}, nil, nil)
+			return cmdtest.NewTestApiClient(t, nil, "", repoHost, api.WithGitLabClient(tc.Client)), nil
+		}
+	})
+
+	cs, restore := test.InitCmdStubber()
+	defer restore()
+	cs.Stub("")
+
+	cmd := NewCmdClone(fac, nil)
+	cmd.SetArgs([]string{"--wiki", "https://gitlab.example.com/mygroup/myrepo"})
+	cmd.SetIn(io.In)
+	cmd.SetOut(io.StdOut)
+	cmd.SetErr(io.StdErr)
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab.example.com", apiClientHost, "a full URL wiki clone must build the API client for the URL's host, not the default")
+}
+
 func TestCloneWikiRepository(t *testing.T) {
 	opts := &options{
 		currentUser: &gitlab.User{Username: "OWNER"},
