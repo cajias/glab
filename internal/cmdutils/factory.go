@@ -45,6 +45,7 @@ type DefaultFactory struct {
 	buildInfo       api.BuildInfo
 	defaultHostname string
 	defaultProtocol string
+	transports      *api.TransportCache
 
 	mu sync.Mutex // protects the fields below
 	// cachedBaseRepo if set is the SSoT of the repository to use in BaseRepo(), GitLabClient() and other factory function that require a repository.
@@ -60,6 +61,7 @@ func NewFactory(io *iostreams.IOStreams, resolveRepos bool, cfg config.Config, b
 		buildInfo:       buildInfo,
 		defaultHostname: glinstance.DefaultHostname,
 		defaultProtocol: glinstance.DefaultProtocol,
+		transports:      api.NewTransportCache(),
 	}
 
 	// Fetch the custom host config from env vars, then local config.yml, then global config,yml.
@@ -104,7 +106,7 @@ func (f *DefaultFactory) ApiClient(repoHost string) (*api.Client, error) {
 	if repoHost == "" {
 		repoHost = f.defaultHostname
 	}
-	c, err := api.NewClientFromConfig(repoHost, f.config, false, f.buildInfo.UserAgent())
+	c, err := api.NewClientFromConfig(repoHost, f.config, false, f.buildInfo.UserAgent(), api.WithTransportCache(f.transports))
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +135,7 @@ func (f *DefaultFactory) GitLabClient() (*gitlab.Client, error) {
 		dbg.Debug("The current command request Factory.GitLabClient() without being able to resolve a base repository. The command should probably use Factory.ApiClient() instead")
 	}
 
-	c, err := api.NewClientFromConfig(repoHost, f.config, false, f.buildInfo.UserAgent())
+	c, err := api.NewClientFromConfig(repoHost, f.config, false, f.buildInfo.UserAgent(), api.WithTransportCache(f.transports))
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +171,7 @@ func (f *DefaultFactory) resolveBaseRepoFromRemotes(ctx context.Context) (glrepo
 		return remotes[0], nil
 	}
 
-	ac, err := api.NewClientFromConfig(remotes[0].RepoHost(), f.config, false, f.buildInfo.UserAgent())
+	ac, err := api.NewClientFromConfig(remotes[0].RepoHost(), f.config, false, f.buildInfo.UserAgent(), api.WithTransportCache(f.transports))
 	if err != nil {
 		return nil, err
 	}

@@ -3,11 +3,9 @@ package api
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,7 +60,9 @@ type Client struct {
 
 	customHeaders          map[string]string
 	customHeaderExtraHosts map[string]struct{}
-	proxy                  func(*http.Request) (*url.URL, error)
+	// proxyURL is nil when the proxy comes from the environment.
+	proxyURL   *url.URL
+	transports *TransportCache
 }
 
 func (c *Client) HTTPClient() *http.Client {
@@ -96,9 +96,7 @@ type newAuthSource func(c *http.Client) (authSource gitlab.AuthSource, err error
 // NewClient initializes a api client for use throughout glab.
 func NewClient(newAuthSource newAuthSource, options ...ClientOption) (*Client, error) {
 	// 0. initialize empty Client
-	client := &Client{
-		proxy: http.ProxyFromEnvironment,
-	}
+	client := &Client{}
 
 	// 1. apply provided option functions to populate client
 	for _, option := range options {
@@ -149,67 +147,35 @@ func (c *Client) initializeHTTPClient() error {
 		return nil
 	}
 
-	// Create TLS configuration based on client settings
-	tlsConfig := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: c.allowInsecure,
-	}
-
-	// Set secure cipher suites for gitlab.com
 	u, err := url.Parse(c.baseURL)
 	if err != nil {
 		return err
 	}
-	if !glinstance.IsSelfHosted(u.Hostname()) {
-		tlsConfig.CipherSuites = secureCipherSuites
+
+	key := transportKey{
+		caFile:         c.caFile,
+		clientCertFile: c.clientCertFile,
+		clientKeyFile:  c.clientKeyFile,
+		insecure:       c.allowInsecure,
+		gitlabCom:      !glinstance.IsSelfHosted(u.Hostname()),
+	}
+	if c.proxyURL != nil {
+		key.proxyURL = c.proxyURL.String()
 	}
 
-	// Configure custom CA if provided
-	if c.caFile != "" {
-		caCert, err := os.ReadFile(c.caFile)
-		if err != nil {
-			return fmt.Errorf("error reading cert file: %w", err)
-		}
-		// use system cert pool as a baseline
-		caCertPool, err := x509.SystemCertPool()
-		if err != nil {
-			return err
-		}
-		caCertPool.AppendCertsFromPEM(caCert)
-		tlsConfig.RootCAs = caCertPool
-	}
-
-	// Configure client certificates if provided
-	if c.clientCertFile != "" && c.clientKeyFile != "" {
-		clientCert, err := tls.LoadX509KeyPair(c.clientCertFile, c.clientKeyFile)
+	var rt http.RoundTripper
+	if c.transports != nil {
+		t, err := c.transports.transport(key)
 		if err != nil {
 			return err
 		}
-		tlsConfig.Certificates = []tls.Certificate{clientCert}
-	}
-
-	// Set appropriate timeouts based on whether custom CA is used
-	dialTimeout := 5 * time.Second
-	keepAlive := 5 * time.Second
-	idleTimeout := 30 * time.Second
-	if c.caFile != "" {
-		dialTimeout = 30 * time.Second
-		keepAlive = 30 * time.Second
-		idleTimeout = 90 * time.Second
-	}
-
-	var rt http.RoundTripper = &http.Transport{
-		Proxy: c.proxy,
-		DialContext: (&net.Dialer{
-			Timeout:   dialTimeout,
-			KeepAlive: keepAlive,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       idleTimeout,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig:       tlsConfig,
+		rt = &pooledTransport{rt: t}
+	} else {
+		t, err := newTransport(key)
+		if err != nil {
+			return err
+		}
+		rt = t
 	}
 
 	if enabled, found := utils.IsEnvVarEnabled("GLAB_DEBUG_HTTP"); found && enabled {
@@ -229,10 +195,11 @@ func (c *Client) initializeHTTPClient() error {
 	return nil
 }
 
-// WithProxy allows overriding the proxy function for the transport
-func WithProxy(proxy func(*http.Request) (*url.URL, error)) ClientOption {
+// WithProxy routes requests through proxyURL. A nil proxyURL uses the proxy
+// from the environment.
+func WithProxy(proxyURL *url.URL) ClientOption {
 	return func(c *Client) error {
-		c.proxy = proxy
+		c.proxyURL = proxyURL
 		return nil
 	}
 }
@@ -309,9 +276,9 @@ func WithUserAgent(userAgent string) ClientOption {
 }
 
 // FromConfigOption customizes how NewClientFromConfig resolves credentials
-// out of config. Distinct from ClientOption, which configures the client
-// that has already been built: this affects resolution that happens before
-// a Client exists.
+// out of config and how it builds the client. Distinct from ClientOption,
+// which configures the client that has already been built: this affects
+// resolution that happens before a Client exists.
 type FromConfigOption func(*fromConfigOptions)
 
 type fromConfigOptions struct {
@@ -323,6 +290,8 @@ type fromConfigOptions struct {
 	searchEnvForIdentity bool
 
 	withoutAuthentication bool
+
+	transports *TransportCache
 }
 
 // WithoutTokenFromEnvironment resolves the access token and the is_oauth2
@@ -353,6 +322,14 @@ func WithoutTokenFromEnvironment() FromConfigOption {
 func WithoutAuthentication() FromConfigOption {
 	return func(o *fromConfigOptions) {
 		o.withoutAuthentication = true
+	}
+}
+
+// WithTransportCache makes the client share its connection pool with other
+// clients built with the same cache and the same transport settings.
+func WithTransportCache(cache *TransportCache) FromConfigOption {
+	return func(o *fromConfigOptions) {
+		o.transports = cache
 	}
 }
 
@@ -405,15 +382,19 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 	caCert, _ := cfg.Get(repoHost, "ca_cert")
 	clientCert, _ := cfg.Get(repoHost, "client_cert")
 	keyFile, _ := cfg.Get(repoHost, "client_key")
-	proxy, err := ProxyFromConfig(cfg, repoHost)
+	proxyURL, err := config.ResolveHostProxy(cfg, repoHost)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve proxy function: %w", err)
+		return nil, fmt.Errorf("failed to resolve proxy: %w", err)
 	}
 
 	// Build options based on configuration
 	options := []ClientOption{
 		WithUserAgent(userAgent),
-		WithProxy(proxy),
+		WithProxy(proxyURL),
+		func(c *Client) error {
+			c.transports = fromCfg.transports
+			return nil
+		},
 	}
 
 	headers, err := config.ResolveCustomHeaders(cfg, repoHost)
