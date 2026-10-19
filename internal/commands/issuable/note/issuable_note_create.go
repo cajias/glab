@@ -19,6 +19,7 @@ import (
 
 func NewCmdNote(f cmdutils.Factory, issueType issuable.IssueType) *cobra.Command {
 	var attach []string
+	var internal bool
 
 	issueNoteCreateCmd := &cobra.Command{
 		Use:     fmt.Sprintf("note <%s-id>", issueType),
@@ -35,6 +36,9 @@ func NewCmdNote(f cmdutils.Factory, issueType issuable.IssueType) *cobra.Command
 
 			# Comment with the message given inline
 			glab %[1]s note 123 --message "Looking into this now."
+
+			# Create an internal note, visible only to project members
+			glab %[1]s note 123 --message "Rotating the leaked token now." --internal
 
 			# Attach a screenshot alongside the message
 			glab %[1]s note 123 --message "Here is the repro." --attach ./screenshot.png
@@ -87,7 +91,12 @@ func NewCmdNote(f cmdutils.Factory, issueType issuable.IssueType) *cobra.Command
 				return errors.New("aborted: note is empty")
 			}
 
-			noteInfo, _, err := client.Notes.CreateIssueNote(repo.FullName(), issue.IID, &gitlab.CreateIssueNoteOptions{Body: &body})
+			opts := &gitlab.CreateIssueNoteOptions{Body: &body}
+			if internal {
+				opts.Internal = &internal
+			}
+
+			noteInfo, _, err := client.Notes.CreateIssueNote(repo.FullName(), issue.IID, opts)
 			if err != nil {
 				return err
 			}
@@ -97,6 +106,7 @@ func NewCmdNote(f cmdutils.Factory, issueType issuable.IssueType) *cobra.Command
 		},
 	}
 	issueNoteCreateCmd.Flags().StringP("message", "m", "", "Message text.")
+	issueNoteCreateCmd.Flags().BoolVar(&internal, "internal", false, "Create the note as an internal note, visible only to project members.")
 	cmdutils.AddAttachFlag(issueNoteCreateCmd, &attach, "comment")
 
 	return issueNoteCreateCmd
