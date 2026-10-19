@@ -132,7 +132,11 @@ func DisplayAllMRs(streams *iostreams.IOStreams, mrs []*gitlab.BasicMergeRequest
 	table.SetIsTTY(streams.IsOutputTTY())
 	for _, m := range mrs {
 		table.AddCell(streams.Hyperlink(MRState(c, m), m.WebURL))
-		table.AddCell(m.References.Full)
+		var ref string
+		if m.References != nil {
+			ref = m.References.Full
+		}
+		table.AddCell(ref)
 		table.AddCell(m.Title)
 		table.AddCell(c.Cyan(fmt.Sprintf("(%s) ← (%s)", m.TargetBranch, m.SourceBranch)))
 		table.EndRow()

@@ -1122,3 +1122,34 @@ func TestMergeRequestList_SingleUserPreservesAPIOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeRequestList_NilReferences(t *testing.T) {
+	testClient := gitlabtesting.NewTestClient(t)
+
+	testClient.MockMergeRequests.EXPECT().
+		ListProjectMergeRequests("OWNER/REPO", gomock.Any()).
+		Return([]*gitlab.BasicMergeRequest{
+			{
+				State:        "opened",
+				IID:          76,
+				Title:        "test mr with nil references",
+				TargetBranch: "main",
+				SourceBranch: "feature-branch",
+				WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/76",
+				References:   nil,
+			},
+		}, nil, nil)
+
+	exec := cmdtest.SetupCmdForTest(
+		t,
+		func(f cmdutils.Factory) *cobra.Command { return NewCmdList(f, nil) },
+		false,
+		cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(testClient.Client))),
+	)
+
+	output, err := exec("")
+	require.NoError(t, err)
+	assert.Equal(t, "Showing 1 open merge request on OWNER/REPO. (Page 1)\n\n!76\t\ttest mr with nil references\t(main) ← (feature-branch)\n\n", output.String())
+	assert.Empty(t, output.Stderr())
+}
