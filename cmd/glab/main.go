@@ -114,8 +114,6 @@ func main() {
 	rootCmd := commands.NewCmdRoot(cmdFactory)
 	cmd, _, err := rootCmd.Traverse(expandedArgs)
 
-	setupTelemetryHook(cfg, cmdFactory, cmd)
-
 	if err != nil || cmd == rootCmd {
 		originalArgs := expandedArgs
 		isShell := false
@@ -159,6 +157,7 @@ func main() {
 	tableprinter.SetIsTTY(cmdFactory.IO().IsOutputTTY())
 
 	rootCmd.SetArgs(expandedArgs)
+	setupTelemetryHook(cfg, cmdFactory, rootCmd, expandedArgs)
 
 	// Convert markdown [text](url) links in command Long and Example fields to
 	// OSC 8 terminal hyperlinks before Fang renders help text.
@@ -193,9 +192,9 @@ func main() {
 	}
 }
 
-func setupTelemetryHook(cfg config.Config, f cmdutils.Factory, cmd *cobra.Command) {
+func setupTelemetryHook(cfg config.Config, f cmdutils.Factory, rootCmd *cobra.Command, args []string) {
 	if isTelemetryEnabled(cfg) {
-		cobra.OnFinalize(addTelemetryHook(f, cmd))
+		cobra.OnFinalize(addTelemetryHook(f, rootCmd, args))
 	}
 }
 
