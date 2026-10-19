@@ -869,6 +869,25 @@ func Test_DisplayAllMRs(t *testing.T) {
 	assert.Equal(t, expected, got)
 }
 
+func Test_DisplayAllMRs_nilReferences(t *testing.T) {
+	streams, _, _, _ := cmdtest.TestIOStreams()
+	mrs := []*gitlab.BasicMergeRequest{
+		{
+			IID:          1,
+			State:        "opened",
+			Title:        "add tests",
+			TargetBranch: "main",
+			SourceBranch: "new-tests",
+			References:   nil,
+		},
+	}
+
+	expected := "!1\t\tadd tests\t(main) ← (new-tests)\n"
+
+	got := DisplayAllMRs(streams, mrs)
+	assert.Equal(t, expected, got)
+}
+
 func Test_PrintMRApprovalState(t *testing.T) {
 	scenarios := []struct {
 		name          string
