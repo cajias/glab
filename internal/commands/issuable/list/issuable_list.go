@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
@@ -44,6 +45,12 @@ type ListOptions struct {
 	Opened       bool
 	All          bool
 	Confidential bool
+
+	// dates
+	CreatedAfter  time.Time
+	CreatedBefore time.Time
+	UpdatedAfter  time.Time
+	UpdatedBefore time.Time
 
 	// Pagination
 	Page    int64
@@ -87,7 +94,8 @@ func NewCmdList(f cmdutils.Factory, runE func(opts *ListOptions) error, issueTyp
 			glab %[1]s list --all
 			glab %[1]s ls --all
 			glab %[1]s list --assignee=@me
-			glab %[1]s list --milestone release-2.0.0 --opened`, issueType)),
+			glab %[1]s list --milestone release-2.0.0 --opened
+			glab %[1]s list --updated-after 2026-10-01T00:00:00Z`, issueType)),
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		Annotations: map[string]string{
@@ -165,6 +173,10 @@ func NewCmdList(f cmdutils.Factory, runE func(opts *ListOptions) error, issueTyp
 	issueListCmd.Flags().BoolVarP(&opts.All, "all", "A", false, fmt.Sprintf("Get all %ss.", issueType))
 	issueListCmd.Flags().BoolVarP(&opts.Closed, "closed", "c", false, fmt.Sprintf("Get only closed %ss.", issueType))
 	issueListCmd.Flags().BoolVarP(&opts.Confidential, "confidential", "C", false, fmt.Sprintf("Filter by confidential %ss.", issueType))
+	issueListCmd.Flags().TimeVar(&opts.CreatedAfter, "created-after", time.Time{}, []string{time.RFC3339}, fmt.Sprintf("Filter %ss created after a certain date (RFC 3339, for example 2026-10-01T00:00:00Z).", issueType))
+	issueListCmd.Flags().TimeVar(&opts.CreatedBefore, "created-before", time.Time{}, []string{time.RFC3339}, fmt.Sprintf("Filter %ss created before a certain date (RFC 3339, for example 2026-10-01T00:00:00Z).", issueType))
+	issueListCmd.Flags().TimeVar(&opts.UpdatedAfter, "updated-after", time.Time{}, []string{time.RFC3339}, fmt.Sprintf("Filter %ss updated after a certain date (RFC 3339, for example 2026-10-01T00:00:00Z).", issueType))
+	issueListCmd.Flags().TimeVar(&opts.UpdatedBefore, "updated-before", time.Time{}, []string{time.RFC3339}, fmt.Sprintf("Filter %ss updated before a certain date (RFC 3339, for example 2026-10-01T00:00:00Z).", issueType))
 	issueListCmd.Flags().VarP(cmdutils.NewEnumValue([]string{"details", "ids", "urls"}, "details", &opts.OutputFormat), "output-format", "F", "Options: 'details', 'ids', 'urls'.")
 	cmdutils.EnableJSONOutputP(issueListCmd, f.IO(), &opts.Output, "O", "Options: 'text' or 'json'.")
 	issueListCmd.Flags().Int64VarP(&opts.Page, "page", "p", 1, "Page number.")
@@ -275,6 +287,22 @@ func listRun(opts *ListOptions) error {
 	}
 	if opts.Confidential {
 		listOpts.Confidential = new(opts.Confidential)
+		opts.ListType = "search"
+	}
+	if !opts.CreatedAfter.IsZero() {
+		listOpts.CreatedAfter = new(opts.CreatedAfter)
+		opts.ListType = "search"
+	}
+	if !opts.CreatedBefore.IsZero() {
+		listOpts.CreatedBefore = new(opts.CreatedBefore)
+		opts.ListType = "search"
+	}
+	if !opts.UpdatedAfter.IsZero() {
+		listOpts.UpdatedAfter = new(opts.UpdatedAfter)
+		opts.ListType = "search"
+	}
+	if !opts.UpdatedBefore.IsZero() {
+		listOpts.UpdatedBefore = new(opts.UpdatedBefore)
 		opts.ListType = "search"
 	}
 	if opts.Page != 0 {
@@ -465,6 +493,18 @@ func isMatch(issue *gitlab.Issue, opts *gitlab.ListProjectIssuesOptions) bool {
 		return false
 	}
 	if opts.Confidential != nil && *opts.Confidential != issue.Confidential {
+		return false
+	}
+	if opts.CreatedAfter != nil && (issue.CreatedAt == nil || issue.CreatedAt.Before(*opts.CreatedAfter)) {
+		return false
+	}
+	if opts.CreatedBefore != nil && (issue.CreatedAt == nil || issue.CreatedAt.After(*opts.CreatedBefore)) {
+		return false
+	}
+	if opts.UpdatedAfter != nil && (issue.UpdatedAt == nil || issue.UpdatedAt.Before(*opts.UpdatedAfter)) {
+		return false
+	}
+	if opts.UpdatedBefore != nil && (issue.UpdatedAt == nil || issue.UpdatedAt.After(*opts.UpdatedBefore)) {
 		return false
 	}
 
