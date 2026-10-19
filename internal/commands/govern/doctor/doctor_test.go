@@ -362,6 +362,17 @@ func TestDescribeLastRun_Singular(t *testing.T) {
 	assert.Equal(t, "last run 0s ago: 1 session synced, 0 completed, 1 event posted, 1 error (first: session a: boom)", got)
 }
 
+func TestDescribeLastRun_EventsTooLarge(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	got := describeLastRun(&fallbacksync.Status{
+		FinishedAt:     now,
+		SessionsSynced: 1,
+		EventsPosted:   19,
+		EventsTooLarge: 1,
+	}, now)
+	assert.Equal(t, "last run 0s ago: 1 session synced, 0 completed, 19 events posted, 1 event too large to post", got)
+}
+
 func TestCheckFallbackSync_GovernanceNotEnabledStaysHealthy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

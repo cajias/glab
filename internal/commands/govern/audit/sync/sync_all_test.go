@@ -4,6 +4,7 @@ package sync
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	gosync "sync"
 	"testing"
@@ -62,6 +64,22 @@ type fakeGitLab struct {
 	sessionStatus  int
 	// identityBody, when set, is the body sent with identityStatus.
 	identityBody string
+	// maxElements, when set, replaces the 5,000 JSON elements GitLab accepts
+	// in an audit events request.
+	maxElements int
+	// auditStatus, when set, answers audit event requests with that status.
+	auditStatus int
+	// tooLargeToolCall, when set, makes any audit events request with an event
+	// for that tool call exceed GitLab's JSON limits.
+	tooLargeToolCall string
+	auditRequests    int
+	// rateLimited is how many audit event requests GitLab answers with 429
+	// before it accepts them.
+	rateLimited int
+	// retryAfter is the Retry-After GitLab sends with a 429, "0" if unset.
+	retryAfter string
+	// auditRejections counts the audit event requests over GitLab's limits.
+	auditRejections int
 }
 
 func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -111,11 +129,25 @@ func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = io.WriteString(w, `{"id": 99}`)
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/ai_agent/audit_events"):
+		f.auditRequests++
+		if f.auditRequests <= f.rateLimited {
+			// A Ratelimit-Reset in the past keeps the API client's own retries short.
+			w.Header().Set("Ratelimit-Reset", "1")
+			w.Header().Set("Retry-After", cmp.Or(f.retryAfter, "0"))
+			writeStatus(w, http.StatusTooManyRequests)
+			return
+		}
+		if f.auditStatus != 0 {
+			writeStatus(w, f.auditStatus)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
 		var body auditEventsRequest
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		// GitLab rejects batches over its limit, as the real endpoint does.
-		if len(body.Events) > maxEventsPerRequest {
-			writeStatus(w, http.StatusBadRequest)
+		_ = json.Unmarshal(raw, &body)
+		if limit := f.exceededJSONLimit(raw, body); limit != "" {
+			f.auditRejections++
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprintf(w, `{"error":%q}`, limit)
 			return
 		}
 		f.eventBatches = append(f.eventBatches, len(body.Events))
@@ -128,6 +160,36 @@ func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// exceededJSONLimit returns the error GitLab's JSON validation answers an
+// audit events request with, or "" if the request is within its limits.
+func (f *fakeGitLab) exceededJSONLimit(raw []byte, body auditEventsRequest) string {
+	maxElements := f.maxElements
+	if maxElements == 0 {
+		maxElements = 5000
+	}
+	var v any
+	_ = json.Unmarshal(raw, &v)
+	switch {
+	case len(body.Events) > maxEventsPerRequest:
+		return "Array parameter too large"
+	case 1+jsonElements(v) >= maxElements:
+		return "Too many total parameters"
+	case f.tooLargeToolCall != "" && slices.ContainsFunc(body.Events, func(e auditEventRequest) bool {
+		return e.Details["tool_call_id"] == f.tooLargeToolCall
+	}):
+		return "Hash parameter too large"
+	}
+	return ""
+}
+
+func toolIDs(n int) []string {
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("toolu_%d", i)
+	}
+	return ids
 }
 
 func eventNames(events []auditEventRequest) []string {
@@ -219,6 +281,30 @@ func (e *syncAllEnv) writeClaudeSession(t *testing.T, sessionID, project string,
 		Transcript:        path,
 	}))
 	return path
+}
+
+func assertCursorAt(t *testing.T, sessionID string, want int64) {
+	t.Helper()
+	cursor, err := readCursor(sessionID)
+	require.NoError(t, err)
+	assert.Equal(t, want, cursor)
+}
+
+// recordWaits makes opts' waits return at once, and returns the waits asked for.
+func recordWaits(opts *options) *[]time.Duration {
+	var waits []time.Duration
+	opts.waitFor = func(_ context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		return nil
+	}
+	return &waits
+}
+
+func assertCursorAtEnd(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assertCursorAt(t, strings.TrimSuffix(filepath.Base(path), ".jsonl"), info.Size())
 }
 
 func readStatus(t *testing.T) *fallbacksync.Status {
@@ -361,22 +447,88 @@ func TestSyncAll_RejectedSessionErrorIsNotRepeated(t *testing.T) {
 
 func TestSyncAll_PostsLargeSessionsInBatches(t *testing.T) {
 	env := newSyncAllEnv(t, true)
-	ids := make([]string, 1201)
-	for i := range ids {
-		ids[i] = fmt.Sprintf("toolu_%d", i)
-	}
-	path := env.writeClaudeSession(t, "sess-1", "my-group/my-project", ids...)
+	path := env.writeClaudeSession(t, "sess-1", "my-group/my-project", toolIDs(1201)...)
 
 	_, err := env.exec("--all")
 	require.NoError(t, err)
 
-	assert.Equal(t, []int{500, 500, 201}, env.fake.eventBatches)
+	assert.Zero(t, env.fake.auditRejections, "every batch is within GitLab's limits")
+	// Each of these events is 19 JSON elements, so 236 fit in maxElementsPerRequest.
+	assert.Equal(t, []int{236, 236, 236, 236, 236, 21}, env.fake.eventBatches)
 	assert.Equal(t, 1201, env.fake.eventsPosted)
-	info, err := os.Stat(path)
+	assertCursorAtEnd(t, path)
+}
+
+func TestSyncAll_SplitsBatchesOverGitLabLimits(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.fake.maxElements = 1000
+	path := env.writeClaudeSession(t, "sess-1", "my-group/my-project", toolIDs(300)...)
+
+	_, err := env.exec("--all")
 	require.NoError(t, err)
-	cursor, err := readCursor("sess-1")
+
+	assert.NotZero(t, env.fake.auditRejections)
+	assert.Equal(t, 300, env.fake.eventsPosted)
+	assertCursorAtEnd(t, path)
+}
+
+func TestSyncAll_SkipsEventTooLargeForGitLab(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.fake.tooLargeToolCall = "toolu_7"
+	path := env.writeClaudeSession(t, "sess-1", "my-group/my-project", toolIDs(20)...)
+
+	_, err := env.exec("--all")
 	require.NoError(t, err)
-	assert.Equal(t, info.Size(), cursor, "a session over GitLab's batch limit is not stuck")
+
+	assert.Equal(t, 19, env.fake.eventsPosted)
+	status := readStatus(t)
+	assert.Equal(t, 19, status.EventsPosted)
+	assert.Equal(t, 1, status.EventsTooLarge)
+	assert.Empty(t, status.Errors)
+	assertCursorAtEnd(t, path)
+}
+
+func TestSyncAll_KeepsEventsGitLabRejectsForAnotherReason(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.fake.auditStatus = http.StatusBadRequest
+	env.writeClaudeSession(t, "sess-1", "my-group/my-project", toolIDs(20)...)
+
+	_, err := env.exec("--all")
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, env.fake.auditRequests, "the batch is not split")
+	status := readStatus(t)
+	assert.Zero(t, status.EventsTooLarge)
+	require.Len(t, status.Errors, 1)
+	assertCursorAt(t, "sess-1", 0)
+}
+
+func TestSyncAll_WaitsOutRateLimit(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	// More than the API client retries on its own, with Retry-After: 0.
+	env.fake.rateLimited = 7
+	path := env.writeClaudeSession(t, "sess-1", "my-group/my-project", toolIDs(3)...)
+
+	_, err := env.exec("--all")
+	require.NoError(t, err)
+
+	assert.Equal(t, 8, env.fake.auditRequests)
+	assert.Equal(t, 3, env.fake.eventsPosted)
+	assert.Empty(t, readStatus(t).Errors)
+	assertCursorAtEnd(t, path)
+}
+
+func TestSyncAll_FailedAuditEventsErrorIsNotRepeated(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.fake.auditStatus = http.StatusForbidden
+	env.writeClaudeSession(t, "sess-1", "my-group/my-project", "toolu_1")
+
+	_, err := env.exec("--all")
+	require.NoError(t, err)
+
+	status := readStatus(t)
+	require.Len(t, status.Errors, 1)
+	assert.Equal(t, 1, strings.Count(status.Errors[0], "could not post audit events"), status.Errors[0])
 }
 
 func TestSyncAll_SkipsSessionsWithNothingNew(t *testing.T) {
@@ -983,14 +1135,17 @@ sleep 20`)
 	assert.Less(t, time.Since(start), 5*time.Second, "a hung export must not block the run")
 }
 
-func TestSyncSession_ReportsSyncType(t *testing.T) {
+// A hook must finish quickly, so unlike a sync run directly it does not wait
+// out GitLab's rate limit.
+func TestSyncSession_ByCaller(t *testing.T) {
 	tests := []struct {
-		name   string
-		silent bool
-		want   string
+		name       string
+		silent     bool
+		want       string
+		wantPosted int
 	}{
-		{name: "hook", silent: true, want: "hook"},
-		{name: "run directly", silent: false, want: "manual"},
+		{name: "hook", silent: true, want: "hook", wantPosted: 0},
+		{name: "run directly", silent: false, want: "manual", wantPosted: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -998,7 +1153,7 @@ func TestSyncSession_ReportsSyncType(t *testing.T) {
 			t.Setenv("HOME", dir)
 			t.Setenv("GLAB_CONFIG_DIR", dir)
 
-			fake := &fakeGitLab{projects: map[string]int64{}, projectLookups: map[string]int{}}
+			fake := &fakeGitLab{projects: map[string]int64{}, projectLookups: map[string]int{}, rateLimited: 7}
 			server := httptest.NewServer(fake)
 			t.Cleanup(server.Close)
 			gl, err := gitlab.NewClient("test-token", gitlab.WithBaseURL(server.URL+"/api/v4"))
@@ -1019,10 +1174,129 @@ func TestSyncSession_ReportsSyncType(t *testing.T) {
 
 			ios, _, _, _ := cmdtest.TestIOStreams()
 			opts := &options{io: ios, silent: tt.silent, agentType: "claude-code"}
+			recordWaits(opts)
 			dest := target{client: client, project: &gitlab.Project{ID: 42}}
 			require.NoError(t, syncSession(t.Context(), dest, "sess-1", claudeTranscript{path: path}, opts))
 
 			assert.Equal(t, []string{tt.want}, fake.syncTypes)
+			assert.Equal(t, tt.wantPosted, fake.eventsPosted)
 		})
 	}
+}
+
+func TestAuditEventPoster_RateLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       options
+		limited    int
+		retryAfter string
+		wantErr    bool
+		wantWaits  int
+	}{
+		{name: "waits", opts: options{all: true}, limited: 2, wantWaits: 2},
+		{name: "gives up after the most waits", opts: options{all: true}, limited: 100, wantErr: true, wantWaits: maxRateLimitWaits},
+		{
+			name:    "gives up when the run has waited enough",
+			opts:    options{all: true, rateLimitWaited: maxRateLimitWaitPerRun - time.Second},
+			limited: 1, retryAfter: "60", wantErr: true,
+		},
+		{name: "hook does not wait", opts: options{silent: true}, limited: 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			waits := recordWaits(&tt.opts)
+			fake := &fakeGitLab{rateLimited: tt.limited, retryAfter: tt.retryAfter}
+			poster := newTestPoster(t, fake, &tt.opts)
+			_, err := poster.post(t.Context(), []auditEventRequest{{EventName: eventToolInvoked}})
+
+			if tt.wantErr {
+				assert.Equal(t, http.StatusTooManyRequests, gitlab.StatusCode(err))
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Len(t, *waits, tt.wantWaits)
+		})
+	}
+}
+
+func TestAuditEventPoster_SplitsOnlyOutsideHooks(t *testing.T) {
+	tests := []struct {
+		name              string
+		opts              options
+		fallbackInstalled bool
+		wantErr           bool
+		wantRequests      int
+	}{
+		{name: "fallback sync splits", opts: options{all: true}, fallbackInstalled: true, wantRequests: 3},
+		{name: "manual sync splits", fallbackInstalled: true, wantRequests: 3},
+		{name: "hook leaves the batch for the fallback sync", opts: options{silent: true}, fallbackInstalled: true, wantErr: true, wantRequests: 1},
+		{name: "hook splits without the fallback sync", opts: options{silent: true}, wantRequests: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if tt.fallbackInstalled {
+				installFakeFallbackSync(t, home)
+			}
+			fake := &fakeGitLab{maxElements: 30}
+			poster := newTestPoster(t, fake, &tt.opts)
+
+			events := make([]auditEventRequest, 4)
+			for i := range events {
+				events[i] = auditEventRequest{EventName: eventToolInvoked, CloudEventID: fmt.Sprintf("event-%d", i)}
+			}
+			tooLarge, err := poster.post(t.Context(), events)
+
+			if tt.wantErr {
+				assert.True(t, requestTooLarge(err), err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, 4, fake.eventsPosted)
+			}
+			assert.Zero(t, tooLarge)
+			assert.Equal(t, tt.wantRequests, fake.auditRequests)
+		})
+	}
+}
+
+func newTestPoster(t *testing.T, fake *fakeGitLab, opts *options) auditEventPoster {
+	t.Helper()
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+	gl, err := gitlab.NewClient("test-token", gitlab.WithBaseURL(server.URL+"/api/v4"), gitlab.WithoutRetries())
+	require.NoError(t, err)
+	ios, _, _, _ := cmdtest.TestIOStreams()
+	opts.io = ios
+	client := cmdtest.NewTestApiClient(t, nil, "test-token", testHost, api.WithGitLabClient(gl))
+	return auditEventPoster{client: client, projectID: 42, sessionID: 99, opts: opts}
+}
+
+func installFakeFallbackSync(t *testing.T, home string) {
+	t.Helper()
+	units, err := fallbacksync.Units(runtime.GOOS, home, fallbacksync.Job{})
+	if errors.Is(err, fallbacksync.ErrUnsupportedOS) {
+		t.Skip("the fallback sync is not available on this OS")
+	}
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(units[0].Path), 0o755))
+	require.NoError(t, os.WriteFile(units[0].Path, nil, 0o644))
+}
+
+func TestWriteCursor_DoesNotMoveBack(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	require.NoError(t, writeCursor("sess-1", 200))
+	require.NoError(t, writeCursor("sess-1", 100))
+	assertCursorAt(t, "sess-1", 200)
+
+	require.NoError(t, writeCursor("sess-1", 300))
+	assertCursorAt(t, "sess-1", 300)
+}
+
+func TestOptionsWait_StopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	assert.ErrorIs(t, (&options{}).wait(ctx, time.Hour), context.Canceled)
 }

@@ -7,9 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -332,4 +335,66 @@ func TestReadSessionMeta_NotFound(t *testing.T) {
 
 	_, err := readSessionMeta("nonexistent-session")
 	require.ErrorIs(t, err, errNoSessionMeta)
+}
+
+func TestAuditEventBatches(t *testing.T) {
+	small := auditEventRequest{EventName: eventToolInvoked, Details: map[string]any{"tool_name": "Bash"}}
+	large := auditEventRequest{EventName: eventToolInvoked, Details: map[string]any{}}
+	for i := range maxElementsPerRequest {
+		large.Details[fmt.Sprintf("k%d", i)] = i
+	}
+
+	assert.Empty(t, auditEventBatches(nil))
+
+	events := slices.Repeat([]auditEventRequest{small}, 1000)
+	events[10] = large
+	batches := auditEventBatches(events)
+
+	total := 0
+	for _, batch := range batches {
+		total += len(batch)
+		assert.LessOrEqual(t, len(batch), maxEventsPerRequest)
+		if len(batch) == 1 && batch[0].Details["k0"] != nil {
+			continue
+		}
+		elements := auditEventsRequestElements
+		for _, event := range batch {
+			elements += auditEventElements(event)
+		}
+		assert.LessOrEqual(t, elements, maxElementsPerRequest)
+	}
+	assert.Equal(t, len(events), total)
+	assert.Contains(t, batches, []auditEventRequest{large}, "an event over the budget is posted on its own")
+}
+
+func TestRateLimitWait(t *testing.T) {
+	rateLimited := func(retryAfter string) error {
+		header := http.Header{}
+		if retryAfter != "" {
+			header.Set("Retry-After", retryAfter)
+		}
+		return &gitlab.ErrorResponse{StatusCode: http.StatusTooManyRequests, Response: &http.Response{Header: header}}
+	}
+	tests := []struct {
+		name        string
+		err         error
+		wantWait    time.Duration
+		wantLimited bool
+	}{
+		{"no error", nil, 0, false},
+		{"other status", &gitlab.ErrorResponse{StatusCode: http.StatusBadRequest}, 0, false},
+		{"retry after", rateLimited("30"), 30 * time.Second, true},
+		{"no retry after", rateLimited(""), time.Minute, true},
+		{"zero retry after", rateLimited("0"), 0, true},
+		{"date retry after", rateLimited("Wed, 21 Oct 2026 07:28:00 GMT"), time.Minute, true},
+		{"long retry after", rateLimited("3600"), maxRateLimitWait, true},
+		{"no response", &gitlab.ErrorResponse{StatusCode: http.StatusTooManyRequests}, time.Minute, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wait, limited := rateLimitWait(tt.err)
+			assert.Equal(t, tt.wantLimited, limited)
+			assert.Equal(t, tt.wantWait, wait)
+		})
+	}
 }

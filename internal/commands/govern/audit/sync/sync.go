@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/fallbacksync"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/gaig"
 	"gitlab.com/gitlab-org/cli/internal/config"
+	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 	"gitlab.com/gitlab-org/cli/internal/mcpannotations"
@@ -36,6 +40,23 @@ type options struct {
 	complete  bool
 	agentType string
 	all       bool
+	// rateLimitWaited is how long this run has waited out GitLab's rate limit.
+	rateLimitWaited time.Duration
+	// waitFor, when set, replaces waiting for a duration, for tests.
+	waitFor func(ctx context.Context, d time.Duration) error
+}
+
+// wait waits for d, or until ctx is done.
+func (o *options) wait(ctx context.Context, d time.Duration) error {
+	if o.waitFor != nil {
+		return o.waitFor(ctx, d)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
 }
 
 const (
@@ -242,8 +263,9 @@ func syncSession(ctx context.Context, t target, sessionID string, src transcript
 }
 
 type pushResult struct {
-	eventsPosted int
-	completed    bool
+	eventsPosted   int
+	eventsTooLarge int
+	completed      bool
 }
 
 // pushSession uploads data to GitLab, advances the cursor to newCursor once
@@ -263,12 +285,18 @@ func pushSession(ctx context.Context, t target, sessionID, agentType string, src
 	}
 
 	if events := auditEvents(agentType, data, time.Now()); len(events) > 0 {
-		if err := postAuditEvents(ctx, t.client, t.project.ID, glSessionID, events); err != nil {
+		poster := auditEventPoster{client: t.client, projectID: t.project.ID, sessionID: glSessionID, opts: opts}
+		tooLarge, err := poster.post(ctx, events)
+		res.eventsTooLarge = tooLarge
+		if err != nil {
 			return res, fmt.Errorf("could not post audit events: %w", err)
 		}
-		res.eventsPosted = len(events)
+		res.eventsPosted = len(events) - tooLarge
 		if !opts.silent {
-			opts.io.LogInfof("Posted %d audit events\n", len(events))
+			opts.io.LogInfof("Posted %d audit events\n", res.eventsPosted)
+			if tooLarge > 0 {
+				opts.io.LogErrorf("warning: skipped %d audit events too large for GitLab to accept\n", tooLarge)
+			}
 		}
 	}
 
@@ -516,6 +544,7 @@ func syncAllSessions(ctx context.Context, opts *options) error {
 
 		res, err := pushSession(ctx, t, sessionID, meta.AgentType, src, data, newOffset, idle, opts)
 		status.EventsPosted += res.eventsPosted
+		status.EventsTooLarge += res.eventsTooLarge
 		if res.eventsPosted > 0 {
 			status.SessionsSynced++
 		}
@@ -670,31 +699,173 @@ type auditEventsRequest struct {
 	Events    []auditEventRequest `json:"events"`
 }
 
-// postAuditEvents posts tool call audit events to GitLab.
-// maxEventsPerRequest is the most events GitLab accepts in one request.
-const maxEventsPerRequest = 500
+const (
+	// maxEventsPerRequest is the most events GitLab accepts in one request.
+	maxEventsPerRequest = 500
+	// maxElementsPerRequest keeps a request under the 5,000 JSON elements that
+	// older GitLab versions accept for audit events, with some margin.
+	maxElementsPerRequest = 4500
+)
 
-// postAuditEvents posts audit events to GitLab in batches of at
-// most maxEventsPerRequest. If a batch fails, earlier batches stay posted;
-// GitLab deduplicates them by cloud_event_id when they are retried.
-func postAuditEvents(ctx context.Context, client *api.Client, projectID int64, sessionID int, events []auditEventRequest) error {
-	for batch := range slices.Chunk(events, maxEventsPerRequest) {
-		if err := postAuditEventBatch(ctx, client, projectID, sessionID, batch); err != nil {
+// jsonLimitErrors are the errors GitLab's JSON validation returns for a
+// request over one of its limits.
+var jsonLimitErrors = []string{
+	"Too many total parameters",
+	"JSON body too large",
+	"Array parameter too large",
+	"Hash parameter too large",
+	"Parameters nested too deeply",
+}
+
+// auditEventPoster posts a session's audit events to GitLab.
+type auditEventPoster struct {
+	client    *api.Client
+	projectID int64
+	sessionID int
+	opts      *options
+}
+
+// post posts events in batches GitLab accepts, and returns how many events
+// were too large for GitLab to accept. If a batch fails, earlier batches stay
+// posted; GitLab deduplicates them by cloud_event_id when they are retried.
+func (p auditEventPoster) post(ctx context.Context, events []auditEventRequest) (int, error) {
+	tooLarge := 0
+	for _, batch := range auditEventBatches(events) {
+		n, err := p.postSplitting(ctx, batch)
+		tooLarge += n
+		if err != nil {
+			return tooLarge, err
+		}
+	}
+	return tooLarge, nil
+}
+
+// auditEventBatches splits events into batches of at most maxEventsPerRequest
+// events and maxElementsPerRequest JSON elements.
+func auditEventBatches(events []auditEventRequest) [][]auditEventRequest {
+	var batches [][]auditEventRequest
+	var batch []auditEventRequest
+	elements := auditEventsRequestElements
+	for _, event := range events {
+		n := auditEventElements(event)
+		if len(batch) == maxEventsPerRequest || (len(batch) > 0 && elements+n > maxElementsPerRequest) {
+			batches = append(batches, batch)
+			batch, elements = nil, auditEventsRequestElements
+		}
+		batch = append(batch, event)
+		elements += n
+	}
+	if len(batch) > 0 {
+		batches = append(batches, batch)
+	}
+	return batches
+}
+
+// postSplitting posts events, and posts each half separately if GitLab finds
+// the request over one of its JSON limits. An event over a limit on its own
+// can never be posted, so it is skipped and counted rather than blocking the
+// rest of the session.
+//
+// A hook returns the error instead when the fallback sync is installed. It
+// leaves the cursor where it is, so the fallback sync splits the batch and
+// records any skipped events in the status file that glab govern doctor reads,
+// without the hook using up the rate limit.
+func (p auditEventPoster) postSplitting(ctx context.Context, events []auditEventRequest) (int, error) {
+	err := p.postBatch(ctx, events)
+	if !requestTooLarge(err) || (syncTypeFor(p.opts) == "hook" && fallbackSyncInstalled()) {
+		return 0, err
+	}
+	if len(events) == 1 {
+		dbg.Debugf("skipping audit event %s that is too large for GitLab: %v", events[0].CloudEventID, err)
+		return 1, nil
+	}
+	half := len(events) / 2
+	tooLarge, err := p.postSplitting(ctx, events[:half])
+	if err != nil {
+		return tooLarge, err
+	}
+	n, err := p.postSplitting(ctx, events[half:])
+	return tooLarge + n, err
+}
+
+// fallbackSyncInstalled reports whether the fallback sync job is installed for
+// this user. A job whose files exist but cannot be read counts as installed.
+func fallbackSyncInstalled() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = fallbacksync.InstalledBinary(runtime.GOOS, home)
+	return !errors.Is(err, fallbacksync.ErrNotInstalled) && !errors.Is(err, fallbacksync.ErrUnsupportedOS)
+}
+
+func requestTooLarge(err error) bool {
+	var resp *gitlab.ErrorResponse
+	if !errors.As(err, &resp) || resp.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	return slices.ContainsFunc(jsonLimitErrors, func(msg string) bool {
+		return strings.Contains(resp.Message, msg)
+	})
+}
+
+const (
+	// maxRateLimitWaits is how many times one request waits out GitLab's rate
+	// limit before the sync gives up until its next run.
+	maxRateLimitWaits = 5
+	// maxRateLimitWait caps a single wait. GitLab asks for 60 seconds.
+	maxRateLimitWait = 90 * time.Second
+	// maxRateLimitWaitPerRun keeps one large session from holding up a run,
+	// and the other sessions in it, for long.
+	maxRateLimitWaitPerRun = 20 * time.Minute
+)
+
+// postBatch posts events in one request. The API client gives up on GitLab's
+// rate limit after a few seconds because it ignores Retry-After, so a sync
+// other than a hook, which must finish quickly, waits as GitLab asks.
+func (p auditEventPoster) postBatch(ctx context.Context, events []auditEventRequest) error {
+	for waits := 0; ; waits++ {
+		err := p.postBatchOnce(ctx, events)
+		wait, limited := rateLimitWait(err)
+		if !limited || waits == maxRateLimitWaits || syncTypeFor(p.opts) == "hook" ||
+			p.opts.rateLimitWaited+wait > maxRateLimitWaitPerRun {
+			return err
+		}
+		p.opts.rateLimitWaited += wait
+		if !p.opts.silent {
+			p.opts.io.LogInfof("GitLab rate limit reached, retrying in %s\n", wait)
+		}
+		if err := p.opts.wait(ctx, wait); err != nil {
 			return err
 		}
 	}
-	return nil
 }
 
-func postAuditEventBatch(ctx context.Context, client *api.Client, projectID int64, sessionID int, events []auditEventRequest) error {
+// rateLimitWait reports whether err is GitLab's rate limit, and how long it
+// asks the client to wait.
+func rateLimitWait(err error) (time.Duration, bool) {
+	var resp *gitlab.ErrorResponse
+	if !errors.As(err, &resp) || resp.StatusCode != http.StatusTooManyRequests {
+		return 0, false
+	}
+	wait := time.Minute
+	if resp.Response != nil {
+		if seconds, err := strconv.Atoi(resp.Response.Header.Get("Retry-After")); err == nil && seconds >= 0 {
+			wait = min(time.Duration(seconds)*time.Second, maxRateLimitWait)
+		}
+	}
+	return wait, true
+}
+
+func (p auditEventPoster) postBatchOnce(ctx context.Context, events []auditEventRequest) error {
 	reqBody := auditEventsRequest{
-		SessionID: sessionID,
+		SessionID: p.sessionID,
 		Events:    events,
 	}
 
-	req, err := client.Lab().NewRequest(
+	req, err := p.client.Lab().NewRequest(
 		http.MethodPost,
-		fmt.Sprintf("projects/%d/ai_agent/audit_events", projectID),
+		fmt.Sprintf("projects/%d/ai_agent/audit_events", p.projectID),
 		reqBody,
 		[]gitlab.RequestOptionFunc{gitlab.WithContext(ctx)},
 	)
@@ -702,11 +873,8 @@ func postAuditEventBatch(ctx context.Context, client *api.Client, projectID int6
 		return fmt.Errorf("could not create audit events request: %w", err)
 	}
 
-	if _, err := client.Lab().Do(req, nil); err != nil {
-		return fmt.Errorf("could not post audit events: %w", err)
-	}
-
-	return nil
+	_, err = p.client.Lab().Do(req, nil)
+	return err
 }
 
 // completeRequest is the body for PATCH /ai_agent/sessions/:id.

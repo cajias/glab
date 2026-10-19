@@ -248,3 +248,43 @@ func TestTruncateEncoded(t *testing.T) {
 	assert.True(t, truncated)
 	assert.Equal(t, strings.Repeat("<", 5), got, "each < encodes to six bytes")
 }
+
+func TestAuditEventElements(t *testing.T) {
+	event := auditEventRequest{
+		EventName:    eventToolInvoked,
+		CloudEventID: "x",
+		OccurredAt:   "2026-10-19T00:00:00Z",
+		Details: map[string]any{
+			"tool_name":       "Edit",
+			"agent_initiated": true,
+			"arguments": json.RawMessage(
+				`{"edits":[{"old":"a","new":"b"},{"old":"c","new":"d"}],"flags":[1,2,3],"empty":{},"none":null}`,
+			),
+		},
+	}
+
+	// Gitlab::Json::StreamValidator counts 41 elements in a request with only this event.
+	assert.Equal(t, 41, auditEventsRequestElements+auditEventElements(event))
+}
+
+func TestJSONElements(t *testing.T) {
+	tests := []struct {
+		json string
+		want int
+	}{
+		{`1`, 0},
+		{`{}`, 0},
+		{`[]`, 0},
+		{`{"a":null}`, 2},
+		{`{"a":{}}`, 2},
+		{`{"a":[1]}`, 3},
+		{`{"a":[{}]}`, 3},
+		{`[1,"s",true]`, 3},
+		{`{"a":"s","b":1.5}`, 4},
+	}
+	for _, tt := range tests {
+		var v any
+		require.NoError(t, json.Unmarshal([]byte(tt.json), &v))
+		assert.Equal(t, tt.want, jsonElements(v), tt.json)
+	}
+}
