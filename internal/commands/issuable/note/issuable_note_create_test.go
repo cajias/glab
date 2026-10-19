@@ -54,6 +54,7 @@ func Test_NewCmdNote(t *testing.T) {
 				CreateIssueNote("OWNER/REPO", int64(1), gomock.Any()).
 				DoAndReturn(func(pid any, issueIID int64, opts *gitlab.CreateIssueNoteOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Note, *gitlab.Response, error) {
 					assert.Equal(t, "Here is my note", *opts.Body)
+					assert.Nil(t, opts.Internal)
 					return &gitlab.Note{
 						ID:           301,
 						NoteableID:   1,
@@ -74,6 +75,43 @@ func Test_NewCmdNote(t *testing.T) {
 			require.NoError(t, err)
 			assert.Empty(t, output.Stderr())
 			assert.Equal(t, "https://gitlab.com/OWNER/REPO/issues/1#note_301\n", output.String())
+		})
+
+		t.Run(cc.name+"_internal_flag_specified", func(t *testing.T) {
+			t.Parallel()
+
+			testClient := gitlabtesting.NewTestClient(t)
+
+			testClient.MockIssues.EXPECT().
+				GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+				Return(&gitlab.Issue{
+					ID:        1,
+					IID:       1,
+					IssueType: new(string(cc.issueType)),
+					WebURL:    "https://gitlab.com/OWNER/REPO/issues/1",
+				}, nil, nil)
+
+			testClient.MockNotes.EXPECT().
+				CreateIssueNote("OWNER/REPO", int64(1), gomock.Any()).
+				DoAndReturn(func(pid any, issueIID int64, opts *gitlab.CreateIssueNoteOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Note, *gitlab.Response, error) {
+					assert.Equal(t, "Secret note", *opts.Body)
+					require.NotNil(t, opts.Internal)
+					assert.True(t, *opts.Internal)
+					return &gitlab.Note{ID: 302, NoteableID: 1, NoteableType: "Issue", NoteableIID: 1, Internal: true}, nil, nil
+				})
+
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				return NewCmdNote(f, cc.issueType)
+			}, true,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+				cmdtest.WithConfig(config.NewFromString("editor: vi")),
+			)
+
+			output, err := exec(`1 --message "Secret note" --internal`)
+			require.NoError(t, err)
+			assert.Empty(t, output.Stderr())
+			assert.Equal(t, "https://gitlab.com/OWNER/REPO/issues/1#note_302\n", output.String())
 		})
 
 		t.Run(cc.name+"_issue_not_found", func(t *testing.T) {
