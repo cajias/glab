@@ -411,6 +411,9 @@ func describeLastRun(s *fallbacksync.Status, now time.Time) string {
 		desc += fmt.Sprintf(" (expected every %d minutes; the job may not be running)", int(fallbacksync.Interval.Minutes()))
 	}
 	desc += fmt.Sprintf(": %s synced, %d completed, %s posted", plural(s.SessionsSynced, "session"), s.SessionsCompleted, plural(s.EventsPosted, "event"))
+	if s.EventsTooLarge > 0 {
+		desc += fmt.Sprintf(", %s too large to post", plural(s.EventsTooLarge, "event"))
+	}
 	if len(s.Errors) > 0 {
 		desc += fmt.Sprintf(", %s (first: %s)", plural(len(s.Errors), "error"), s.Errors[0])
 	}

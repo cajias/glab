@@ -407,7 +407,9 @@ type Status struct {
 	SessionsSynced    int      `json:"sessions_synced"`
 	SessionsCompleted int      `json:"sessions_completed"`
 	EventsPosted      int      `json:"events_posted"`
-	Errors            []string `json:"errors,omitempty"`
+	// EventsTooLarge counts events skipped because GitLab cannot accept them.
+	EventsTooLarge int      `json:"events_too_large,omitempty"`
+	Errors         []string `json:"errors,omitempty"`
 }
 
 // ErrNoStatus is returned by ReadStatus when no run has been recorded.

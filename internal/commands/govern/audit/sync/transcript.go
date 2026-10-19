@@ -79,18 +79,41 @@ func readCursor(sessionID string) (int64, error) {
 	return offset, nil
 }
 
-// writeCursor saves the current byte offset as the cursor for a session.
+// writeCursor saves the current byte offset as the cursor for a session. It
+// does not move the cursor back: a hook and the fallback sync can work on the
+// same session at once, and the one that finishes last may have read less.
+// The cursor is replaced by a rename so that a concurrent read never sees a
+// partly written file.
 func writeCursor(sessionID string, offset int64) error {
 	path, err := cursorPath(sessionID)
 	if err != nil {
 		return err
 	}
 
+	if current, err := readCursor(sessionID); err == nil && current > offset {
+		return nil
+	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("could not create cursor directory: %w", err)
 	}
 
-	return os.WriteFile(path, []byte(strconv.FormatInt(offset, 10)), 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return fmt.Errorf("could not write cursor: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(strconv.FormatInt(offset, 10)); err != nil {
+		tmp.Close()
+		return fmt.Errorf("could not write cursor: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("could not write cursor: %w", err)
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return fmt.Errorf("could not write cursor: %w", err)
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // transcriptEntry represents a single line in a Claude Code JSONL transcript.

@@ -140,6 +140,43 @@ func encodedLen(v any) int {
 	return len(encoded)
 }
 
+// auditEventsRequestElements is the number of JSON elements an
+// auditEventsRequest has before its events: the request object and its two
+// members.
+const auditEventsRequestElements = 5
+
+// auditEventElements returns the number of JSON elements event adds to a
+// request, or a number over every limit if it cannot be encoded.
+func auditEventElements(event auditEventRequest) int {
+	encoded, err := json.Marshal(event) //nolint:forbidigo // measuring, not output
+	if err != nil {
+		return math.MaxInt / 2
+	}
+	var v any
+	if err := json.Unmarshal(encoded, &v); err != nil {
+		return math.MaxInt / 2
+	}
+	return 1 + jsonElements(v)
+}
+
+// jsonElements counts the elements in v the way GitLab's JSON validation
+// does: two for each object member and one for each array item, plus the
+// elements in each value.
+func jsonElements(v any) int {
+	n := 0
+	switch v := v.(type) {
+	case map[string]any:
+		for _, child := range v {
+			n += 2 + jsonElements(child)
+		}
+	case []any:
+		for _, child := range v {
+			n += 1 + jsonElements(child)
+		}
+	}
+	return n
+}
+
 // truncateEncoded shortens s, without splitting a character, until its JSON
 // encoding is at most limit bytes, and reports whether it did.
 func truncateEncoded(s string, limit int) (string, bool) {
