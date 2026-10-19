@@ -3,7 +3,14 @@
 package cmdutils
 
 import (
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/MakeNowJust/heredoc/v2"
@@ -100,6 +107,46 @@ func TestFactory_GitLabClientUsesCorrectHost(t *testing.T) {
 			assert.Equal(t, tt.expectedGitLabClientHostname, c.BaseURL())
 		})
 	}
+}
+
+func TestFactory_ApiClientsReuseConnection(t *testing.T) {
+	// GIVEN
+	var conns atomic.Int64
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "https://")
+	cfg := config.NewFromString(fmt.Sprintf(`hosts:
+  %q:
+    api_host: %q
+    token: glpat-test
+    skip_tls_verify: true
+`, host, host))
+	f := NewFactory(nil, false, cfg, api.BuildInfo{})
+
+	// WHEN
+	for range 2 {
+		c, err := f.ApiClient(host)
+		require.NoError(t, err)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, http.NoBody)
+		require.NoError(t, err)
+		resp, err := c.HTTPClient().Do(req)
+		require.NoError(t, err)
+		_, err = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
+
+	// THEN
+	assert.Equal(t, int64(1), conns.Load())
 }
 
 func mustURL(t *testing.T, s string) *url.URL {
