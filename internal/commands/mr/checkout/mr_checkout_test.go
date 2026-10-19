@@ -7,6 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -793,7 +797,7 @@ func TestMrCheckout(t *testing.T) {
 		mockGit.EXPECT().Git("symbolic-ref", "--quiet", "--short", "HEAD").Return("feat-new-mr\n", nil)
 		mockGit.EXPECT().Git("diff", "--name-only", "HEAD").Return("", nil)
 		mockGit.EXPECT().Git("ls-files", "--others", "--exclude-standard").Return("local.txt\n", nil)
-		mockGit.EXPECT().Git("ls-tree", "-r", "--name-only", "FETCH_HEAD").Return("main.txt\nlocal.txt\n", nil)
+		mockGit.EXPECT().Git("ls-tree", "-r", "--name-only", "new").Return("main.txt\nlocal.txt\n", nil)
 
 		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
 		_, err := exec("123 --force")
@@ -818,7 +822,7 @@ func TestMrCheckout(t *testing.T) {
 		mockGit.EXPECT().Git("symbolic-ref", "--quiet", "--short", "HEAD").Return("feat-new-mr\n", nil)
 		mockGit.EXPECT().Git("diff", "--name-only", "HEAD").Return("", nil)
 		mockGit.EXPECT().Git("ls-files", "--others", "--exclude-standard").Return("notes.txt\n", nil)
-		mockGit.EXPECT().Git("ls-tree", "-r", "--name-only", "FETCH_HEAD").Return("main.txt\nfeature.go\n", nil)
+		mockGit.EXPECT().Git("ls-tree", "-r", "--name-only", "new").Return("main.txt\nfeature.go\n", nil)
 		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "reset", "--hard", "FETCH_HEAD").Return(nil)
 		mockGit.EXPECT().Git("config", "branch.feat-new-mr.remote", "upstream").Return("", nil)
 		mockGit.EXPECT().Git("config", "branch.feat-new-mr.merge", "refs/heads/feat-new-mr").Return("", nil)
@@ -1121,7 +1125,7 @@ func TestUnsafeToReset(t *testing.T) {
 			mocks: func(m *git_testing.MockGitRunnerMockRecorder) {
 				m.Git("diff", "--name-only", "HEAD").Return("", nil)
 				m.Git("ls-files", "--others", "--exclude-standard").Return("notes.txt\n", nil)
-				m.Git("ls-tree", "-r", "--name-only", "FETCH_HEAD").Return("main.txt\nfeature.go\n", nil)
+				m.Git("ls-tree", "-r", "--name-only", "new").Return("main.txt\nfeature.go\n", nil)
 			},
 		},
 		{
@@ -1129,7 +1133,7 @@ func TestUnsafeToReset(t *testing.T) {
 			mocks: func(m *git_testing.MockGitRunnerMockRecorder) {
 				m.Git("diff", "--name-only", "HEAD").Return("", nil)
 				m.Git("ls-files", "--others", "--exclude-standard").Return("conflict.txt\n", nil)
-				m.Git("ls-tree", "-r", "--name-only", "FETCH_HEAD").Return("main.txt\nconflict.txt\n", nil)
+				m.Git("ls-tree", "-r", "--name-only", "new").Return("main.txt\nconflict.txt\n", nil)
 			},
 			wantBlocked: true,
 		},
@@ -1138,7 +1142,7 @@ func TestUnsafeToReset(t *testing.T) {
 			mocks: func(m *git_testing.MockGitRunnerMockRecorder) {
 				m.Git("diff", "--name-only", "HEAD").Return("", nil)
 				m.Git("ls-files", "--others", "--exclude-standard").Return("notes.txt\nconflict.txt\n", nil)
-				m.Git("ls-tree", "-r", "--name-only", "FETCH_HEAD").Return("main.txt\nconflict.txt\n", nil)
+				m.Git("ls-tree", "-r", "--name-only", "new").Return("main.txt\nconflict.txt\n", nil)
 			},
 			wantBlocked: true,
 		},
@@ -1147,7 +1151,7 @@ func TestUnsafeToReset(t *testing.T) {
 			mocks: func(m *git_testing.MockGitRunnerMockRecorder) {
 				m.Git("diff", "--name-only", "HEAD").Return("", nil)
 				m.Git("ls-files", "--others", "--exclude-standard").Return("notes.txt\n\n", nil)
-				m.Git("ls-tree", "-r", "--name-only", "FETCH_HEAD").Return("main.txt\n\n", nil)
+				m.Git("ls-tree", "-r", "--name-only", "new").Return("main.txt\n\n", nil)
 			},
 		},
 		{
@@ -1170,7 +1174,7 @@ func TestUnsafeToReset(t *testing.T) {
 			mocks: func(m *git_testing.MockGitRunnerMockRecorder) {
 				m.Git("diff", "--name-only", "HEAD").Return("", nil)
 				m.Git("ls-files", "--others", "--exclude-standard").Return("foo.txt\n", nil)
-				m.Git("ls-tree", "-r", "--name-only", "FETCH_HEAD").Return("", boom)
+				m.Git("ls-tree", "-r", "--name-only", "new").Return("", boom)
 			},
 			wantErr: boom,
 		},
@@ -1184,7 +1188,7 @@ func TestUnsafeToReset(t *testing.T) {
 			tc.mocks(mockGit.EXPECT())
 
 			o := &options{gr: mockGit}
-			got, err := o.unsafeToReset()
+			got, err := o.unsafeToReset("", "new")
 
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
@@ -1232,7 +1236,7 @@ func TestMrCheckout_SetUpstreamTo(t *testing.T) {
 	mockGit.EXPECT().Git("config", "branch.feat-new-mr.merge", "refs/heads/feat-new-mr").Return("", nil)
 	mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "checkout", "feat-new-mr").
 		DoAndReturn(git.CheckoutStub("feat-new-mr"))
-	mockGit.EXPECT().Git("branch", "--set-upstream-to", "upstream/main").Return("", nil)
+	mockGit.EXPECT().Git("branch", "--set-upstream-to", "upstream/main", "feat-new-mr").Return("", nil)
 
 	exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
 	output, err := exec("123 --set-upstream-to upstream/main")
@@ -1240,6 +1244,473 @@ func TestMrCheckout_SetUpstreamTo(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, output.Stderr(), "[new branch] refs/heads/feat-new-mr:feat-new-mr")
 	assert.Contains(t, output.Stderr(), "Switched to a new branch 'feat-new-mr'")
+}
+
+func TestMrCheckout_Worktree(t *testing.T) {
+	t.Parallel()
+
+	newTestClient := func(t *testing.T) *gitlabtesting.TestClient {
+		t.Helper()
+		testClient := gitlabtesting.NewTestClient(t)
+
+		testClient.MockMergeRequests.EXPECT().
+			GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+			Return(&gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					ID:              123,
+					IID:             123,
+					ProjectID:       3,
+					SourceProjectID: 3,
+					SourceBranch:    "feat-new-mr",
+					State:           "opened",
+					SHA:             "abc123",
+				},
+			}, nil, nil)
+
+		testClient.MockProjects.EXPECT().
+			GetProject(gomock.Any(), gomock.Any()).
+			Return(&gitlab.Project{
+				ID:           3,
+				SSHURLToRepo: "git@gitlab.com:OWNER/REPO.git",
+			}, nil, nil)
+
+		return testClient
+	}
+
+	// validate() consults this before any side effects, so every --worktree
+	// subtest has to answer it.
+	worktreeList := func(entries string) string {
+		return "worktree /repo" + "\n" + "HEAD aaa000" + "\n" + "branch refs/heads/main" + "\n" + entries
+	}
+
+	expectNoOtherWorktree := func(mockGit *git_testing.MockGitRunner) {
+		mockGit.EXPECT().Git("worktree", "list", "--porcelain").Return(worktreeList(""), nil)
+	}
+
+	expectFetchAndConfig := func(mockGit *git_testing.MockGitRunner) {
+		mockGit.EXPECT().Git("rev-parse", "--verify", "refs/heads/feat-new-mr").Return("", errors.New("not found"))
+		mockGit.EXPECT().Git("rev-parse", "--verify", "abc123^{commit}").Return("", errors.New("not found"))
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "fetch", "--", "git@gitlab.com:OWNER/REPO.git", "refs/heads/feat-new-mr:feat-new-mr").
+			DoAndReturn(git.FetchStub("refs/heads/feat-new-mr:feat-new-mr"))
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.remote", "git@gitlab.com:OWNER/REPO.git").Return("", nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.merge", "refs/heads/feat-new-mr").Return("", nil)
+	}
+
+	t.Run("adds a worktree instead of checking out the branch", func(t *testing.T) {
+		t.Parallel()
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectNoOtherWorktree(mockGit)
+		expectFetchAndConfig(mockGit)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "worktree", "add", "--", "../review-mr-123", "feat-new-mr").Return(nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		output, err := exec("123 --worktree ../review-mr-123")
+
+		require.NoError(t, err)
+		assert.Contains(t, output.Stderr(), "[new branch] refs/heads/feat-new-mr:feat-new-mr")
+	})
+
+	t.Run("passes a worktree path after -- so a leading dash is not an option", func(t *testing.T) {
+		t.Parallel()
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectNoOtherWorktree(mockGit)
+		expectFetchAndConfig(mockGit)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "worktree", "add", "--", "-review-mr-123", "feat-new-mr").Return(nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree=-review-mr-123")
+
+		require.NoError(t, err)
+	})
+
+	t.Run("sets the upstream of the worktree branch by name", func(t *testing.T) {
+		t.Parallel()
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectNoOtherWorktree(mockGit)
+		expectFetchAndConfig(mockGit)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "worktree", "add", "--", "../review-mr-123", "feat-new-mr").Return(nil)
+		mockGit.EXPECT().Git("branch", "--set-upstream-to", "upstream/main", "feat-new-mr").Return("", nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree ../review-mr-123 --set-upstream-to upstream/main")
+
+		require.NoError(t, err)
+	})
+
+	t.Run("reports a failure to add the worktree", func(t *testing.T) {
+		t.Parallel()
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectNoOtherWorktree(mockGit)
+		expectFetchAndConfig(mockGit)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "worktree", "add", "--", "../review-mr-123", "feat-new-mr").
+			Return(errors.New("fatal: '../review-mr-123' already exists"))
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree ../review-mr-123")
+
+		require.ErrorContains(t, err, `could not add worktree "../review-mr-123" for branch "feat-new-mr"`)
+	})
+
+	t.Run("skips the fetch when the branch is already at the merge request head", func(t *testing.T) {
+		t.Parallel()
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectNoOtherWorktree(mockGit)
+		mockGit.EXPECT().Git("rev-parse", "--verify", "refs/heads/feat-new-mr").Return("abc123"+"\n", nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.remote", "git@gitlab.com:OWNER/REPO.git").Return("", nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.merge", "refs/heads/feat-new-mr").Return("", nil)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "worktree", "add", "--", "../review-mr-123", "feat-new-mr").Return(nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		output, err := exec("123 --worktree ../review-mr-123")
+
+		require.NoError(t, err)
+		assert.Contains(t, output.String(), "skipping fetch")
+	})
+
+	// gomock is strict, so the absence of fetch and config expectations here is
+	// the assertion that the guard runs before any side effects.
+	t.Run("fails early when the branch is checked out in another worktree", func(t *testing.T) {
+		t.Parallel()
+		testClient := gitlabtesting.NewTestClient(t)
+		testClient.MockMergeRequests.EXPECT().
+			GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+			Return(&gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					ID:              123,
+					IID:             123,
+					ProjectID:       3,
+					SourceProjectID: 3,
+					SourceBranch:    "feat-new-mr",
+					State:           "opened",
+					SHA:             "abc123",
+				},
+			}, nil, nil)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		mockGit.EXPECT().Git("worktree", "list", "--porcelain").
+			Return(worktreeList("worktree /elsewhere/review"+"\n"+"HEAD abc123"+"\n"+"branch refs/heads/feat-new-mr"+"\n"), nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree ../review-mr-123")
+
+		require.ErrorContains(t, err, `branch "feat-new-mr" is already checked out at "/elsewhere/review"`)
+		require.ErrorContains(t, err, "--branch")
+	})
+
+	// A repeat review of the same merge request lands here. Returning early would
+	// leave the reviewer on stale code while reporting success, so the branch is
+	// brought up to date inside the worktree that holds it.
+	expectBranchInRequestedWorktree := func(mockGit *git_testing.MockGitRunner, requested string) {
+		abs, err := filepath.Abs(requested)
+		require.NoError(t, err)
+		mockGit.EXPECT().Git("worktree", "list", "--porcelain").
+			Return(worktreeList("worktree "+abs+"\n"+"HEAD old"+"\n"+"branch refs/heads/feat-new-mr"+"\n"), nil)
+	}
+
+	// No `refs/heads/x:refs/heads/x` fetch here: git always refuses that for a branch
+	// a worktree holds, so an in-place update goes straight to the FETCH_HEAD fetch.
+	expectFetchIntoExistingWorktree := func(mockGit *git_testing.MockGitRunner) {
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "fetch", "--", "git@gitlab.com:OWNER/REPO.git", "refs/heads/feat-new-mr").
+			DoAndReturn(git.FetchStub("refs/heads/feat-new-mr"))
+		mockGit.EXPECT().Git("rev-parse", "--verify", "refs/heads/feat-new-mr").Return("old"+"\n", nil).Times(2)
+		mockGit.EXPECT().Git("rev-parse", "FETCH_HEAD^{commit}").Return("new"+"\n", nil)
+		mockGit.EXPECT().Git("merge-base", "--is-ancestor", "refs/heads/feat-new-mr", "FETCH_HEAD").Return("", nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.remote", "git@gitlab.com:OWNER/REPO.git").Return("", nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.merge", "refs/heads/feat-new-mr").Return("", nil)
+	}
+
+	t.Run("updates the branch in place when it is already in the requested worktree", func(t *testing.T) {
+		t.Parallel()
+		requested := "../review-mr-123"
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectBranchInRequestedWorktree(mockGit, requested)
+		expectFetchIntoExistingWorktree(mockGit)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "-C", requested, "merge", "--ff-only", "new").Return(nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		output, err := exec("123 --worktree " + requested)
+
+		require.NoError(t, err)
+		assert.Contains(t, output.String(), "already checked out at")
+	})
+
+	t.Run("still applies --set-upstream-to when the worktree already exists", func(t *testing.T) {
+		t.Parallel()
+		requested := "../review-mr-123"
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectBranchInRequestedWorktree(mockGit, requested)
+		expectFetchIntoExistingWorktree(mockGit)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "-C", requested, "merge", "--ff-only", "new").Return(nil)
+		mockGit.EXPECT().Git("branch", "--set-upstream-to", "upstream/main", "feat-new-mr").Return("", nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree " + requested + " --set-upstream-to upstream/main")
+
+		require.NoError(t, err)
+	})
+
+	// The reset lands in the review worktree, so --force must not discard work
+	// there without looking, which is what the flag's own help promises.
+	expectDivergedInPlace := func(mockGit *git_testing.MockGitRunner) {
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "fetch", "--", "git@gitlab.com:OWNER/REPO.git", "refs/heads/feat-new-mr").
+			DoAndReturn(git.FetchStub("refs/heads/feat-new-mr"))
+		mockGit.EXPECT().Git("rev-parse", "--verify", "refs/heads/feat-new-mr").Return("old"+"\n", nil).Times(2)
+		mockGit.EXPECT().Git("rev-parse", "FETCH_HEAD^{commit}").Return("new"+"\n", nil)
+		mockGit.EXPECT().Git("merge-base", "--is-ancestor", "refs/heads/feat-new-mr", "FETCH_HEAD").
+			Return("", errors.New("not an ancestor"))
+	}
+
+	t.Run("refuses --force when the existing worktree has uncommitted work", func(t *testing.T) {
+		t.Parallel()
+		requested := "../review-mr-123"
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectBranchInRequestedWorktree(mockGit, requested)
+		expectDivergedInPlace(mockGit)
+		mockGit.EXPECT().Git("-C", requested, "diff", "--name-only", "HEAD").Return("dirty.go\n", nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree " + requested + " --force")
+
+		require.ErrorContains(t, err, requested)
+		require.ErrorContains(t, err, "would be lost by reset")
+	})
+
+	t.Run("resets inside the existing worktree when it is clean", func(t *testing.T) {
+		t.Parallel()
+		requested := "../review-mr-123"
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectBranchInRequestedWorktree(mockGit, requested)
+		expectDivergedInPlace(mockGit)
+		mockGit.EXPECT().Git("-C", requested, "diff", "--name-only", "HEAD").Return("", nil)
+		mockGit.EXPECT().Git("-C", requested, "ls-files", "--others", "--exclude-standard").Return("", nil)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "-C", requested, "reset", "--hard", "new").Return(nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.remote", "git@gitlab.com:OWNER/REPO.git").Return("", nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.merge", "refs/heads/feat-new-mr").Return("", nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree " + requested + " --force")
+
+		require.NoError(t, err)
+	})
+
+	// A worktree whose directory was deleted is still listed, marked prunable, and
+	// git keeps counting it as holding the branch, so `worktree add` would refuse.
+	// The guard fails here, before the fetch, with a `git worktree prune` hint
+	// rather than letting the add fail later with git's own wording. The absence of
+	// fetch and add expectations under strict gomock asserts nothing runs first.
+	t.Run("fails early with a prune hint when the branch's worktree is prunable", func(t *testing.T) {
+		t.Parallel()
+		testClient := gitlabtesting.NewTestClient(t)
+		testClient.MockMergeRequests.EXPECT().
+			GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+			Return(&gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{
+					ID:              123,
+					IID:             123,
+					ProjectID:       3,
+					SourceProjectID: 3,
+					SourceBranch:    "feat-new-mr",
+					State:           "opened",
+					SHA:             "abc123",
+				},
+			}, nil, nil)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		mockGit.EXPECT().Git("worktree", "list", "--porcelain").
+			Return(worktreeList("worktree /gone"+"\n"+"HEAD old"+"\n"+"branch refs/heads/feat-new-mr"+"\n"+"prunable gitdir file points to non-existent location"+"\n"), nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree ../review-mr-123")
+
+		require.ErrorContains(t, err, `branch "feat-new-mr" is held by a worktree at "/gone"`)
+		require.ErrorContains(t, err, "git worktree prune")
+	})
+
+	// Worktree mode touches no working tree, so the diverged branch ref is moved
+	// with `git branch -f`. A `reset --hard` here would hit the current directory,
+	// which is the thing --worktree exists to avoid.
+	t.Run("moves the ref instead of resetting when the branch has diverged", func(t *testing.T) {
+		t.Parallel()
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectNoOtherWorktree(mockGit)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "fetch", "--", "git@gitlab.com:OWNER/REPO.git", "refs/heads/feat-new-mr:feat-new-mr").
+			DoAndReturn(git.FailingFetchStub("refs/heads/feat-new-mr:feat-new-mr", "non-fast-forward"))
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "fetch", "--", "git@gitlab.com:OWNER/REPO.git", "refs/heads/feat-new-mr").
+			DoAndReturn(git.FetchStub("refs/heads/feat-new-mr"))
+		mockGit.EXPECT().Git("rev-parse", "--verify", "refs/heads/feat-new-mr").Return("old"+"\n", nil).Times(2)
+		mockGit.EXPECT().Git("rev-parse", "FETCH_HEAD^{commit}").Return("new"+"\n", nil)
+		mockGit.EXPECT().Git("merge-base", "--is-ancestor", "refs/heads/feat-new-mr", "FETCH_HEAD").
+			Return("", errors.New("not an ancestor"))
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "branch", "-f", "feat-new-mr", "FETCH_HEAD").Return(nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.remote", "git@gitlab.com:OWNER/REPO.git").Return("", nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.merge", "refs/heads/feat-new-mr").Return("", nil)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "worktree", "add", "--", "../review-mr-123", "feat-new-mr").Return(nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree ../review-mr-123 --force")
+
+		require.NoError(t, err)
+	})
+
+	// A branch that is merely behind reaches fastForward() rather than the reset
+	// path. The branch is checked out nowhere, so the ref moves with `branch -f`;
+	// `merge --ff-only` would act on the current directory.
+	t.Run("fast-forwards a behind branch with branch -f rather than merging", func(t *testing.T) {
+		t.Parallel()
+		testClient := newTestClient(t)
+
+		ctrl := gomock.NewController(t)
+		mockGit := git_testing.NewMockGitRunner(ctrl)
+		expectNoOtherWorktree(mockGit)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "fetch", "--", "git@gitlab.com:OWNER/REPO.git", "refs/heads/feat-new-mr:feat-new-mr").
+			DoAndReturn(git.FailingFetchStub("refs/heads/feat-new-mr:feat-new-mr", "non-fast-forward"))
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "fetch", "--", "git@gitlab.com:OWNER/REPO.git", "refs/heads/feat-new-mr").
+			DoAndReturn(git.FetchStub("refs/heads/feat-new-mr"))
+		mockGit.EXPECT().Git("rev-parse", "--verify", "refs/heads/feat-new-mr").Return("old"+"\n", nil).Times(2)
+		mockGit.EXPECT().Git("rev-parse", "FETCH_HEAD^{commit}").Return("new"+"\n", nil)
+		mockGit.EXPECT().Git("merge-base", "--is-ancestor", "refs/heads/feat-new-mr", "FETCH_HEAD").Return("", nil)
+		mockGit.EXPECT().Git("symbolic-ref", "--quiet", "--short", "HEAD").Return("main"+"\n", nil)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "branch", "-f", "feat-new-mr", "FETCH_HEAD").Return(nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.remote", "git@gitlab.com:OWNER/REPO.git").Return("", nil)
+		mockGit.EXPECT().Git("config", "branch.feat-new-mr.merge", "refs/heads/feat-new-mr").Return("", nil)
+		mockGit.EXPECT().GitWithIO(gomock.Any(), gomock.Any(), "worktree", "add", "--", "../review-mr-123", "feat-new-mr").Return(nil)
+
+		exec := setupTest(t, testClient, cmdtest.WithGitRunner(mockGit))
+		_, err := exec("123 --worktree ../review-mr-123")
+
+		require.NoError(t, err)
+	})
+}
+
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	return strings.TrimSpace(string(out))
+}
+
+func clientForSHA(t *testing.T, sha, remoteURL string) *gitlabtesting.TestClient {
+	t.Helper()
+
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+		Return(&gitlab.MergeRequest{
+			BasicMergeRequest: gitlab.BasicMergeRequest{
+				ID:              123,
+				IID:             123,
+				ProjectID:       3,
+				SourceProjectID: 3,
+				SourceBranch:    "feat-new-mr",
+				State:           "opened",
+				SHA:             sha,
+			},
+		}, nil, nil).AnyTimes()
+	testClient.MockProjects.EXPECT().
+		GetProject(gomock.Any(), gomock.Any()).
+		Return(&gitlab.Project{
+			ID:            3,
+			SSHURLToRepo:  remoteURL,
+			HTTPURLToRepo: remoteURL,
+		}, nil, nil).AnyTimes()
+
+	return testClient
+}
+
+// The mocked subtests above stub the very commands that behave differently against
+// real git, so the repeat review is driven end to end instead. FETCH_HEAD is
+// per-worktree, and a merge that reads the review worktree's own copy either fails
+// or silently leaves it on the old commit.
+//
+// No t.Parallel(): InitGitRepoWithCommit calls t.Chdir.
+func TestMrCheckout_WorktreeRepeatReviewRealGit(t *testing.T) {
+	repo := git.InitGitRepoWithCommit(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	gitIn(t, repo, "init", "--bare", remote)
+	gitIn(t, repo, "push", remote, "HEAD:refs/heads/feat-new-mr")
+	c1 := gitIn(t, repo, "rev-parse", "HEAD")
+
+	// RemoteURL now rejects a bare filesystem path, so the project advertises a valid
+	// URL and insteadOf rewrites it back to the local bare repo used as the transport.
+	const remoteURL = "https://gitlab.example.com/OWNER/REPO.git"
+	gitIn(t, repo, "config", "url."+filepath.ToSlash(remote)+".insteadOf", remoteURL)
+
+	// Forward slashes keep the argument intact when the command string is split.
+	worktree := filepath.ToSlash(filepath.Join(t.TempDir(), "review"))
+
+	_, err := setupTest(t, clientForSHA(t, c1, remoteURL))("123 --worktree " + worktree)
+	require.NoError(t, err)
+	assert.Equal(t, c1, gitIn(t, worktree, "rev-parse", "HEAD"))
+
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, repo, "clone", "-q", "-b", "feat-new-mr", remote, other)
+	gitIn(t, other, "-c", "user.name=x", "-c", "user.email=x@x", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "c2")
+	gitIn(t, other, "push", "-q", "origin", "feat-new-mr")
+	c2 := gitIn(t, other, "rev-parse", "HEAD")
+
+	_, err = setupTest(t, clientForSHA(t, c2, remoteURL))("123 --worktree " + worktree)
+	require.NoError(t, err)
+	assert.Equal(t, c2, gitIn(t, worktree, "rev-parse", "HEAD"))
+}
+
+func TestSameWorktreePath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("cannot create a symlink on this platform: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+
+	// git reports a resolved path, so a request made through a symlink, such as
+	// /tmp on macOS or a symlinked home directory, has to resolve to the same place.
+	assert.True(t, sameWorktreePath(resolved, link))
+	assert.True(t, sameWorktreePath(link, resolved))
+	assert.True(t, sameWorktreePath(resolved, dir))
+	assert.False(t, sameWorktreePath(resolved, filepath.Join(dir, "elsewhere")))
+
+	// A path that does not exist yet is the ordinary first-run case: EvalSymlinks
+	// fails there, so the fallback has to clean the two spellings to the same place.
+	missing := filepath.Join(dir, "not-created-yet")
+	assert.True(t, sameWorktreePath(missing, filepath.Join(dir, "sub", "..", "not-created-yet")))
+	assert.False(t, sameWorktreePath(missing, filepath.Join(dir, "sub", "not-created-yet")))
 }
 
 func TestMrCheckout_HTTPSProtocolConfiguration(t *testing.T) {
