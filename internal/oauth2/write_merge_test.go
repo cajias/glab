@@ -1,8 +1,9 @@
 //go:build !integration
 
-package config
+package oauth2
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,14 +11,31 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zalando/go-keyring"
+	"go.yaml.in/yaml/v3"
+
+	"gitlab.com/gitlab-org/cli/internal/config"
 )
 
 func reloadHostValue(t *testing.T, dir, host, key string) string {
 	t.Helper()
-	cfg, err := ParseConfig(filepath.Join(dir, "config.yml"))
+	cfg, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
 	require.NoError(t, err)
 	v, _ := cfg.Get(host, key)
 	return v
+}
+
+// rawHostEntry reads a host's entry straight from config.yml. Unlike Get, it
+// never resolves a value from the keyring or the environment.
+func rawHostEntry(t *testing.T, dir, host string) (map[string]any, bool) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "config.yml"))
+	require.NoError(t, err)
+	var doc struct {
+		Hosts map[string]map[string]any `yaml:"hosts"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &doc))
+	entry, ok := doc.Hosts[host]
+	return entry, ok
 }
 
 // TestWrite_AdoptsFresherCredentialsFromDisk reproduces the #8390 clobber: a
@@ -32,18 +50,18 @@ func TestWrite_AdoptsFresherCredentialsFromDisk(t *testing.T) {
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
 
 	// Seed plaintext credentials on disk (no use_keyring => stored in the file).
-	seed := NewBlankConfigInDir(dir)
+	seed := config.NewBlankConfigInDir(dir)
 	require.NoError(t, seed.Set("gitlab.com", "token", "access-old"))
 	require.NoError(t, seed.Set("gitlab.com", "oauth2_refresh_token", "refresh-old"))
 	require.NoError(t, seed.Set("gitlab.com", "oauth2_expiry_date", past))
 	require.NoError(t, seed.Write())
 
 	// A stale reader loads the config...
-	stale, err := ParseConfig(filepath.Join(dir, "config.yml"))
+	stale, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
 	require.NoError(t, err)
 
 	// ...then another process rotates the token on disk.
-	winner, err := ParseConfig(filepath.Join(dir, "config.yml"))
+	winner, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
 	require.NoError(t, err)
 	require.NoError(t, winner.Set("gitlab.com", "token", "access-new"))
 	require.NoError(t, winner.Set("gitlab.com", "oauth2_refresh_token", "refresh-new"))
@@ -72,12 +90,12 @@ func TestWrite_KeepsNewerInMemoryCredentials(t *testing.T) {
 	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
 
-	seed := NewBlankConfigInDir(dir)
+	seed := config.NewBlankConfigInDir(dir)
 	require.NoError(t, seed.Set("gitlab.com", "token", "access-old"))
 	require.NoError(t, seed.Set("gitlab.com", "oauth2_expiry_date", past))
 	require.NoError(t, seed.Write())
 
-	fresh, err := ParseConfig(filepath.Join(dir, "config.yml"))
+	fresh, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
 	require.NoError(t, err)
 	require.NoError(t, fresh.Set("gitlab.com", "token", "access-new"))
 	require.NoError(t, fresh.Set("gitlab.com", "oauth2_expiry_date", future))
@@ -99,16 +117,16 @@ func TestWrite_KeyringHostAdoptsFresherExpiryWithoutPlaintextToken(t *testing.T)
 	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
 
-	seed := NewBlankConfigInDir(dir)
+	seed := config.NewBlankConfigInDir(dir)
 	require.NoError(t, seed.Set("gitlab.com", "use_keyring", "true"))
 	require.NoError(t, seed.Set("gitlab.com", "token", "access-old")) // -> keyring
 	require.NoError(t, seed.Set("gitlab.com", "oauth2_expiry_date", past))
 	require.NoError(t, seed.Write())
 
-	stale, err := ParseConfig(filepath.Join(dir, "config.yml"))
+	stale, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
 	require.NoError(t, err)
 
-	winner, err := ParseConfig(filepath.Join(dir, "config.yml"))
+	winner, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
 	require.NoError(t, err)
 	require.NoError(t, winner.Set("gitlab.com", "token", "access-new")) // -> keyring
 	require.NoError(t, winner.Set("gitlab.com", "oauth2_expiry_date", future))
@@ -125,14 +143,9 @@ func TestWrite_KeyringHostAdoptsFresherExpiryWithoutPlaintextToken(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, "access-new", storedToken)
 
-	onDisk, err := ParseConfig(filepath.Join(dir, "config.yml"))
-	require.NoError(t, err)
-	fileCfg, ok := onDisk.(*fileConfig)
+	hostEntry, ok := rawHostEntry(t, dir, "gitlab.com")
 	require.True(t, ok)
-	hostCfg, err := fileCfg.configForHost("gitlab.com")
-	require.NoError(t, err)
-	_, err = hostCfg.GetStringValue("token")
-	assert.Error(t, err, "config.yml should not contain a plaintext token node for a keyring host")
+	assert.NotContains(t, hostEntry, "token", "config.yml should not contain a plaintext token node for a keyring host")
 }
 
 // TestWrite_DoesNotReadoptClearedCredentials guards the logout / credential-clear
@@ -148,7 +161,7 @@ func TestWrite_DoesNotReadoptClearedCredentials(t *testing.T) {
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
 
 	// A file-backed host with credentials on disk.
-	seed := NewBlankConfigInDir(dir)
+	seed := config.NewBlankConfigInDir(dir)
 	require.NoError(t, seed.Set("gitlab.com", "is_oauth2", "true"))
 	require.NoError(t, seed.Set("gitlab.com", "token", "access-old"))
 	require.NoError(t, seed.Set("gitlab.com", "oauth2_refresh_token", "refresh-old"))
@@ -157,7 +170,7 @@ func TestWrite_DoesNotReadoptClearedCredentials(t *testing.T) {
 
 	// Clear the credential fields in memory (mirrors authutils.ClearAuthFields),
 	// keeping the host entry, then persist.
-	cfg, err := ParseConfig(filepath.Join(dir, "config.yml"))
+	cfg, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
 	require.NoError(t, err)
 	for _, key := range []string{"token", "oauth2_refresh_token", "oauth2_expiry_date"} {
 		require.NoError(t, cfg.Set("gitlab.com", key, ""))
@@ -165,14 +178,122 @@ func TestWrite_DoesNotReadoptClearedCredentials(t *testing.T) {
 	require.NoError(t, cfg.Write())
 
 	// The credentials must be gone from disk, not re-adopted by the merge.
-	onDisk, err := ParseConfig(filepath.Join(dir, "config.yml"))
-	require.NoError(t, err)
-	fileCfg, ok := onDisk.(*fileConfig)
-	require.True(t, ok)
-	hostCfg, err := fileCfg.configForHost("gitlab.com")
-	require.NoError(t, err, "the host entry itself should be preserved")
+	hostEntry, ok := rawHostEntry(t, dir, "gitlab.com")
+	require.True(t, ok, "the host entry itself should be preserved")
 	for _, key := range []string{"token", "oauth2_refresh_token", "oauth2_expiry_date"} {
-		_, err := hostCfg.GetStringValue(key)
-		assert.Error(t, err, "%s should stay cleared, not be re-adopted from disk", key)
+		assert.NotContains(t, hostEntry, key, "%s should stay cleared, not be re-adopted from disk", key)
+	}
+}
+
+// TestWrite_AdoptsFresherCredentialsOverLegacyExpiry covers a stale reader whose
+// in-memory expiry is still in the RFC822 format older glab versions wrote.
+func TestWrite_AdoptsFresherCredentialsOverLegacyExpiry(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(keyring.MockInit)
+
+	dir := t.TempDir()
+	past := time.Now().Add(-time.Hour).Format(time.RFC822)
+	future := time.Now().Add(time.Hour).Format(time.RFC3339)
+
+	seed := config.NewBlankConfigInDir(dir)
+	require.NoError(t, seed.Set("gitlab.com", "token", "access-old"))
+	require.NoError(t, seed.Set("gitlab.com", "oauth2_refresh_token", "refresh-old"))
+	require.NoError(t, seed.Set("gitlab.com", "oauth2_expiry_date", past))
+	require.NoError(t, seed.Write())
+
+	stale, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
+	require.NoError(t, err)
+
+	winner, err := config.ParseConfig(filepath.Join(dir, "config.yml"))
+	require.NoError(t, err)
+	require.NoError(t, winner.Set("gitlab.com", "token", "access-new"))
+	require.NoError(t, winner.Set("gitlab.com", "oauth2_refresh_token", "refresh-new"))
+	require.NoError(t, winner.Set("gitlab.com", "oauth2_expiry_date", future))
+	require.NoError(t, winner.Write())
+
+	require.NoError(t, stale.Set("", "last_update_check_timestamp", future))
+	require.NoError(t, stale.Write())
+
+	assert.Equal(t, "access-new", reloadHostValue(t, dir, "gitlab.com", "token"))
+	assert.Equal(t, "refresh-new", reloadHostValue(t, dir, "gitlab.com", "oauth2_refresh_token"))
+	assert.Equal(t, future, reloadHostValue(t, dir, "gitlab.com", "oauth2_expiry_date"))
+}
+
+func TestExpiryNewer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		disk string
+		mem  string
+		want bool
+	}{
+		{
+			name: "disk newer",
+			disk: "2026-01-02T10:00:00Z",
+			mem:  "2026-01-02T09:00:00Z",
+			want: true,
+		},
+		{
+			name: "equal",
+			disk: "2026-01-02T10:00:00Z",
+			mem:  "2026-01-02T10:00:00Z",
+			want: false,
+		},
+		{
+			name: "memory newer",
+			disk: "2026-01-02T09:00:00Z",
+			mem:  "2026-01-02T10:00:00Z",
+			want: false,
+		},
+		{
+			name: "unparseable disk",
+			disk: "not-a-date",
+			mem:  "2026-01-02T09:00:00Z",
+			want: false,
+		},
+		{
+			name: "empty disk",
+			disk: "",
+			mem:  "2026-01-02T09:00:00Z",
+			want: false,
+		},
+		{
+			name: "empty memory",
+			disk: "2026-01-02T10:00:00Z",
+			mem:  "",
+			want: false,
+		},
+		{
+			name: "unparseable memory",
+			disk: "2026-01-02T10:00:00Z",
+			mem:  "not-a-date",
+			want: false,
+		},
+		{
+			name: "RFC3339 disk newer than RFC822 memory",
+			disk: "2026-01-02T10:00:00Z",
+			mem:  "02 Jan 26 09:00 UTC",
+			want: true,
+		},
+		{
+			name: "RFC822Z disk newer than RFC3339 memory",
+			disk: "02 Jan 26 10:00 +0000",
+			mem:  "2026-01-02T09:00:00Z",
+			want: true,
+		},
+		{
+			name: "RFC3339 disk older than RFC822 memory",
+			disk: "2026-01-02T09:00:00Z",
+			mem:  "02 Jan 26 10:00 UTC",
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, expiryNewer(tc.disk, tc.mem))
+		})
 	}
 }

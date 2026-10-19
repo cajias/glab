@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/zalando/go-keyring"
 	"go.yaml.in/yaml/v3"
@@ -551,7 +550,7 @@ func (c *fileConfig) Write() error {
 		// in-memory document for an unrelated reason (an update-check timestamp
 		// bump) could otherwise roll back OAuth credentials another process just
 		// rotated. Adopt any fresher on-disk credentials before serializing.
-		c.mergeFresherCredentialsFromDisk()
+		c.mergeCredentialsFromDisk()
 		return c.writeLocked()
 	})
 }
@@ -578,27 +577,29 @@ func (c *fileConfig) writeLocked() error {
 	return writeConfigFile(filepath.Join(c.dir, "config.yml"), yamlNormalize(mainBytes))
 }
 
-// oauthCredentialKeys are the credential keys a token refresh rotates together.
-// oauth2_expiry_date is the freshness marker: when the on-disk copy is newer
-// than ours, another process rotated these values.
-var oauthCredentialKeys = []string{"token", "oauth2_refresh_token", "oauth2_expiry_date"}
+// CredentialMerger copies newer credentials from a host's on-disk entry into its
+// in-memory entry. It must only touch the YAML document, never the keyring.
+type CredentialMerger func(mem, disk *HostConfig)
 
-// mergeFresherCredentialsFromDisk re-reads config.yml and, for any host whose
-// on-disk oauth2_expiry_date is newer than the in-memory one, copies the on-disk
-// OAuth credential values into the in-memory document before it is serialized.
-// This prevents an unrelated write from a process holding a stale copy from
-// rolling back a rotated, single-use refresh token.
-//
-// It only touches the YAML document, never the keyring, and only adopts
-// non-empty on-disk values (so a keyring-backed host, whose token and
-// oauth2_refresh_token are absent from the file, keeps just its fresher expiry).
-// It is best-effort: a read error leaves the in-memory copy untouched. Callers
-// must hold the config-directory lock.
-func (c *fileConfig) mergeFresherCredentialsFromDisk() {
+var credentialMerger atomic.Pointer[CredentialMerger]
+
+// SetCredentialMerger registers the merger Write runs before saving.
+func SetCredentialMerger(m CredentialMerger) {
+	credentialMerger.Store(&m)
+}
+
+// mergeCredentialsFromDisk runs the registered merger on each host. Callers must
+// hold the config-directory lock.
+func (c *fileConfig) mergeCredentialsFromDisk() {
+	merge := credentialMerger.Load()
+	if merge == nil || *merge == nil {
+		return
+	}
+
 	onDisk, err := ParseConfig(filepath.Join(c.dir, "config.yml"))
 	if err != nil {
 		// A missing or unreadable file has nothing fresher to adopt.
-		dbg.Debugf("config: merge-fresher: could not re-read config from %q: %v", c.dir, err)
+		dbg.Debugf("config: could not re-read config.yml before write, skipping credential merge: %v", err)
 		return
 	}
 	diskCfg, ok := onDisk.(*fileConfig)
@@ -620,57 +621,8 @@ func (c *fileConfig) mergeFresherCredentialsFromDisk() {
 		if err != nil {
 			continue
 		}
-
-		diskExpiry, _ := diskHost.GetStringValue("oauth2_expiry_date")
-		memExpiry, _ := memHost.GetStringValue("oauth2_expiry_date")
-		if !expiryNewer(diskExpiry, memExpiry) {
-			continue
-		}
-
-		for _, key := range oauthCredentialKeys {
-			v, err := diskHost.GetStringValue(key)
-			if err != nil || v == "" {
-				continue
-			}
-			if setErr := memHost.SetStringValue(key, v); setErr != nil {
-				dbg.Debugf("config: merge-fresher: could not adopt %q for %q: %v", key, host, setErr)
-			}
-		}
-		dbg.Debugf("config: merge-fresher: adopted rotated credentials for %q from disk", host)
+		(*merge)(memHost, diskHost)
 	}
-}
-
-// expiryNewer reports whether the on-disk oauth2_expiry_date is strictly newer
-// than the in-memory one. A valid disk value with an unparseable in-memory value
-// counts as newer; an unparseable disk value never does.
-func expiryNewer(disk, mem string) bool {
-	dt, ok := parseExpiry(disk)
-	if !ok {
-		return false
-	}
-	mt, ok := parseExpiry(mem)
-	if !ok {
-		// An empty or unparseable in-memory expiry is not the stale-reader case
-		// this merge targets: a stale reader still holds an older but parseable
-		// expiry. An empty one usually means the caller intentionally cleared the
-		// credentials in memory (for example, `glab auth logout`, which clears
-		// token/oauth2_refresh_token/oauth2_expiry_date but keeps the host entry).
-		// Re-adopting the on-disk copy there would silently undo the clear, so
-		// treat a missing in-memory expiry as "nothing fresher to adopt".
-		return false
-	}
-	return dt.After(mt)
-}
-
-// parseExpiry parses an oauth2_expiry_date, tolerating the RFC822 formats older
-// glab versions wrote (matching the OAuth token unmarshaller).
-func parseExpiry(s string) (time.Time, bool) {
-	for _, layout := range []string{time.RFC3339, time.RFC822, time.RFC822Z} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
 }
 
 func (c *fileConfig) WriteAll() error {

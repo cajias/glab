@@ -11,6 +11,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"gitlab.com/gitlab-org/cli/internal/config"
+	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 )
@@ -219,4 +220,48 @@ func marshal(hostname string, cfg config.Config, token *oauth2.Token) error {
 	}
 
 	return nil
+}
+
+func init() {
+	config.SetCredentialMerger(mergeFresherCredentialsFromDisk)
+}
+
+// oauthCredentialKeys rotate together on every token refresh.
+var oauthCredentialKeys = []string{"token", "oauth2_refresh_token", "oauth2_expiry_date"}
+
+// mergeFresherCredentialsFromDisk keeps credentials another process rotated, so
+// a stale write can't roll back a single-use refresh token. Empty disk values
+// are skipped, so keyring-backed hosts take only the newer expiry.
+func mergeFresherCredentialsFromDisk(mem, disk *config.HostConfig) {
+	diskExpiry, _ := disk.GetStringValue("oauth2_expiry_date")
+	memExpiry, _ := mem.GetStringValue("oauth2_expiry_date")
+	if !expiryNewer(diskExpiry, memExpiry) {
+		return
+	}
+
+	for _, key := range oauthCredentialKeys {
+		v, err := disk.GetStringValue(key)
+		if err != nil || v == "" {
+			continue
+		}
+		if setErr := mem.SetStringValue(key, v); setErr != nil {
+			dbg.Debugf("oauth2: could not copy %q for %q from config.yml: %v", key, mem.Host, setErr)
+		}
+	}
+	dbg.Debugf("oauth2: %q has newer credentials in config.yml, keeping them", mem.Host)
+}
+
+// expiryNewer reports whether disk is strictly newer than mem.
+func expiryNewer(disk, mem string) bool {
+	dt, err := ParseExpiryDate(disk)
+	if err != nil {
+		return false
+	}
+	mt, err := ParseExpiryDate(mem)
+	if err != nil {
+		// An empty in-memory expiry usually means `glab auth logout` cleared the
+		// credentials. Adopting the disk copy would undo it.
+		return false
+	}
+	return dt.After(mt)
 }
