@@ -546,6 +546,129 @@ func TestIssueList_filterByIteration(t *testing.T) {
 `, output.String())
 }
 
+func TestIssueList_filterByDates(t *testing.T) {
+	// NOTE: These subtests cannot run in parallel because they use cmdutils.GroupOverride()
+	// which modifies global viper state (SetEnvPrefix, BindEnv).
+	t.Run("project", func(t *testing.T) {
+		testClient := gitlabtesting.NewTestClient(t)
+
+		testClient.MockIssues.EXPECT().
+			ListProjectIssues("OWNER/REPO", gomock.Any()).
+			DoAndReturn(func(pid any, opts *gitlab.ListProjectIssuesOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Issue, *gitlab.Response, error) {
+				require.NotNil(t, opts.CreatedAfter)
+				require.NotNil(t, opts.CreatedBefore)
+				require.NotNil(t, opts.UpdatedAfter)
+				require.NotNil(t, opts.UpdatedBefore)
+				assert.Equal(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), *opts.CreatedAfter)
+				assert.Equal(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), *opts.CreatedBefore)
+				assert.Equal(t, time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), *opts.UpdatedAfter)
+				assert.Equal(t, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), *opts.UpdatedBefore)
+				return []*gitlab.Issue{}, nil, nil
+			})
+
+		apiClient, err := api.NewClient(
+			func(*http.Client) (gitlab.AuthSource, error) {
+				return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+			},
+			api.WithGitLabClient(testClient.Client),
+		)
+		require.NoError(t, err)
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdList(f, nil, issuable.TypeIssue)
+		}, true,
+			cmdtest.WithApiClient(apiClient),
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		)
+
+		output, err := exec("--created-after 2026-01-01T00:00:00Z --created-before 2026-02-01T00:00:00Z --updated-after 2026-03-01T00:00:00Z --updated-before 2026-04-01T00:00:00Z")
+		require.NoError(t, err)
+
+		assert.Empty(t, output.Stderr())
+		assert.Equal(t, `No open issues match your search in OWNER/REPO.
+
+
+`, output.String())
+	})
+	t.Run("no date flags", func(t *testing.T) {
+		testClient := gitlabtesting.NewTestClient(t)
+
+		testClient.MockIssues.EXPECT().
+			ListProjectIssues("OWNER/REPO", gomock.Any()).
+			DoAndReturn(func(pid any, opts *gitlab.ListProjectIssuesOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Issue, *gitlab.Response, error) {
+				assert.Nil(t, opts.CreatedAfter)
+				assert.Nil(t, opts.CreatedBefore)
+				assert.Nil(t, opts.UpdatedAfter)
+				assert.Nil(t, opts.UpdatedBefore)
+				return []*gitlab.Issue{}, nil, nil
+			})
+
+		apiClient, err := api.NewClient(
+			func(*http.Client) (gitlab.AuthSource, error) {
+				return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+			},
+			api.WithGitLabClient(testClient.Client),
+		)
+		require.NoError(t, err)
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdList(f, nil, issuable.TypeIssue)
+		}, true,
+			cmdtest.WithApiClient(apiClient),
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		)
+
+		_, err = exec("")
+		require.NoError(t, err)
+	})
+	t.Run("group", func(t *testing.T) {
+		testClient := gitlabtesting.NewTestClient(t)
+
+		testClient.MockIssues.EXPECT().
+			ListGroupIssues("GROUP", gomock.Any()).
+			DoAndReturn(func(gid any, opts *gitlab.ListGroupIssuesOptions, options ...gitlab.RequestOptionFunc) ([]*gitlab.Issue, *gitlab.Response, error) {
+				require.NotNil(t, opts.UpdatedAfter)
+				assert.Equal(t, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), *opts.UpdatedAfter)
+				assert.Nil(t, opts.CreatedAfter)
+				return []*gitlab.Issue{}, nil, nil
+			})
+
+		apiClient, err := api.NewClient(
+			func(*http.Client) (gitlab.AuthSource, error) {
+				return gitlab.AccessTokenAuthSource{Token: "test-token"}, nil
+			},
+			api.WithGitLabClient(testClient.Client),
+		)
+		require.NoError(t, err)
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdList(f, nil, issuable.TypeIssue)
+		}, true,
+			cmdtest.WithApiClient(apiClient),
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		)
+
+		output, err := exec("--group GROUP --updated-after 2026-10-01T00:00:00Z")
+		require.NoError(t, err)
+
+		assert.Empty(t, output.Stderr())
+		assert.Equal(t, `No open issues match your search in GROUP.
+
+
+`, output.String())
+	})
+	t.Run("invalid format", func(t *testing.T) {
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			return NewCmdList(f, nil, issuable.TypeIssue)
+		}, true,
+			cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+		)
+
+		_, err := exec("--created-after 2026-10-01")
+		require.ErrorContains(t, err, "invalid time format")
+	})
+}
+
 func TestIssueList_tty_withIssueType(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")
@@ -975,6 +1098,8 @@ func TestIssueList_epicIssues(t *testing.T) {
 				ID: 103,
 			},
 			Confidential: false,
+			CreatedAt:    new(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+			UpdatedAt:    new(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			IID:   2,
@@ -992,6 +1117,8 @@ func TestIssueList_epicIssues(t *testing.T) {
 				ID: 203,
 			},
 			Confidential: true,
+			CreatedAt:    new(time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)),
+			UpdatedAt:    new(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)),
 		},
 	}
 
@@ -1077,6 +1204,31 @@ func TestIssueList_epicIssues(t *testing.T) {
 		{
 			name:        "confidential flag",
 			commandLine: `--group testGroupID --epic 42 --all --confidential`,
+			wantIDs:     []int{2},
+		},
+		{
+			name:        "created-after flag",
+			commandLine: `--group testGroupID --epic 42 --all --created-after 2026-01-15T00:00:00Z`,
+			wantIDs:     []int{2},
+		},
+		{
+			name:        "created-before flag",
+			commandLine: `--group testGroupID --epic 42 --all --created-before 2026-01-15T00:00:00Z`,
+			wantIDs:     []int{1},
+		},
+		{
+			name:        "updated-after flag",
+			commandLine: `--group testGroupID --epic 42 --all --updated-after 2026-03-15T00:00:00Z`,
+			wantIDs:     []int{2},
+		},
+		{
+			name:        "updated-before flag",
+			commandLine: `--group testGroupID --epic 42 --all --updated-before 2026-03-15T00:00:00Z`,
+			wantIDs:     []int{1},
+		},
+		{
+			name:        "date flags include the boundary",
+			commandLine: `--group testGroupID --epic 42 --all --created-after 2026-02-01T00:00:00Z --created-before 2026-02-01T00:00:00Z`,
 			wantIDs:     []int{2},
 		},
 		{
