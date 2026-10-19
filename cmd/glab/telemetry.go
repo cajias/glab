@@ -41,13 +41,20 @@ func telemetryRequestOptions(ctx context.Context) []gitlab.RequestOptionFunc {
 // telemetrySkippedCommands run from shell startup files and from git, not from
 // a person, so they must not block on the network.
 var telemetrySkippedCommands = map[string]struct{}{
-	"completion":             {},
-	"auth git-credential":    {},
-	"auth credential-helper": {},
+	cobra.ShellCompRequestCmd: {},
+	"completion":              {},
+	"auth git-credential":     {},
+	"auth credential-helper":  {},
 }
 
-func addTelemetryHook(f cmdutils.Factory, cmd *cobra.Command) func() {
+func addTelemetryHook(f cmdutils.Factory, rootCmd *cobra.Command, args []string) func() {
 	return func() {
+		// Cobra registers __complete (and its __completeNoDesc alias) during Execute.
+		cmd, _, err := rootCmd.Find(args)
+		if err != nil {
+			dbg.Debug("Could not determine command in telemetry hook: ", err.Error())
+			return
+		}
 		sendTelemetryData(f, cmd)
 	}
 }

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,8 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/commands"
+	"gitlab.com/gitlab-org/cli/internal/commands/alias/expand"
 	apiCmd "gitlab.com/gitlab-org/cli/internal/commands/api"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
@@ -222,12 +225,91 @@ func Test_addTelemetryHook_blocksUntilEventIsSent(t *testing.T) {
 	f, sent := telemetryServer(t)
 
 	root := &cobra.Command{Use: "glab"}
-	version := &cobra.Command{Use: "version"}
+	version := &cobra.Command{Use: "version", Run: func(*cobra.Command, []string) {}}
 	root.AddCommand(version)
 
-	addTelemetryHook(f, version)()
+	args := []string{"version"}
+	root.SetArgs(args)
+	hook := addTelemetryHook(f, root, args)
+	require.NoError(t, root.Execute())
+	hook()
 
-	require.Len(t, sent(), 1, "hook returned before the telemetry event was sent")
+	events := sent()
+	require.Len(t, events, 1, "hook returned before the telemetry event was sent")
+	require.Equal(t, "version", events[0].AdditionalProperties["command_and_subcommand"])
+}
+
+func Test_addTelemetryHook_commandAttribution(t *testing.T) {
+	tests := []struct {
+		name        string
+		argv        []string
+		fullCommand string
+	}{
+		{
+			name:        "ordinary command",
+			argv:        []string{"glab", "mr", "list"},
+			fullCommand: "mr list",
+		},
+		{
+			name:        "user alias",
+			argv:        []string{"glab", "co", "123"},
+			fullCommand: "mr checkout",
+		},
+		{
+			name:        "flag before command",
+			argv:        []string{"glab", "--output", "json", "mr", "list"},
+			fullCommand: "mr list",
+		},
+		{
+			name:        "flag before subcommand",
+			argv:        []string{"glab", "mr", "--output", "json", "list"},
+			fullCommand: "mr list",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, sent := telemetryServer(t)
+			root := commands.NewCmdRoot(f)
+			cfg := config.NewFromString("aliases:\n  co: mr checkout\n")
+			expandedArgs, isShell, err := expand.ExpandAlias(cfg, tt.argv, nil)
+			require.NoError(t, err)
+			require.False(t, isShell)
+
+			addTelemetryHook(f, root, expandedArgs)()
+
+			events := sent()
+			require.Len(t, events, 1)
+			assert.Equal(t, tt.fullCommand, events[0].AdditionalProperties["command_and_subcommand"])
+		})
+	}
+}
+
+func Test_addTelemetryHook_shellCompletion(t *testing.T) {
+	for _, name := range []string{cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd} {
+		t.Run(name, func(t *testing.T) {
+			f, sent := telemetryServer(t)
+			root := commands.NewCmdRoot(f)
+			args := []string{name, "auth", "logout", "--hostnam"}
+			var stdout, stderr bytes.Buffer
+			root.SetOut(&stdout)
+			root.SetErr(&stderr)
+			root.SetArgs(args)
+
+			hook := addTelemetryHook(f, root, args)
+			require.NoError(t, root.Execute())
+			hook()
+
+			require.Contains(t, stdout.String(), "--hostname")
+			require.Contains(t, stdout.String(), ":4\n")
+			if name == cobra.ShellCompRequestCmd {
+				require.Contains(t, stdout.String(), "\tThe hostname of the GitLab instance.")
+			} else {
+				require.NotContains(t, stdout.String(), "\t")
+			}
+			require.Empty(t, sent(), "shell completion must not send telemetry")
+		})
+	}
 }
 
 func requestDeadline(t *testing.T, opts []gitlab.RequestOptionFunc) (time.Time, bool) {
