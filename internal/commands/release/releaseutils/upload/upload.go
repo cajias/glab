@@ -82,6 +82,23 @@ func (c *Context) UploadFiles(ctx context.Context, projectID, tagName string, pa
 	if c.AssetFiles == nil {
 		return nil
 	}
+	releaseAssets, err := c.UploadAssetFiles(ctx, projectID, tagName, packageName, usePackageRegistry)
+	if err != nil {
+		return err
+	}
+
+	for _, releaseAsset := range releaseAssets {
+		if _, _, err := CreateLink(ctx, c.Client, projectID, tagName, releaseAsset); err != nil {
+			return err
+		}
+	}
+	c.AssetFiles = nil
+
+	return nil
+}
+
+// UploadAssetFiles does not link the files. The release may not exist yet.
+func (c *Context) UploadAssetFiles(ctx context.Context, projectID, tagName string, packageName string, usePackageRegistry bool) ([]*ReleaseAsset, error) {
 	color := c.IO.Color()
 	for _, file := range c.AssetFiles {
 		c.IO.LogInfof("%s Uploading to release\t%s=%s %s=%s\n",
@@ -110,17 +127,10 @@ func (c *Context) UploadFiles(ctx context.Context, projectID, tagName string, pa
 		})
 	}
 	if err := g.Wait(); err != nil {
-		return err
+		return nil, err
 	}
 
-	for _, releaseAsset := range releaseAssets {
-		if _, _, err := CreateLink(ctx, c.Client, projectID, tagName, releaseAsset); err != nil {
-			return err
-		}
-	}
-	c.AssetFiles = nil
-
-	return nil
+	return releaseAssets, nil
 }
 
 func (c *Context) uploadAsGenericPackage(ctx context.Context, projectID, tagName string, packageName string, file *ReleaseFile) (*ReleaseAsset, error) {
@@ -211,6 +221,47 @@ func (c *Context) CreateReleaseAssetLinks(ctx context.Context, projectID string,
 	c.AssetsLinks = nil
 
 	return nil
+}
+
+// AliasFilePaths returns the names of the assets whose deprecated filepath it
+// moved to direct_asset_path.
+func AliasFilePaths(assets []*ReleaseAsset) ([]string, error) {
+	var aliasedNames []string
+	for _, asset := range assets {
+		aliased, err := aliasFilePathToDirectAssetPath(asset)
+		if err != nil {
+			return nil, err
+		}
+		if aliased {
+			name := "(without a name)"
+			if asset.Name != nil {
+				name = *asset.Name
+			}
+			aliasedNames = append(aliasedNames, name)
+		}
+	}
+
+	return aliasedNames, nil
+}
+
+// ToReleaseAssetsOptions ignores the deprecated filepath. Call AliasFilePaths
+// first.
+func ToReleaseAssetsOptions(assets []*ReleaseAsset) *gitlab.ReleaseAssetsOptions {
+	if len(assets) == 0 {
+		return nil
+	}
+
+	links := make([]*gitlab.ReleaseAssetLinkOptions, 0, len(assets))
+	for _, asset := range assets {
+		links = append(links, &gitlab.ReleaseAssetLinkOptions{
+			Name:            asset.Name,
+			URL:             asset.URL,
+			DirectAssetPath: asset.DirectAssetPath,
+			LinkType:        asset.LinkType,
+		})
+	}
+
+	return &gitlab.ReleaseAssetsOptions{Links: links}
 }
 
 // aliasFilePathToDirectAssetPath ensures that the Asset Link uses the direct_asset_path and not the filepath.

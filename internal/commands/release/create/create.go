@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -524,12 +525,34 @@ func createRun(opts *options) error {
 			createOpts.Milestones = &opts.milestone
 		}
 
+		aliasedNames, err := upload.AliasFilePaths(opts.assetLink)
+		if err != nil {
+			return releaseFailedErr(err, start)
+		}
+
+		uploadCtx := upload.Context{IO: opts.io, Client: client, AssetFiles: opts.assetFiles}
+		uploadedAssets, err := uploadCtx.UploadAssetFiles(opts.ctx, repo.FullName(), opts.tagName, opts.packageName, opts.usePackageRegistry)
+		if err != nil {
+			return releaseFailedErr(cmdutils.WrapError(err, "upload failed"), start)
+		}
+		createOpts.Assets = upload.ToReleaseAssetsOptions(slices.Concat(opts.assetLink, uploadedAssets))
+
 		release, _, err = client.Releases.CreateRelease(repo.FullName(), createOpts)
 		if err != nil {
 			return releaseFailedErr(err, start)
 		}
 		opts.io.LogInfof("%s Release created:\t%s=%s\n", color.GreenCheck(),
 			color.Blue("url"), release.Links.Self)
+
+		for _, link := range release.Assets.Links {
+			opts.io.LogInfof("%s Added release asset\t%s=%s %s=%s\n",
+				color.GreenCheck(), color.Blue("name"), link.Name,
+				color.Blue("url"), link.DirectAssetURL)
+		}
+		for _, name := range aliasedNames {
+			opts.io.LogInfof("\t%s Aliased deprecated `filepath` field to `direct_asset_path`. Replace `filepath` with `direct_asset_path`\t%s=%s\n",
+				color.WarnIcon(), color.Blue("name"), name)
+		}
 	} else {
 		if opts.noUpdate {
 			return releaseFailedErr(fmt.Errorf("release for tag %q already exists and --no-update flag was specified", opts.tagName), start)
@@ -557,12 +580,12 @@ func createRun(opts *options) error {
 
 		opts.io.LogInfof("%s Release updated\t%s=%s\n", color.GreenCheck(),
 			color.Blue("url"), release.Links.Self)
-	}
 
-	// upload files and create asset links
-	err = releaseutils.CreateReleaseAssets(opts.ctx, opts.io, client, opts.assetFiles, opts.assetLink, repo.FullName(), release.TagName, opts.packageName, opts.usePackageRegistry)
-	if err != nil {
-		return releaseFailedErr(err, start)
+		// upload files and create asset links
+		err = releaseutils.CreateReleaseAssets(opts.ctx, opts.io, client, opts.assetFiles, opts.assetLink, repo.FullName(), release.TagName, opts.packageName, opts.usePackageRegistry)
+		if err != nil {
+			return releaseFailedErr(err, start)
+		}
 	}
 
 	if opts.noCloseMilestone {
