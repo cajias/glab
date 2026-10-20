@@ -102,7 +102,7 @@ func TestReleaseUtilsUpload_UploadFiles_ProjectMarkdownFiles(t *testing.T) {
 	gomock.InOrder(
 		tc.MockProjectMarkdownUploads.EXPECT().
 			UploadProjectMarkdown("any-project", gomock.Any(), "test-release-file.txt", gomock.Any()).
-			Return(&gitlab.MarkdownUploadedFile{FullPath: "test-release-file.txt"}, nil, nil),
+			Return(&gitlab.ProjectMarkdownUploadedFile{FullPath: "test-release-file.txt"}, nil, nil),
 		tc.MockReleaseLinks.EXPECT().CreateReleaseLink("any-project", "42.0.0", gomock.Any(), gomock.Any()),
 	)
 
@@ -325,4 +325,115 @@ func TestReleaseUtilsUpload_UploadFiles_PrintsOneLinePerFile(t *testing.T) {
 	assert.Equal(t, "• Uploading to release\tfile=./file-0.txt name=file-0.txt\n"+
 		"• Uploading to release\tfile=./file-1.txt name=file-1.txt\n"+
 		"• Uploading to release\tfile=./file-2.txt name=file-2.txt\n", stdout.String())
+}
+
+func TestReleaseUtilsUpload_UploadAssetFiles(t *testing.T) {
+	t.Parallel()
+
+	ios, _, _, _ := cmdtest.TestIOStreams()
+	tc := gitlabtesting.NewTestClient(t, gitlab.WithBaseURL("https://"+glinstance.DefaultHostname))
+	uploadCtx := &Context{
+		Client: tc.Client,
+		IO:     ios,
+		AssetFiles: []*ReleaseFile{
+			{
+				Open: func() (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewBufferString("Hello World")), nil
+				},
+				Name:  "test-release-file.txt",
+				Label: "test-release-file",
+				Path:  "./foobar/test-release-file.txt",
+				Type:  new(gitlab.PackageLinkType),
+			},
+		},
+	}
+
+	// No CreateReleaseLink expectation: the release may not exist yet.
+	tc.MockProjectMarkdownUploads.EXPECT().
+		UploadProjectMarkdown("any-project", gomock.Any(), "test-release-file.txt", gomock.Any()).
+		Return(&gitlab.ProjectMarkdownUploadedFile{FullPath: "/-/project/1/uploads/abc/test-release-file.txt"}, nil, nil)
+
+	releaseAssets, err := uploadCtx.UploadAssetFiles(t.Context(), "any-project", "42.0.0", DefaultReleasePackageName, false)
+
+	require.NoError(t, err)
+	require.Len(t, releaseAssets, 1)
+	assert.Equal(t, "test-release-file", *releaseAssets[0].Name)
+	assert.Equal(t, "https://gitlab.com/-/project/1/uploads/abc/test-release-file.txt", *releaseAssets[0].URL)
+	assert.Equal(t, "/test-release-file.txt", *releaseAssets[0].DirectAssetPath)
+	assert.Equal(t, gitlab.PackageLinkType, *releaseAssets[0].LinkType)
+}
+
+func TestReleaseUtilsUpload_AliasFilePaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("aliases filepath", func(t *testing.T) {
+		t.Parallel()
+
+		assets := []*ReleaseAsset{
+			{Name: new("with-direct-path"), DirectAssetPath: new("/a")},
+			{Name: new("with-filepath"), FilePath: new("/b")},
+		}
+
+		aliased, err := AliasFilePaths(assets)
+
+		require.NoError(t, err)
+		assert.Equal(t, []string{"with-filepath"}, aliased)
+		assert.Equal(t, "/b", *assets[1].DirectAssetPath)
+		assert.Nil(t, assets[1].FilePath)
+	})
+
+	t.Run("conflicting filepath and direct_asset_path", func(t *testing.T) {
+		t.Parallel()
+
+		assets := []*ReleaseAsset{{
+			Name:            new("conflict"),
+			FilePath:        new("/c"),
+			DirectAssetPath: new("/c"),
+		}}
+
+		_, err := AliasFilePaths(assets)
+
+		var conflictErr *ConflictDirectAssetPathError
+		require.ErrorAs(t, err, &conflictErr)
+	})
+}
+
+func TestReleaseUtilsUpload_ToReleaseAssetsOptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no assets", func(t *testing.T) {
+		t.Parallel()
+
+		assert.Nil(t, ToReleaseAssetsOptions(nil))
+	})
+
+	t.Run("converts links", func(t *testing.T) {
+		t.Parallel()
+
+		linkType := gitlab.PackageLinkType
+		assets := []*ReleaseAsset{
+			{
+				Name:            new("with-link-type"),
+				URL:             new("https://example.com/a"),
+				DirectAssetPath: new("/a"),
+				LinkType:        &linkType,
+			},
+			{
+				Name: new("without-link-type"),
+				URL:  new("https://example.com/b"),
+			},
+		}
+
+		opts := ToReleaseAssetsOptions(assets)
+
+		require.NotNil(t, opts)
+		require.Len(t, opts.Links, 2)
+		assert.Equal(t, "with-link-type", *opts.Links[0].Name)
+		assert.Equal(t, "https://example.com/a", *opts.Links[0].URL)
+		assert.Equal(t, "/a", *opts.Links[0].DirectAssetPath)
+		assert.Equal(t, gitlab.PackageLinkType, *opts.Links[0].LinkType)
+		assert.Equal(t, "without-link-type", *opts.Links[1].Name)
+		assert.Nil(t, opts.Links[1].DirectAssetPath)
+		assert.Nil(t, opts.Links[1].LinkType)
+	})
 }

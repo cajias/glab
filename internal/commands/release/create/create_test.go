@@ -18,6 +18,7 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 	gitlabtesting "gitlab.com/gitlab-org/api/client-go/v3/testing"
 
+	"gitlab.com/gitlab-org/cli/internal/commands/release/releaseutils/upload"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
@@ -191,43 +192,46 @@ func TestReleaseCreateWithFiles(t *testing.T) {
 			// Release doesn't exist
 			testClient.MockReleases.EXPECT().GetRelease("OWNER/REPO", "0.0.1", gomock.Any()).Return(nil, notFoundResponse, errors.New("not found"))
 
-			testClient.MockReleases.EXPECT().CreateRelease("OWNER/REPO", gomock.Any()).
-				DoAndReturn(func(pid any, opts *gitlab.CreateReleaseOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Release, *gitlab.Response, error) {
-					assert.Equal(t, "0.0.1", *opts.TagName)
-					return &gitlab.Release{
-						Name:    "test_release",
-						TagName: "0.0.1",
-						Links:   gitlab.ReleaseLinks{Self: "https://gitlab.com/OWNER/REPO/-/releases/0.0.1"},
-					}, nil, nil
-				})
-
 			// Mock UploadProjectMarkdown for file upload
-			testClient.MockProjectMarkdownUploads.EXPECT().
+			uploadCall := testClient.MockProjectMarkdownUploads.EXPECT().
 				UploadProjectMarkdown("OWNER/REPO", gomock.Any(), "test_file.txt", gomock.Any()).
-				Return(&gitlab.MarkdownUploadedFile{
+				Return(&gitlab.ProjectMarkdownUploadedFile{
 					Alt:      "test_file",
 					URL:      "/uploads/66dbcd21ec5d24ed6ea225176098d52b/test_file.txt",
 					FullPath: "/namespace1/project1/uploads/66dbcd21ec5d24ed6ea225176098d52b/test_file.txt",
 					Markdown: "![test_file](/uploads/66dbcd21ec5d24ed6ea225176098d52b/test_file.txt)",
 				}, nil, nil)
 
-			// Mock CreateReleaseLink and verify link_type
-			testClient.MockReleaseLinks.EXPECT().
-				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
-				DoAndReturn(func(pid any, tagName string, opts *gitlab.CreateReleaseLinkOptions, options ...gitlab.RequestOptionFunc) (*gitlab.ReleaseLink, *gitlab.Response, error) {
+			// The file link goes in CreateRelease. Any CreateReleaseLink call fails the test.
+			testClient.MockReleases.EXPECT().CreateRelease("OWNER/REPO", gomock.Any()).
+				After(uploadCall.Call).
+				DoAndReturn(func(pid any, opts *gitlab.CreateReleaseOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Release, *gitlab.Response, error) {
+					assert.Equal(t, "0.0.1", *opts.TagName)
+					require.NotNil(t, opts.Assets)
+					require.Len(t, opts.Assets.Links, 1)
+					link := opts.Assets.Links[0]
+					assert.Equal(t, "https://gitlab.com/namespace1/project1/uploads/66dbcd21ec5d24ed6ea225176098d52b/test_file.txt", *link.URL)
+					assert.Equal(t, "/test_file.txt", *link.DirectAssetPath)
 					if tc.wantType {
-						require.NotNil(t, opts.LinkType)
-						assert.Equal(t, tc.expectedType, *opts.LinkType)
+						require.NotNil(t, link.LinkType)
+						assert.Equal(t, tc.expectedType, *link.LinkType)
 					} else {
-						assert.Nil(t, opts.LinkType)
+						assert.Nil(t, link.LinkType)
 					}
 
-					return &gitlab.ReleaseLink{
-						ID:             2,
-						Name:           "test_file.txt",
-						URL:            "https://gitlab.example.com/mynamespace/hello/-/jobs/688/artifacts/raw/testdata/test_file.txt",
-						DirectAssetURL: "https://gitlab.example.com/mynamespace/hello/-/releases/0.0.1/downloads/testdata/test_file.txt",
-						LinkType:       gitlab.OtherLinkType,
+					return &gitlab.Release{
+						Name:    "test_release",
+						TagName: "0.0.1",
+						Links:   gitlab.ReleaseLinks{Self: "https://gitlab.com/OWNER/REPO/-/releases/0.0.1"},
+						Assets: gitlab.ReleaseAssets{
+							Links: []*gitlab.ReleaseLink{{
+								ID:             2,
+								Name:           "test_file.txt",
+								URL:            "https://gitlab.com/namespace1/project1/uploads/66dbcd21ec5d24ed6ea225176098d52b/test_file.txt",
+								DirectAssetURL: "https://gitlab.example.com/mynamespace/hello/-/releases/0.0.1/downloads/test_file.txt",
+								LinkType:       gitlab.OtherLinkType,
+							}},
+						},
 					}, nil, nil
 				})
 
@@ -241,9 +245,9 @@ func TestReleaseCreateWithFiles(t *testing.T) {
 			if assert.NoErrorf(t, err, "error running command `create %s`: %v", tc.cli, err) {
 				assert.Contains(t, output.String(), `• Validating tag 0.0.1
 • Creating or updating release repo=OWNER/REPO tag=0.0.1
-✓ Release created:	url=https://gitlab.com/OWNER/REPO/-/releases/0.0.1
-• Uploading release assets repo=OWNER/REPO tag=0.0.1
 • Uploading to release	file=testdata/test_file.txt name=test_file.txt
+✓ Release created:	url=https://gitlab.com/OWNER/REPO/-/releases/0.0.1
+✓ Added release asset	name=test_file.txt url=https://gitlab.example.com/mynamespace/hello/-/releases/0.0.1/downloads/test_file.txt
 ✓ Release succeeded after`)
 				assert.Empty(t, output.Stderr())
 			}
@@ -259,6 +263,7 @@ func TestReleaseCreate_WithAssetsLinksJSON(t *testing.T) {
 		name           string
 		cli            string
 		expectedOutput string
+		wantConflict   bool
 	}{
 		{
 			name: "with direct_asset_path",
@@ -266,7 +271,6 @@ func TestReleaseCreate_WithAssetsLinksJSON(t *testing.T) {
 			expectedOutput: `• Validating tag 0.0.1
 • Creating or updating release repo=OWNER/REPO tag=0.0.1
 ✓ Release created:	url=https://gitlab.com/OWNER/REPO/-/releases/0.0.1
-• Uploading release assets repo=OWNER/REPO tag=0.0.1
 ✓ Added release asset	name=any-name url=https://gitlab.example.com/OWNER/REPO/releases/0.0.1/downloads/any-path
 ✓ Release succeeded after`,
 		},
@@ -276,10 +280,14 @@ func TestReleaseCreate_WithAssetsLinksJSON(t *testing.T) {
 			expectedOutput: `• Validating tag 0.0.1
 • Creating or updating release repo=OWNER/REPO tag=0.0.1
 ✓ Release created:	url=https://gitlab.com/OWNER/REPO/-/releases/0.0.1
-• Uploading release assets repo=OWNER/REPO tag=0.0.1
 ✓ Added release asset	name=any-name url=https://gitlab.example.com/OWNER/REPO/releases/0.0.1/downloads/any-path
 	! Aliased deprecated ` + "`filepath`" + ` field to ` + "`direct_asset_path`" + `. Replace ` + "`filepath`" + ` with ` + "`direct_asset_path`" + `	name=any-name
 ✓ Release succeeded after`,
+		},
+		{
+			name:         "with both filepath and direct_asset_path",
+			cli:          `0.0.1 --notes "test release" testdata/test_file.txt --assets-links='[{"name": "any-name", "url": "https://example.com/any-asset-url", "filepath": "/any-path", "direct_asset_path": "/any-path"}]'`,
+			wantConflict: true,
 		},
 	}
 
@@ -295,36 +303,47 @@ func TestReleaseCreate_WithAssetsLinksJSON(t *testing.T) {
 			// Release doesn't exist
 			testClient.MockReleases.EXPECT().GetRelease("OWNER/REPO", "0.0.1", gomock.Any()).Return(nil, notFoundResponse, errors.New("not found"))
 
-			testClient.MockReleases.EXPECT().CreateRelease("OWNER/REPO", gomock.Any()).
-				DoAndReturn(func(pid any, opts *gitlab.CreateReleaseOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Release, *gitlab.Response, error) {
-					return &gitlab.Release{
-						Name:    "test_release",
-						TagName: "0.0.1",
-						Links:   gitlab.ReleaseLinks{Self: "https://gitlab.com/OWNER/REPO/-/releases/0.0.1"},
-					}, nil, nil
-				})
-
-			// Mock CreateReleaseLink and verify the parameters
-			testClient.MockReleaseLinks.EXPECT().
-				CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
-				DoAndReturn(func(pid any, tagName string, opts *gitlab.CreateReleaseLinkOptions, options ...gitlab.RequestOptionFunc) (*gitlab.ReleaseLink, *gitlab.Response, error) {
-					// Verify direct_asset_path is set
-					assert.NotNil(t, opts.DirectAssetPath)
-					assert.Equal(t, "/any-path", *opts.DirectAssetPath)
-
-					return &gitlab.ReleaseLink{
-						ID:             1,
-						Name:           "any-name",
-						URL:            "https://example.com/any-asset-url",
-						DirectAssetURL: "https://gitlab.example.com/OWNER/REPO/releases/0.0.1/downloads/any-path",
-						LinkType:       gitlab.OtherLinkType,
-					}, nil, nil
-				})
-
 			exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false,
 				cmdtest.WithGitLabClient(testClient.Client),
 				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
 			)
+
+			if tt.wantConflict {
+				// No upload or CreateRelease expectation: either call fails the test.
+				_, err := exec(tt.cli)
+
+				var conflictErr *upload.ConflictDirectAssetPathError
+				require.ErrorAs(t, err, &conflictErr)
+				return
+			}
+
+			// The links go in CreateRelease. Any CreateReleaseLink call fails the test.
+			testClient.MockReleases.EXPECT().CreateRelease("OWNER/REPO", gomock.Any()).
+				DoAndReturn(func(pid any, opts *gitlab.CreateReleaseOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Release, *gitlab.Response, error) {
+					require.NotNil(t, opts.Assets)
+					require.Len(t, opts.Assets.Links, 1)
+					link := opts.Assets.Links[0]
+					assert.Equal(t, "any-name", *link.Name)
+					assert.Equal(t, "https://example.com/any-asset-url", *link.URL)
+					require.NotNil(t, link.DirectAssetPath)
+					assert.Equal(t, "/any-path", *link.DirectAssetPath)
+					assert.Nil(t, link.FilePath)
+
+					return &gitlab.Release{
+						Name:    "test_release",
+						TagName: "0.0.1",
+						Links:   gitlab.ReleaseLinks{Self: "https://gitlab.com/OWNER/REPO/-/releases/0.0.1"},
+						Assets: gitlab.ReleaseAssets{
+							Links: []*gitlab.ReleaseLink{{
+								ID:             1,
+								Name:           "any-name",
+								URL:            "https://example.com/any-asset-url",
+								DirectAssetURL: "https://gitlab.example.com/OWNER/REPO/releases/0.0.1/downloads/any-path",
+								LinkType:       gitlab.OtherLinkType,
+							}},
+						},
+					}, nil, nil
+				})
 
 			output, err := exec(tt.cli)
 
@@ -334,6 +353,98 @@ func TestReleaseCreate_WithAssetsLinksJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReleaseCreate_FilesAndAssetsLinksJSON(t *testing.T) {
+	t.Setenv("CI_DEFAULT_BRANCH", "main")
+
+	testClient := gitlabtesting.NewTestClient(t, gitlab.WithBaseURL("https://"+glinstance.DefaultHostname))
+	notFoundResponse := &gitlab.Response{Response: &http.Response{StatusCode: http.StatusNotFound}}
+
+	testClient.MockTags.EXPECT().GetTag("OWNER/REPO", "0.0.1", gomock.Any()).Return(&gitlab.Tag{Name: "0.0.1"}, nil, nil)
+	testClient.MockReleases.EXPECT().GetRelease("OWNER/REPO", "0.0.1", gomock.Any()).Return(nil, notFoundResponse, errors.New("not found"))
+
+	uploadCall := testClient.MockProjectMarkdownUploads.EXPECT().
+		UploadProjectMarkdown("OWNER/REPO", gomock.Any(), "test_file.txt", gomock.Any()).
+		Return(&gitlab.ProjectMarkdownUploadedFile{FullPath: "/-/project/1/uploads/abc/test_file.txt"}, nil, nil)
+
+	// Both links go in CreateRelease. Any CreateReleaseLink call fails the test.
+	testClient.MockReleases.EXPECT().CreateRelease("OWNER/REPO", gomock.Any()).
+		After(uploadCall.Call).
+		DoAndReturn(func(pid any, opts *gitlab.CreateReleaseOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Release, *gitlab.Response, error) {
+			require.NotNil(t, opts.Assets)
+			require.Len(t, opts.Assets.Links, 2)
+			assert.Equal(t, "any-name", *opts.Assets.Links[0].Name)
+			assert.Equal(t, "https://example.com/any-asset-url", *opts.Assets.Links[0].URL)
+			assert.Equal(t, "test_file.txt", *opts.Assets.Links[1].Name)
+			assert.Equal(t, "https://gitlab.com/-/project/1/uploads/abc/test_file.txt", *opts.Assets.Links[1].URL)
+
+			return &gitlab.Release{
+				Name:    "test_release",
+				TagName: "0.0.1",
+				Links:   gitlab.ReleaseLinks{Self: "https://gitlab.com/OWNER/REPO/-/releases/0.0.1"},
+			}, nil, nil
+		})
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", glinstance.DefaultHostname),
+	)
+
+	output, err := exec(`0.0.1 --notes "test release" testdata/test_file.txt --assets-links='[{"name": "any-name", "url": "https://example.com/any-asset-url"}]'`)
+
+	require.NoError(t, err)
+	assert.Contains(t, output.String(), "Release created:")
+	assert.Empty(t, output.Stderr())
+}
+
+func TestReleaseCreate_UpdateWithAssetsLinksJSON(t *testing.T) {
+	t.Parallel()
+
+	testClient := gitlabtesting.NewTestClient(t)
+
+	okResponse := &gitlab.Response{Response: &http.Response{StatusCode: http.StatusOK}}
+	existingRelease := &gitlab.Release{
+		Name:    "0.0.1",
+		TagName: "0.0.1",
+		Links:   gitlab.ReleaseLinks{Self: "https://gitlab.com/OWNER/REPO/-/releases/0.0.1"},
+	}
+
+	// Tag exists
+	testClient.MockTags.EXPECT().GetTag("OWNER/REPO", "0.0.1", gomock.Any()).Return(&gitlab.Tag{Name: "0.0.1"}, nil, nil)
+
+	testClient.MockReleases.EXPECT().GetRelease("OWNER/REPO", "0.0.1", gomock.Any()).Return(existingRelease, okResponse, nil)
+
+	// UpdateRelease has no assets option. Any CreateRelease call fails the test.
+	testClient.MockReleases.EXPECT().UpdateRelease("OWNER/REPO", "0.0.1", gomock.Any()).Return(existingRelease, okResponse, nil)
+
+	testClient.MockReleaseLinks.EXPECT().
+		CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
+		DoAndReturn(func(pid any, tagName string, opts *gitlab.CreateReleaseLinkOptions, options ...gitlab.RequestOptionFunc) (*gitlab.ReleaseLink, *gitlab.Response, error) {
+			assert.Equal(t, "any-name", *opts.Name)
+			assert.Equal(t, "https://example.com/any-asset-url", *opts.URL)
+			require.NotNil(t, opts.DirectAssetPath)
+			assert.Equal(t, "/any-path", *opts.DirectAssetPath)
+
+			return &gitlab.ReleaseLink{
+				ID:             1,
+				Name:           "any-name",
+				URL:            "https://example.com/any-asset-url",
+				DirectAssetURL: "https://gitlab.example.com/OWNER/REPO/releases/0.0.1/downloads/any-path",
+			}, nil, nil
+		}).
+		Times(1)
+
+	exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false,
+		cmdtest.WithGitLabClient(testClient.Client),
+		cmdtest.WithBaseRepo("OWNER", "REPO", glinstance.DefaultHostname),
+	)
+
+	output, err := exec(`0.0.1 --notes "test release" --assets-links='[{"name": "any-name", "url": "https://example.com/any-asset-url", "direct_asset_path": "/any-path"}]'`)
+	require.NoError(t, err)
+	assert.Contains(t, output.String(), "✓ Release updated")
+	assert.Contains(t, output.String(), "✓ Added release asset\tname=any-name url=https://gitlab.example.com/OWNER/REPO/releases/0.0.1/downloads/any-path")
+	assert.Empty(t, output.Stderr())
 }
 
 func TestReleaseCreateWithPublishToCatalog(t *testing.T) {
@@ -806,11 +917,6 @@ func TestReleaseCreate_UsePackageRegistryEnvVar(t *testing.T) {
 
 		testClient.MockTags.EXPECT().GetTag("OWNER/REPO", "0.0.1", gomock.Any()).Return(&gitlab.Tag{Name: "0.0.1"}, nil, nil)
 		testClient.MockReleases.EXPECT().GetRelease("OWNER/REPO", "0.0.1", gomock.Any()).Return(nil, notFoundResponse, errors.New("not found"))
-		testClient.MockReleases.EXPECT().CreateRelease("OWNER/REPO", gomock.Any()).Return(&gitlab.Release{
-			Name:    "test_release",
-			TagName: "0.0.1",
-			Links:   gitlab.ReleaseLinks{Self: "https://gitlab.com/OWNER/REPO/-/releases/0.0.1"},
-		}, nil, nil)
 
 		// With the env var set, the file must go through the generic package registry,
 		// not through UploadProjectMarkdown. If the bug is present (err != nil instead of
@@ -824,9 +930,18 @@ func TestReleaseCreate_UsePackageRegistryEnvVar(t *testing.T) {
 			FormatPackageURL("OWNER/REPO", "release-assets", "0.0.1", "test_file.txt").
 			Return("/api/v4/projects/OWNER/REPO/packages/generic/release-assets/0.0.1/test_file.txt", nil)
 
-		testClient.MockReleaseLinks.EXPECT().
-			CreateReleaseLink("OWNER/REPO", "0.0.1", gomock.Any(), gomock.Any()).
-			Return(&gitlab.ReleaseLink{ID: 1, Name: "test_file.txt"}, nil, nil)
+		testClient.MockReleases.EXPECT().CreateRelease("OWNER/REPO", gomock.Any()).
+			DoAndReturn(func(pid any, opts *gitlab.CreateReleaseOptions, options ...gitlab.RequestOptionFunc) (*gitlab.Release, *gitlab.Response, error) {
+				require.NotNil(t, opts.Assets)
+				require.Len(t, opts.Assets.Links, 1)
+				assert.Contains(t, *opts.Assets.Links[0].URL, "/packages/generic/release-assets/0.0.1/test_file.txt")
+
+				return &gitlab.Release{
+					Name:    "test_release",
+					TagName: "0.0.1",
+					Links:   gitlab.ReleaseLinks{Self: "https://gitlab.com/OWNER/REPO/-/releases/0.0.1"},
+				}, nil, nil
+			})
 
 		exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false,
 			cmdtest.WithGitLabClient(testClient.Client),
