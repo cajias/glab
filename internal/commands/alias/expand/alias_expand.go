@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/shlex"
@@ -56,28 +57,44 @@ func ExpandAlias(cfg config.Config, args []string, findShFunc func() (string, er
 		return expanded, isShell, nil
 	}
 
-	var extraArgs []string
-	for i, a := range args[2:] {
-		if !strings.Contains(expansion, "$") {
-			extraArgs = append(extraArgs, a)
-		} else {
-			expansion = strings.ReplaceAll(expansion, fmt.Sprintf("$%d", i+1), a)
-		}
-	}
-	lingeringRE := regexp.MustCompile(`\$\d`)
-	if lingeringRE.MatchString(expansion) {
-		return nil, false, fmt.Errorf("not enough arguments for alias: %s", expansion)
-	}
-
-	var newArgs []string
-	newArgs, err = shlex.Split(expansion)
+	// Split before filling the placeholders, so that an argument is never
+	// parsed again: its quotes, spaces and "$N" text reach the command as is.
+	newArgs, err := shlex.Split(expansion)
 	if err != nil {
 		return nil, false, err
 	}
 
-	expanded = slices.Concat(newArgs, extraArgs)
+	aliasArgs := args[2:]
+	fill := func(s string) string {
+		return placeholderRE.ReplaceAllStringFunc(s, func(p string) string {
+			n, _ := strconv.Atoi(p[1:])
+			if n > len(aliasArgs) {
+				return p
+			}
+			return aliasArgs[n-1]
+		})
+	}
+
+	highest := 0
+	for _, word := range newArgs {
+		for _, m := range placeholderRE.FindAllStringSubmatch(word, -1) {
+			n, _ := strconv.Atoi(m[1])
+			highest = max(highest, n)
+		}
+	}
+	if highest > len(aliasArgs) {
+		return nil, false, fmt.Errorf("not enough arguments for alias: %s", fill(expansion))
+	}
+
+	for i, word := range newArgs {
+		newArgs[i] = fill(word)
+	}
+
+	expanded = slices.Concat(newArgs, aliasArgs[highest:])
 	return expanded, false, nil
 }
+
+var placeholderRE = regexp.MustCompile(`\$([1-9]\d*)`)
 
 func findSh() (string, error) {
 	shPath, err := exec.LookPath("sh")
