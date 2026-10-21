@@ -14,9 +14,9 @@ import (
 func NewCmd(f cmdutils.Factory) *cobra.Command {
 	governCmd := &cobra.Command{
 		Use:   "govern <command>",
-		Short: "Manage AI agent governance. (EXPERIMENTAL)",
+		Short: "Manage AI governance. (EXPERIMENTAL)",
 		Long: heredoc.Doc(`
-			Manage AI agent governance for external agents running against GitLab projects. Configure hooks and diagnose setup issues.
+			Manage AI governance for external agents running against GitLab projects. Configure hooks and diagnose setup issues.
 		`) + text.ExperimentalString,
 	}
 

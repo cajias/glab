@@ -56,9 +56,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnose AI agent governance configuration, authentication, and hook setup. (EXPERIMENTAL)",
+		Short: "Diagnose AI governance configuration, authentication, and hook setup. (EXPERIMENTAL)",
 		Long: heredoc.Doc(`
-			Check that AI agent governance is correctly configured on this machine.
+			Check that AI governance is correctly configured on this machine.
 
 			Verifies:
 
