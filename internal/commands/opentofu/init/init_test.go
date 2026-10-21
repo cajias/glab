@@ -5,7 +5,11 @@ package init
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"os/exec"
 	"slices"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/MakeNowJust/heredoc/v2"
@@ -195,4 +199,61 @@ func TestInit_CommandConstruction_credentialErrors(t *testing.T) {
 			assert.NotContains(t, err.Error(), tt.refutedErr)
 		})
 	}
+}
+
+func TestInit_BinaryNotFound(t *testing.T) {
+	tests := []struct {
+		name         string
+		snapName     string
+		binary       string
+		wantSnapHint bool
+		wantExample  string
+	}{
+		{name: "confined snap suggests --binary", snapName: "glab", binary: "tofu", wantSnapHint: true, wantExample: "--binary ~/tofu"},
+		{name: "absolute binary path uses its base name", snapName: "glab", binary: "/usr/bin/tofu", wantSnapHint: true, wantExample: "--binary ~/tofu"},
+		{name: "home-relative binary path uses its base name", snapName: "glab", binary: "~/bin/tofu", wantSnapHint: true, wantExample: "--binary ~/tofu"},
+		{name: "outside the snap returns the plain error", snapName: "", binary: "tofu", wantSnapHint: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("SNAP_NAME", tt.snapName)
+
+			ctrl := gomock.NewController(t)
+			tc := gitlabtesting.NewTestClientWithCtrl(ctrl, gitlab.WithBaseURL("https://gitlab.example.com"))
+			execMock := cmdtest.NewMockExecutor(ctrl)
+			run := cmdtest.SetupCmdForTest(
+				t,
+				NewCmd,
+				false,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "testtoken", "gitlab.example.com", api.WithGitLabClient(tc.Client))),
+				cmdtest.WithBaseRepo("OWNER", "REPO", "gitlab.example.com"),
+				cmdtest.WithExecutor(execMock),
+			)
+
+			// Match what exec.Command returns: a $PATH lookup error for names, ENOENT for paths.
+			var execErr error = &exec.Error{Name: tt.binary, Err: exec.ErrNotFound}
+			if strings.Contains(tt.binary, "/") {
+				execErr = &fs.PathError{Op: "fork/exec", Path: tt.binary, Err: syscall.ENOENT}
+			}
+			execMock.EXPECT().Exec(gomock.Any(), tt.binary, gomock.Any(), nil).Return(execErr)
+
+			_, err := run("production --binary " + tt.binary)
+
+			require.ErrorIs(t, err, execErr)
+			if tt.wantSnapHint {
+				require.ErrorContains(t, err, "snap confinement")
+				require.ErrorContains(t, err, "glab opentofu init production "+tt.wantExample)
+			} else {
+				assert.NotContains(t, err.Error(), "snap confinement")
+			}
+		})
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	assert.Equal(t, "production", shellQuote("production"))
+	assert.Equal(t, "'my state'", shellQuote("my state"))
+	assert.Equal(t, `'a;rm -rf ~'`, shellQuote("a;rm -rf ~"))
+	assert.Equal(t, `'it'\''s'`, shellQuote("it's"))
 }
