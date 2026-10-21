@@ -70,6 +70,14 @@ type PackageManager interface {
 	Matcher() proxy.Matcher
 }
 
+// setupManager is implemented by managers whose routing depends on a file
+// written before the child starts. Run fails the run when Setup errors rather
+// than starting the child without that file, and calls cleanup on exit.
+// parent is the environment the child would otherwise inherit.
+type setupManager interface {
+	Setup(parent []string) (env []string, cleanup func(), err error)
+}
+
 // proxyEnviron returns parent with any caller-supplied proxy variables removed
 // and the inspection proxy set for HTTPS traffic only. managerKeys are the
 // env-var names the manager's own Environment sets (e.g. NPM_CONFIG_HTTPS_PROXY
@@ -317,7 +325,17 @@ func Run(ctx context.Context, manager PackageManager, opts RunOptions) error {
 		return fmt.Errorf("%s not found on PATH: %w", manager.Binary(), err)
 	}
 
-	managerEnv := manager.Environment(proxyURL)
+	var setupEnv []string
+	if s, ok := manager.(setupManager); ok {
+		env, cleanup, err := s.Setup(os.Environ())
+		if err != nil {
+			return fmt.Errorf("failed to set up %s for the Dependency Firewall: %w", manager.Name(), err)
+		}
+		defer cleanup()
+		setupEnv = env
+	}
+
+	managerEnv := append(manager.Environment(proxyURL), setupEnv...)
 	// Strip the manager's own routing keys from the inherited env so they
 	// can't leak an old value the manager's Environment doesn't overwrite;
 	// the manager's values are re-appended immediately below.
