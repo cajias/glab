@@ -55,7 +55,7 @@ BUILDLOC ?= ./bin/glab
 
 # Dependency versions
 GOTESTSUM_VERSION = 1.13.0
-GOLANGCI_LINT_VERSION = 2.12.2
+GOLANGCI_LINT_VERSION := $(shell awk '$$1 == "golangci-lint" { print $$2 }' .tool-versions)
 
 # Add the ability to override some variables
 # Use with care
