@@ -4,7 +4,9 @@ package login
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +14,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"git.sr.ht/~timofurrer/ugh"
 	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1071,4 +1076,287 @@ func Test_deviceLoginWithKeyringAndNoStoredToken(t *testing.T) {
 
 	useKeyring, _ := cfg.Get(hostname, "use_keyring")
 	assert.Equal(t, "true", useKeyring)
+}
+
+// clearDefaultHostEnv unsets what updateDefaultHost skips on, so a test does not
+// inherit them from the developer's shell or the CI job running it.
+func clearDefaultHostEnv(t *testing.T) {
+	t.Helper()
+
+	for _, e := range []string{"GITLAB_CI", "CI", "GITLAB_HOST", "GITLAB_URI", "GL_HOST", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN"} {
+		t.Setenv(e, "")
+	}
+}
+
+func defaultHost(t *testing.T, cfg config.Config) string {
+	t.Helper()
+
+	host, _, err := cfg.GetWithSource("", "host", false)
+	require.NoError(t, err)
+	return host
+}
+
+// defaultHostFailingConfig fails reading the default host, or writing the
+// config once the default host has been set, so the token saved before it
+// still persists.
+type defaultHostFailingConfig struct {
+	config.Config
+	failRead bool
+	hostSet  bool
+}
+
+func (c *defaultHostFailingConfig) GetWithSource(hostname, key string, searchENVVars bool) (string, string, error) {
+	if c.failRead && hostname == "" && key == "host" {
+		return "", "", errors.New("read failed")
+	}
+	return c.Config.GetWithSource(hostname, key, searchENVVars)
+}
+
+func (c *defaultHostFailingConfig) Set(hostname, key, value string) error {
+	if hostname == "" && key == "host" {
+		c.hostSet = true
+	}
+	return c.Config.Set(hostname, key, value)
+}
+
+func (c *defaultHostFailingConfig) Write() error {
+	if c.hostSet {
+		return errors.New("write failed")
+	}
+	return c.Config.Write()
+}
+
+func Test_tokenLogin_updatesDefaultHost(t *testing.T) {
+	clearDefaultHostEnv(t)
+
+	login := func(t *testing.T, cfg config.Config, args ...string) string {
+		t.Helper()
+		keyring.MockInit()
+		t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+		io, _, _, stderr := cmdtest.TestIOStreams()
+		cmd := NewCmdLogin(cmdtest.NewTestFactory(io, cmdtest.WithConfig(cfg), currentUserFactoryOption(t)))
+		cmd.Flags().BoolP("help", "x", false, "")
+		cmd.SetArgs(args)
+
+		_, err := cmd.ExecuteC()
+		require.NoError(t, err)
+		return stderr.String()
+	}
+
+	t.Run("sets the default when gitlab.com has no credentials", func(t *testing.T) {
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+
+		stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+		assert.Equal(t, "gitlab.example.com", defaultHost(t, cfg))
+		assert.Contains(t, stderr, "Default host set to gitlab.example.com")
+	})
+
+	t.Run("keeps gitlab.com when it has credentials", func(t *testing.T) {
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+		require.NoError(t, cfg.Set("gitlab.com", "token", "glpat-existing"))
+
+		stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+		assert.Equal(t, "gitlab.com", defaultHost(t, cfg))
+		assert.Contains(t, stderr, "glab config set --global host gitlab.example.com")
+	})
+
+	// Repointing the default would send the environment token, which glab uses
+	// for every host, to the new instance.
+	t.Run("keeps gitlab.com when an environment token is set", func(t *testing.T) {
+		t.Setenv("GITLAB_TOKEN", "glpat-from-env")
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+
+		stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+		assert.Equal(t, "gitlab.com", defaultHost(t, cfg))
+		assert.Contains(t, stderr, "glab config set --global host gitlab.example.com")
+	})
+
+	t.Run("keeps a default the user set", func(t *testing.T) {
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+		require.NoError(t, cfg.Set("", "host", "gitlab.other.com"))
+
+		stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+		assert.Equal(t, "gitlab.other.com", defaultHost(t, cfg))
+		assert.Contains(t, stderr, "glab config set --global host gitlab.example.com")
+	})
+
+	t.Run("suggests gitlab.com when the default is another instance", func(t *testing.T) {
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+		require.NoError(t, cfg.Set("", "host", "gitlab.example.com"))
+
+		stderr := login(t, cfg, "--hostname", "gitlab.com", "--token", "glpat-1234")
+
+		assert.Equal(t, "gitlab.example.com", defaultHost(t, cfg))
+		assert.Contains(t, stderr, "glab uses the default host gitlab.example.com")
+		assert.Contains(t, stderr, "glab config set --global host gitlab.com")
+		assert.NotContains(t, stderr, "Default host set")
+	})
+
+	for _, host := range []string{"https://gitlab.example.com", "http://gitlab.example.com/"} {
+		t.Run("keeps a URL-form default for the same instance: "+host, func(t *testing.T) {
+			cfg := config.NewBlankConfigInDir(t.TempDir())
+			require.NoError(t, cfg.Set("", "host", host))
+
+			stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+			assert.Equal(t, host, defaultHost(t, cfg))
+			assert.NotContains(t, stderr, "Default host")
+			assert.NotContains(t, stderr, "glab config set")
+		})
+	}
+
+	t.Run("treats a URL-form gitlab.com as the default", func(t *testing.T) {
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+		require.NoError(t, cfg.Set("", "host", "https://gitlab.com"))
+
+		stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+		assert.Equal(t, "gitlab.example.com", defaultHost(t, cfg))
+		assert.Contains(t, stderr, "Default host set to gitlab.example.com")
+	})
+
+	t.Run("warns and succeeds when the default host cannot be read", func(t *testing.T) {
+		cfg := &defaultHostFailingConfig{Config: config.NewBlankConfigInDir(t.TempDir()), failRead: true}
+
+		stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+		assert.Contains(t, stderr, "Could not set the default host: read failed")
+		assert.Contains(t, stderr, "glab config set --global host gitlab.example.com")
+	})
+
+	t.Run("warns and succeeds when the default host cannot be written", func(t *testing.T) {
+		cfg := &defaultHostFailingConfig{Config: config.NewBlankConfigInDir(t.TempDir())}
+
+		stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+		assert.Contains(t, stderr, "Could not set the default host: write failed")
+		assert.Contains(t, stderr, "glab config set --global host gitlab.example.com")
+		assert.NotContains(t, stderr, "Default host set")
+	})
+
+	t.Run("does nothing for gitlab.com", func(t *testing.T) {
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+
+		stderr := login(t, cfg, "--hostname", "gitlab.com", "--token", "glpat-1234")
+
+		assert.Equal(t, "gitlab.com", defaultHost(t, cfg))
+		assert.NotContains(t, stderr, "Default host")
+		assert.NotContains(t, stderr, "glab config set")
+	})
+
+	for _, env := range []string{"GITLAB_HOST", "GITLAB_URI", "GL_HOST"} {
+		t.Run("does nothing when "+env+" is set", func(t *testing.T) {
+			t.Setenv(env, "gitlab.env.com")
+			cfg := config.NewBlankConfigInDir(t.TempDir())
+
+			stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+			assert.Equal(t, "gitlab.com", defaultHost(t, cfg))
+			assert.NotContains(t, stderr, "Default host")
+		})
+	}
+
+	t.Run("does nothing in CI", func(t *testing.T) {
+		t.Setenv("GITLAB_CI", "true")
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+
+		login(t, cfg, "--hostname", "gitlab.example.com", "--token", "glpat-1234")
+
+		assert.Equal(t, "gitlab.com", defaultHost(t, cfg))
+	})
+
+	t.Run("does nothing for a job token", func(t *testing.T) {
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+
+		stderr := login(t, cfg, "--hostname", "gitlab.example.com", "--job-token", "job-abc")
+
+		assert.Equal(t, "gitlab.com", defaultHost(t, cfg))
+		assert.NotContains(t, stderr, "Default host")
+	})
+}
+
+func Test_updateDefaultHost_prompt(t *testing.T) {
+	clearDefaultHostEnv(t)
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	run := func(t *testing.T, answer ugh.Action) (config.Config, string) {
+		t.Helper()
+
+		cfg := config.NewBlankConfigInDir(t.TempDir())
+		require.NoError(t, cfg.Set("gitlab.com", "token", "glpat-existing"))
+
+		c := ugh.New(t)
+		// The full title wraps differently depending on the terminal layout, so
+		// match only a prefix that always fits on the first line.
+		c.Expect(ugh.Confirm("Outside a Git repository, glab uses the default host gitlab.com.")).Do(answer)
+
+		inR, inW := io.Pipe()
+		outR, outW := io.Pipe()
+		wait := c.Start(t.Context(), outR, inW)
+		var stderr bytes.Buffer
+		ios := iostreams.New(
+			iostreams.WithStdin(inR, true),
+			iostreams.WithStdout(outW, true),
+			iostreams.WithStderr(&stderr, true),
+			iostreams.WithProgramOptions(tea.WithWindowSize(cmdtest.ConsoleWidth, cmdtest.ConsoleHeight)),
+		)
+
+		// Fail with ugh's screen dump before the package timeout if the prompt
+		// is never matched.
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		err := updateDefaultHost(ctx, &LoginOptions{IO: ios, Interactive: true}, cfg, "gitlab.example.com")
+		inW.Close()
+		outW.Close()
+		outR.Close()
+		wait()
+		require.NoError(t, err)
+		return cfg, stderr.String()
+	}
+
+	t.Run("sets the default when the user accepts", func(t *testing.T) {
+		cfg, stderr := run(t, ugh.Affirm)
+		assert.Equal(t, "gitlab.example.com", defaultHost(t, cfg))
+		assert.Contains(t, stderr, "Default host set to gitlab.example.com")
+	})
+
+	t.Run("keeps the default when the user declines", func(t *testing.T) {
+		cfg, stderr := run(t, ugh.Reject)
+		assert.Equal(t, "gitlab.com", defaultHost(t, cfg))
+		assert.NotContains(t, stderr, "Default host set")
+	})
+
+	t.Run("keeps the default when the user cancels", func(t *testing.T) {
+		cfg, _ := run(t, func(r *ugh.Response) { r.Send(ugh.CtrlC) })
+		assert.Equal(t, "gitlab.com", defaultHost(t, cfg))
+	})
+}
+
+// The interactive token flow ends at the same call site as the web and device
+// flows, so it covers that call site without a browser.
+func Test_interactiveLogin_updatesDefaultHost(t *testing.T) {
+	keyring.MockInit()
+	clearDefaultHostEnv(t)
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	c := ugh.New(t)
+	c.Expect(ugh.Select("How would you like to sign in?")).
+		Do(ugh.SelectOption(promptLoginTypeToken))
+	c.Expect(ugh.Input("Paste your authentication token:")).
+		Do(ugh.Type("glpat-1234"))
+
+	cfg := config.NewBlankConfigInDir(t.TempDir())
+	exec := cmdtest.SetupCmdForTest(t, NewCmdLogin, true,
+		cmdtest.WithConfig(cfg), currentUserFactoryOption(t), cmdtest.WithConsole(t, c))
+	out, err := exec("--hostname gitlab.example.com --api-host gitlab.example.com --ssh-hostname gitlab.example.com " +
+		"--git-protocol ssh --api-protocol https --container-registry-domains registry.example.com")
+	require.NoError(t, err)
+
+	assert.Equal(t, "gitlab.example.com", defaultHost(t, cfg))
+	assert.Contains(t, out.Stderr(), "Default host set to gitlab.example.com")
 }

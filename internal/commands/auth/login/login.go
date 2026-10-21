@@ -22,6 +22,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/auth/authutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
+	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/git"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
@@ -109,6 +110,13 @@ func NewCmdLogin(f cmdutils.Factory) *cobra.Command {
 
 			In interactive mode, glab detects GitLab instances from your Git remotes
 			and lists them as options, so you do not have to type the hostname manually.
+
+			After you sign in, glab can make the instance your default %[1]shost%[1]s, which
+			glab uses outside a Git repository. glab does this automatically when the
+			default is still %[1]sgitlab.com%[1]s and you have no %[1]sgitlab.com%[1]s credentials.
+			Otherwise, it asks first, or in a non-interactive run prints the
+			%[1]sglab config set%[1]s command to run. glab leaves %[1]shost%[1]s unchanged in CI,
+			or when %[1]sGITLAB_HOST%[1]s, %[1]sGITLAB_URI%[1]s, or %[1]sGL_HOST%[1]s is set.
 
 			When you omit %[1]s--hostname%[1]s in a non-interactive run, glab authenticates
 			with the first of these that applies:
@@ -360,7 +368,7 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 		}
 		logCredentialStorage(opts.IO, keyringPref)
 		warnEnvTokenPrecedence(opts.IO)
-		return nil
+		return updateDefaultHost(ctx, opts, cfg, hostname)
 	}
 
 	if opts.JobToken != "" {
@@ -817,7 +825,95 @@ func loginRun(ctx context.Context, opts *LoginOptions) error {
 		opts.IO.LogErrorf("  - SSH host: %s\n", sshHostValue)
 	}
 
+	return updateDefaultHost(ctx, opts, cfg, hostname)
+}
+
+// updateDefaultHost points the global host key at hostname, which commands run
+// outside a Git repository (such as `glab repo clone`) fall back to. It does so
+// unprompted only while the default is still gitlab.com and gitlab.com holds no
+// credentials, so an existing setup is never repointed silently. Otherwise it
+// asks in interactive mode, and prints the command to run in scripted mode.
+// The host environment variables and CI already decide the host per run, so it
+// leaves those alone. The login has already succeeded, so cancelling the prompt
+// counts as a no, and any other failure is a warning rather than an error.
+func updateDefaultHost(ctx context.Context, opts *LoginOptions, cfg config.Config, hostname string) error {
+	if config.InCI() {
+		return nil
+	}
+	if envHost := config.GetFromEnv("host"); envHost != "" {
+		return nil
+	}
+
+	c := opts.IO.Color()
+	warn := func(err error) error {
+		opts.IO.LogErrorf("%s Could not set the default host: %v. To set it, run: %s\n",
+			c.WarnIcon(), err, c.Bold("glab config set --global host "+hostname))
+		return nil
+	}
+
+	current, _, err := cfg.GetWithSource("", "host", false)
+	if err != nil {
+		return warn(err)
+	}
+	// glab accepts host as a URL, so compare without the scheme.
+	current, _ = glinstance.StripHostProtocol(current)
+	if current == "" {
+		current = glinstance.DefaultHostname
+	}
+	if strings.EqualFold(current, hostname) {
+		return nil
+	}
+
+	setDefault := strings.EqualFold(current, glinstance.DefaultHostname) && !hasCredentials(cfg, glinstance.DefaultHostname)
+	if !setDefault {
+		if !opts.Interactive {
+			opts.IO.LogErrorf("%s Outside a Git repository, glab uses the default host %s. To use %s instead, run: %s\n",
+				c.WarnIcon(), current, hostname, c.Bold("glab config set --global host "+hostname))
+			return nil
+		}
+		confirm := huh.NewConfirm().
+			Title(fmt.Sprintf("Outside a Git repository, glab uses the default host %s. Make %s the default instead?", current, hostname)).
+			Value(&setDefault)
+		if err := opts.IO.Run(ctx, confirm); err != nil {
+			if errors.Is(err, iostreams.ErrUserCancelled) {
+				return nil
+			}
+			return warn(fmt.Errorf("could not prompt: %w", err))
+		}
+		if !setDefault {
+			return nil
+		}
+	}
+
+	if err := cfg.Set("", "host", hostname); err != nil {
+		return warn(err)
+	}
+	if err := cfg.Write(); err != nil {
+		return warn(err)
+	}
+	opts.IO.LogErrorf("%s Default host set to %s\n", c.GreenCheck(), hostname)
 	return nil
+}
+
+// hasCredentials counts an environment token, because glab sends it to every
+// host and repointing the default would send it to the new one. It also counts
+// an unreadable keyring or config entry, so a read failure cannot cause the
+// default host to be repointed.
+func hasCredentials(cfg config.Config, hostname string) bool {
+	if config.GetFromEnv("token") != "" {
+		return true
+	}
+	for _, key := range []string{"token", "job_token"} {
+		value, _, err := cfg.GetWithSource(hostname, key, false)
+		if err != nil {
+			dbg.Debugf("Could not read %s for %s, keeping the default host: %v", key, hostname, err)
+			return true
+		}
+		if value != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // logCredentialStorage tells the user where their credentials were stored, so
