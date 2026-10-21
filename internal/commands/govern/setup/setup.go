@@ -49,7 +49,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		Use:   "setup",
 		Short: "Configure this machine to record AI agent sessions. (EXPERIMENTAL)",
 		Long: heredoc.Docf(`
-			Configure the current machine for AI agent governance session capture.
+			Configure the current machine for AI governance session capture.
 
 			Installs the following:
 
