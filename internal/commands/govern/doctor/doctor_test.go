@@ -65,7 +65,7 @@ func TestCheckClaudeHooks_HooksMissing(t *testing.T) {
 	result := checkClaudeHooks()
 
 	assert.True(t, result.ok, "missing Claude Code should be advisory")
-	assert.Contains(t, result.message, "not detected")
+	assert.Contains(t, result.message, "No hook-based agent detected")
 }
 
 func TestCheckClaudeHooks_StopHookMissing(t *testing.T) {

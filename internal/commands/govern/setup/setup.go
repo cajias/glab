@@ -57,7 +57,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			- SessionEnd hook in %[1]s~/.claude/settings.json%[1]s, which syncs the session and marks it completed.
 			- Fallback periodic sync: a launchd agent (%[1]s~/Library/LaunchAgents/com.gitlab.glab-govern-audit-sync.plist%[1]s) on macOS, or a systemd user timer (%[1]s~/.config/systemd/user/glab-govern-audit-sync.timer%[1]s) on Linux.
 
-			The fallback periodic sync runs %[1]sglab govern audit sync --all%[1]s every 30 minutes, and on Linux also 5 minutes after boot, until you remove it. It uploads anything the hooks missed for sessions they have already recorded (see %[1]sglab govern audit sync --help%[1]s for what is uploaded), using your stored glab credentials and the glab configuration directory in use when you run setup. Each session goes to the project and host of the Git repository the agent ran in. It also marks sessions completed once they have been idle for 24 hours. It pauses Claude Code sessions while the hooks are not installed. Pass %[1]s--no-fallback-sync%[1]s to install only the hooks. The fallback periodic sync is not available on Windows.
+			The fallback periodic sync runs %[1]sglab govern audit sync --all%[1]s every 30 minutes, and on Linux also 5 minutes after boot, until you remove it. It uploads anything the hooks missed for sessions they have already recorded (see %[1]sglab govern audit sync --help%[1]s for what is uploaded), using your stored glab credentials and the glab configuration directory in use when you run setup. Each session goes to the project and host of the Git repository the agent ran in. It also marks sessions completed once they have been idle for 24 hours. It pauses sessions from agents that use hooks while those hooks are not installed. Pass %[1]s--no-fallback-sync%[1]s to install only the hooks. The fallback periodic sync is not available on Windows.
 
 			Pass %[1]s--agents codex,cursor%[1]s to also sync Codex and Cursor sessions. glab installs no hooks for those agents: the fallback periodic sync finds their sessions by scanning their transcripts in %[1]s~/.codex/sessions%[1]s and %[1]s~/.cursor/projects%[1]s, including sessions from before you enabled them, and uploads those from repositories on GitLab hosts you are logged in to with glab. Their sessions are marked completed once they have been idle for 24 hours. Run setup again with a different %[1]s--agents%[1]s list to change which agents are synced, or with %[1]s--agents ""%[1]s to stop. Every setup prompt names the agents that are synced, and %[1]s--uninstall%[1]s also stops syncing them.
 
@@ -108,11 +108,11 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 }
 
 func setupPrompt(goos string, noFallbackSync bool, agents []string) string {
-	prompt := "glab will install Claude Code hooks in ~/.claude/settings.json"
+	prompt := "glab will install agent session hooks in ~/.claude/settings.json"
 	if !noFallbackSync {
 		prompt += fmt.Sprintf(" and %s that syncs sessions in the background every %d minutes, replacing any existing job", fallbacksync.Description(goos), int(fallbacksync.Interval.Minutes()))
 	}
-	prompt += ". Claude Code sessions will be uploaded to the GitLab project of the repository they run in, including your prompts and each tool call's arguments, such as commands and file edits"
+	prompt += ". Agent sessions will be uploaded to the GitLab project of the repository they run in, including your prompts and each tool call's arguments, such as commands and file edits"
 	if !noFallbackSync && len(agents) > 0 {
 		prompt += fmt.Sprintf(". The job will also upload your %s sessions the same way, from the last 89 days and from now on", strings.Join(agents, " and "))
 	}
@@ -122,7 +122,7 @@ func setupPrompt(goos string, noFallbackSync bool, agents []string) string {
 func uninstallPrompt(hooks bool, agents []string) string {
 	prompt := "glab will remove the fallback periodic sync job"
 	if hooks {
-		prompt = "glab will remove the Claude Code hooks from ~/.claude/settings.json and the fallback periodic sync job"
+		prompt = "glab will remove the agent session hooks from ~/.claude/settings.json and the fallback periodic sync job"
 	}
 	if len(agents) > 0 {
 		prompt += fmt.Sprintf(", and stop syncing %s sessions", strings.Join(agents, " and "))
@@ -177,9 +177,9 @@ func runSetup(ctx context.Context, opts *options) error {
 		return nil
 	}
 
-	io.LogInfo("Installing Claude Code hooks...")
+	io.LogInfo("Installing agent session hooks...")
 	if err := installClaudeHooks(opts); err != nil {
-		return fmt.Errorf("failed to install Claude Code hooks: %w", err)
+		return fmt.Errorf("failed to install agent session hooks: %w", err)
 	}
 	io.LogInfof("%s Hooks installed in ~/%s\n", c.GreenCheck(), claudehooks.SettingsFile)
 
@@ -227,7 +227,7 @@ func runUninstall(ctx context.Context, opts *options) error {
 	hooksPresent, hooksErr := claudeHooksInstalled(opts)
 	if !jobPresent && !hooksPresent && len(agents) == 0 && !unreadable {
 		if hooksErr != nil {
-			return fmt.Errorf("could not read Claude Code hooks: %w", hooksErr)
+			return fmt.Errorf("could not read agent session hooks: %w", hooksErr)
 		}
 		io.LogInfo("Nothing to uninstall: no hooks or fallback periodic sync job found.")
 		return nil
@@ -272,15 +272,15 @@ func runUninstall(ctx context.Context, opts *options) error {
 		removed, err := removeClaudeHooks(opts)
 		switch {
 		case err != nil:
-			return fmt.Errorf("failed to remove Claude Code hooks: %w", err)
+			return fmt.Errorf("failed to remove agent session hooks: %w", err)
 		case removed:
 			io.LogInfof("%s Hooks removed from ~/%s\n", c.GreenCheck(), claudehooks.SettingsFile)
 		default:
-			io.LogInfo("No Claude Code hooks found.")
+			io.LogInfo("No agent session hooks found.")
 		}
 	}
 	if hooksErr != nil {
-		return fmt.Errorf("the Claude Code hooks were not removed; fix ~/%s and run 'glab govern setup --uninstall' again: %w", claudehooks.SettingsFile, hooksErr)
+		return fmt.Errorf("the agent session hooks were not removed; fix ~/%s and run 'glab govern setup --uninstall' again: %w", claudehooks.SettingsFile, hooksErr)
 	}
 	return nil
 }

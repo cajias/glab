@@ -402,7 +402,7 @@ func TestRunUninstall_CorruptSettings(t *testing.T) {
 		// Without --yes and without a terminal, prompting would fail differently.
 		err := runUninstall(t.Context(), &options{io: ios, executor: expectNoJob(t), goos: "linux", settingsPathOverride: path})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "could not read Claude Code hooks")
+		assert.Contains(t, err.Error(), "could not read agent session hooks")
 	})
 
 	t.Run("the rest is removed and the error says what is left", func(t *testing.T) {
@@ -641,8 +641,8 @@ func TestSetupPrompt(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t,
-		"glab will install Claude Code hooks in ~/.claude/settings.json and a systemd user timer (~/.config/systemd/user/glab-govern-audit-sync.timer) that syncs sessions in the background every 30 minutes, replacing any existing job. "+
-			"Claude Code sessions will be uploaded to the GitLab project of the repository they run in, including your prompts and each tool call's arguments, such as commands and file edits. Do you wish to continue?",
+		"glab will install agent session hooks in ~/.claude/settings.json and a systemd user timer (~/.config/systemd/user/glab-govern-audit-sync.timer) that syncs sessions in the background every 30 minutes, replacing any existing job. "+
+			"Agent sessions will be uploaded to the GitLab project of the repository they run in, including your prompts and each tool call's arguments, such as commands and file edits. Do you wish to continue?",
 		setupPrompt("linux", false, nil), "every setup says what is uploaded, not only --agents")
 
 	withAgents := setupPrompt("linux", false, []string{"codex", "cursor"})
@@ -657,9 +657,9 @@ func TestSetupPrompt(t *testing.T) {
 func TestUninstallPrompt(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "glab will remove the Claude Code hooks from ~/.claude/settings.json and the fallback periodic sync job. Do you wish to continue?", uninstallPrompt(true, nil))
+	assert.Equal(t, "glab will remove the agent session hooks from ~/.claude/settings.json and the fallback periodic sync job. Do you wish to continue?", uninstallPrompt(true, nil))
 	assert.Equal(t, "glab will remove the fallback periodic sync job. Do you wish to continue?", uninstallPrompt(false, nil))
-	assert.Equal(t, "glab will remove the Claude Code hooks from ~/.claude/settings.json and the fallback periodic sync job, and stop syncing codex and cursor sessions. Do you wish to continue?",
+	assert.Equal(t, "glab will remove the agent session hooks from ~/.claude/settings.json and the fallback periodic sync job, and stop syncing codex and cursor sessions. Do you wish to continue?",
 		uninstallPrompt(true, []string{"codex", "cursor"}))
 }
 
