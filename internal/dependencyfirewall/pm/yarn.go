@@ -1,20 +1,26 @@
 package pm
 
-import "gitlab.com/gitlab-org/cli/internal/dependencyfirewall/proxy"
+import (
+	_ "embed"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	"gitlab.com/gitlab-org/cli/internal/dependencyfirewall/proxy"
+)
+
+//go:embed yarnplugin.cjs
+var yarnFirewallPlugin []byte
 
 type yarnManager struct{}
 
 // Yarn returns the Yarn (Berry) package manager. It routes through the proxy
 // via YARN_HTTP(S)_PROXY and trusts the proxy CA via NODE_EXTRA_CA_CERTS.
 //
-// Suspected gap (unverified): Berry's per-hostname networkSettings map
-// (httpProxy/httpsProxy/enableNetwork/caFilePath keyed by host) is documented
-// to override the global proxy settings for matching hosts, and a map-valued
-// setting has no practical env pin. If that holds, a repo-committed
-// ".yarnrc.yml" networkSettings entry for the registry host could route that
-// host around the MITM while staying green. This has not been confirmed
-// against a Berry install (getNetworkSettings in yarnpkg-core httpUtils);
-// treat it as an open item to verify and then either guard or accept.
+// Berry's per-host networkSettings override the global proxy and cannot be
+// pinned from the environment, so Setup also injects a plugin
+// (yarnplugin.cjs) through YARN_PLUGINS that empties them before each request.
 func Yarn() PackageManager { return yarnManager{} }
 
 func (yarnManager) Name() string   { return "yarn" }
@@ -47,6 +53,33 @@ func (yarnManager) Environment(proxyURL string) []string {
 		"npm_config_https_proxy=" + proxyURL,
 		"npm_config_noproxy=localhost",
 	}
+}
+
+// Setup writes the firewall plugin to a temp file and lists it in
+// YARN_PLUGINS ahead of any plugins the user already loads there.
+func (yarnManager) Setup(parent []string) ([]string, func(), error) {
+	f, err := os.CreateTemp("", "glab-df-yarn-plugin-*.cjs")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create the yarn firewall plugin: %w", err)
+	}
+	_, err = f.Write(yarnFirewallPlugin)
+	if err = errors.Join(err, f.Close()); err != nil {
+		return nil, nil, fmt.Errorf("failed to write the yarn firewall plugin: %w", errors.Join(err, os.Remove(f.Name())))
+	}
+
+	// Berry reads yarn_* variables in any case, letting the last one win, and
+	// Run strips every case of YARN_PLUGINS from the child's environment.
+	var existing string
+	for _, e := range parent {
+		if k, v, ok := strings.Cut(e, "="); ok && strings.EqualFold(k, "YARN_PLUGINS") {
+			existing = v
+		}
+	}
+	plugins := f.Name()
+	if existing != "" {
+		plugins += ";" + existing
+	}
+	return []string{"YARN_PLUGINS=" + plugins}, func() { _ = os.Remove(f.Name()) }, nil
 }
 
 func (yarnManager) CATrustEnviron(caPath string) []string {

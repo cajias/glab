@@ -259,6 +259,25 @@ func TestRunExitErrorPropagates(t *testing.T) {
 	assert.False(t, ee.ChildExited, "a generic run failure means the child never exited")
 }
 
+type failingSetupManager struct{ PackageManager }
+
+func (failingSetupManager) Setup([]string) ([]string, func(), error) {
+	return nil, nil, errors.New("disk full")
+}
+
+func TestRunFailsClosedWhenSetupFails(t *testing.T) {
+	t.Setenv("GITLAB_CI", "") // honor fake mode even when the suite runs in CI
+	t.Setenv("GLAB_DF_FAKE_DEFAULT", "allow")
+	ios, _, _, _ := cmdtest.TestIOStreams()
+	exec := &fakeExecutor{}
+
+	err := Run(t.Context(), failingSetupManager{NPM()}, RunOptions{
+		IO: ios, Executor: exec, BaseDir: t.TempDir(), ProjectID: "p", Args: []string{"install"},
+	})
+	require.ErrorContains(t, err, "disk full")
+	assert.Nil(t, exec.env, "the child must not start when its setup failed")
+}
+
 // exitExecutor returns an *exec.ExitError carrying a specific exit code, so we
 // can assert the child's real status is propagated (not the generic 1).
 type exitExecutor struct{ code int }

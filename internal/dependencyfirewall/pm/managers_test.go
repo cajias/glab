@@ -171,3 +171,57 @@ func TestCleanupCAFilesNoOpForEnvProxyManagers(t *testing.T) {
 	_, err := os.Stat(caPath)
 	assert.NoError(t, err, "env-proxy managers must not remove the engine-owned CA bundle")
 }
+
+func TestYarnSetupInjectsFirewallPlugin(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		parent      []string
+		userPlugins string
+	}{
+		{"uppercase", []string{"YARN_PLUGINS=/home/u/user.cjs"}, "/home/u/user.cjs"},
+		{"lowercase", []string{"yarn_plugins=/home/u/user.cjs"}, "/home/u/user.cjs"},
+		{"last of both cases wins", []string{"YARN_PLUGINS=/home/u/a.cjs", "yarn_plugins=/home/u/b.cjs"}, "/home/u/b.cjs"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			env, cleanup, err := yarnManager{}.Setup(c.parent)
+			require.NoError(t, err)
+			pluginPath, userPlugins, ok := strings.Cut(lookupEnv(env, "YARN_PLUGINS"), ";")
+			require.True(t, ok, "YARN_PLUGINS must list the firewall plugin and keep the user's")
+			assert.Equal(t, c.userPlugins, userPlugins)
+
+			plugin, err := os.ReadFile(pluginPath)
+			require.NoError(t, err)
+			assert.Equal(t, yarnFirewallPlugin, plugin)
+
+			cleanup()
+			_, err = os.Stat(pluginPath)
+			assert.ErrorIs(t, err, os.ErrNotExist)
+		})
+	}
+}
+
+func TestYarnSetupWithoutUserPluginsListsOnlyFirewallPlugin(t *testing.T) {
+	t.Parallel()
+	env, cleanup, err := yarnManager{}.Setup([]string{"PATH=/usr/bin"})
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	// A trailing ";" would add an empty entry, which Berry resolves to the
+	// working directory and tries to load as a plugin.
+	pluginPath := lookupEnv(env, "YARN_PLUGINS")
+	assert.NotContains(t, pluginPath, ";")
+	assert.FileExists(t, pluginPath)
+}
+
+func TestYarnSetupFailsWhenPluginCannotBeWritten(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	t.Setenv("TMPDIR", missing)
+	t.Setenv("TMP", missing)
+	t.Setenv("TEMP", missing)
+
+	env, _, err := yarnManager{}.Setup(nil)
+	require.Error(t, err)
+	assert.Empty(t, env, "a failed write must not point YARN_PLUGINS at any path")
+}
