@@ -4,6 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
@@ -12,6 +17,7 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
 	"gitlab.com/gitlab-org/cli/internal/mcpannotations"
@@ -46,6 +52,10 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			Configures the GitLab HTTP backend for OpenTofu or Terraform state
 			and runs %[1]stofu init%[1]s. You must run this command from a GitLab
 			project repository.
+
+			If glab is installed as a snap, it cannot run OpenTofu or Terraform
+			binaries installed on the host or by other snaps. Place the binary in
+			your home directory and pass its path with %[1]s--binary%[1]s.
 		`, "`"),
 		Example: heredoc.Doc(`
 			# Initialize state with name production in working directory
@@ -114,7 +124,12 @@ func (o *options) run(ctx context.Context) error {
 	args = append(args, authArgs...)
 	args = append(args, o.initArgs...)
 
-	return o.exec.Exec(ctx, o.binary, args, nil)
+	err = o.exec.Exec(ctx, o.binary, args, nil)
+	// exec only searches $PATH for bare names; a missing path fails with fs.ErrNotExist instead.
+	if (errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist)) && config.SnapConfined() {
+		return fmt.Errorf("%w\n\nglab is running under snap confinement and cannot see binaries installed on the host or by other snaps.\nPlace the binary in your home directory and pass its path, for example: glab opentofu init %s --binary ~/%s", err, shellQuote(o.stateName), shellQuote(filepath.Base(o.binary)))
+	}
+	return err
 }
 
 // authBackendConfig renders the backend configuration OpenTofu needs to
@@ -154,4 +169,14 @@ func authBackendConfig(ctx context.Context, apiClient *api.Client) ([]string, er
 	default:
 		return nil, fmt.Errorf("%w: %s", errUnsupportedAuth, cred.Kind)
 	}
+}
+
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
+
+// shellQuote single-quotes s unless it only has characters the shell treats literally.
+func shellQuote(s string) string {
+	if shellSafe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
