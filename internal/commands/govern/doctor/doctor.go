@@ -64,7 +64,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 			- Authentication: glab is authenticated with a valid token
 			- glab in PATH: the binary is findable so hooks will work
-			- Claude Code hooks: Stop and SessionEnd hooks are installed
+			- Agent session hooks: the Stop and SessionEnd hooks are installed
 			- API connectivity: can reach the GitLab API
 			- Fallback periodic sync: whether the scheduled job is installed and loaded, whether the glab binary it runs still exists and is the same build as this glab, and the result of its last run
 
@@ -170,7 +170,7 @@ func checkClaudeHooks() checkResult {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return checkResult{
-			name:    "Claude Code hooks",
+			name:    "Agent session hooks",
 			ok:      false,
 			message: fmt.Sprintf("could not determine home directory: %v", err),
 		}
@@ -179,16 +179,16 @@ func checkClaudeHooks() checkResult {
 	claudeDir := filepath.Join(home, ".claude")
 	if _, err := os.Stat(claudeDir); errors.Is(err, fs.ErrNotExist) {
 		return checkResult{
-			name:    "Claude Code hooks",
+			name:    "Agent session hooks",
 			ok:      true,
-			message: "Claude Code not detected (~/.claude not found); run 'glab govern setup' after installing Claude Code",
+			message: "No hook-based agent detected (~/.claude not found); run 'glab govern setup' after installing a supported agent",
 		}
 	}
 
 	path, err := claudehooks.SettingsPath()
 	if err != nil {
 		return checkResult{
-			name:    "Claude Code hooks",
+			name:    "Agent session hooks",
 			ok:      false,
 			message: fmt.Sprintf("could not determine home directory: %v", err),
 		}
@@ -196,7 +196,7 @@ func checkClaudeHooks() checkResult {
 
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		return checkResult{
-			name:    "Claude Code hooks",
+			name:    "Agent session hooks",
 			ok:      false,
 			message: fmt.Sprintf("%s not found", claudehooks.SettingsFile),
 			fix:     "Run: glab govern setup",
@@ -206,7 +206,7 @@ func checkClaudeHooks() checkResult {
 	raw, err := claudehooks.LoadRawSettings(path)
 	if err != nil {
 		return checkResult{
-			name:    "Claude Code hooks",
+			name:    "Agent session hooks",
 			ok:      false,
 			message: fmt.Sprintf("could not parse %s", claudehooks.SettingsFile),
 			fix:     "Run: glab govern setup",
@@ -216,7 +216,7 @@ func checkClaudeHooks() checkResult {
 	hooks, err := claudehooks.HooksFromRaw(raw)
 	if err != nil {
 		return checkResult{
-			name:    "Claude Code hooks",
+			name:    "Agent session hooks",
 			ok:      false,
 			message: fmt.Sprintf("could not parse hooks in %s", claudehooks.SettingsFile),
 			fix:     "Run: glab govern setup",
@@ -233,7 +233,7 @@ func checkClaudeHooks() checkResult {
 
 	if len(missingHooks) > 0 {
 		return checkResult{
-			name:    "Claude Code hooks",
+			name:    "Agent session hooks",
 			ok:      false,
 			message: fmt.Sprintf("missing hooks: %s", strings.Join(missingHooks, ", ")),
 			fix:     "Run: glab govern setup",
@@ -241,7 +241,7 @@ func checkClaudeHooks() checkResult {
 	}
 
 	return checkResult{
-		name:    "Claude Code hooks",
+		name:    "Agent session hooks",
 		ok:      true,
 		message: "Stop and SessionEnd hooks installed",
 	}
