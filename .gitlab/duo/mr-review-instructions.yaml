@@ -582,10 +582,11 @@ instructions:
     fileFilters:
       - '.tool-versions'
       - 'Makefile'
+      - '.gitlab-ci.yml'
     instructions: |
       1. The project pins developer tools via `mise` and `.tool-versions`.
-         When bumping a tool version (e.g., golangci-lint, Go), update both
-         `.tool-versions` AND any hard-coded version in `Makefile` so local
-         and CI environments stay aligned.
+         The Makefile reads the golangci-lint version from `.tool-versions`.
+         When bumping golangci-lint, also update the `lint` job image tag in
+         `.gitlab-ci.yml` so local and CI environments stay aligned.
       2. New developer tools should be added to `.tool-versions` (not to the
          Makefile alone).
