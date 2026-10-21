@@ -15,10 +15,12 @@ import (
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zalando/go-keyring"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 
 	"gitlab.com/gitlab-org/cli/internal/api"
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/oauth2"
@@ -61,9 +63,12 @@ func Test_helperRun(t *testing.T) {
 		wantStdout      []string
 		wantStderr      string
 		wantErr         bool
+		wantErrIs       error
+		wantErrContains string
 		wantValidateErr bool
 		testOAuth2      bool
 		apiResponse     roundTripFunc
+		env             map[string]string
 	}{
 		{
 			name: "host only, credentials found",
@@ -161,6 +166,7 @@ func Test_helperRun(t *testing.T) {
 				host=example.com
 			`),
 			wantErr:         true,
+			wantErrIs:       cmdutils.SilentError,
 			wantValidateErr: false,
 			wantStderr:      "",
 		},
@@ -281,6 +287,7 @@ func Test_helperRun(t *testing.T) {
 				host=gitlab.example.com
 			`),
 			wantErr:         true,
+			wantErrContains: "failed to resolve the credentials",
 			wantValidateErr: false,
 			wantStdout:      nil,
 			wantStderr:      "",
@@ -317,6 +324,7 @@ func Test_helperRun(t *testing.T) {
 				host=gitlab.com
 			`),
 			wantErr:         true,
+			wantErrContains: "failed to resolve the credentials",
 			wantValidateErr: false,
 			wantStdout:      nil,
 			wantStderr:      "",
@@ -367,6 +375,56 @@ func Test_helperRun(t *testing.T) {
 				"password=some-job-token",
 			},
 			wantStderr: "",
+		},
+		{
+			name: "token and job token stored, token wins",
+			opts: options{
+				operation: "get",
+				config: func() config.Config {
+					return config.NewFromString(heredoc.Doc(`
+						_source: "/Users/monalisa/.config/glab/config.yml"
+						hosts:
+						  example.com:
+						    user: "monalisa"
+						    token: "some-password"
+						    job_token: "some-job-token"
+					`))
+				},
+			},
+			input: heredoc.Doc(`
+				protocol=https
+				host=example.com
+			`),
+			wantStdout: []string{
+				"username=monalisa",
+				"password=some-password",
+			},
+		},
+		{
+			name: "stored OAuth2 overridden by GITLAB_TOKEN",
+			opts: options{
+				operation: "get",
+				config: func() config.Config {
+					return config.NewFromString(heredoc.Doc(`
+						_source: "/Users/monalisa/.config/glab/config.yml"
+						hosts:
+						  example.com:
+						    user: "monalisa"
+						    is_oauth2: "true"
+						    oauth2_refresh_token: "some-refresh-token"
+						    token: "some-access-token"
+					`))
+				},
+			},
+			env: map[string]string{"GITLAB_TOKEN": "env-pat"},
+			input: heredoc.Doc(`
+				protocol=https
+				host=example.com
+			`),
+			wantStdout: []string{
+				"username=monalisa",
+				"password=env-pat",
+			},
 		},
 		{
 			name: "store command",
@@ -437,8 +495,17 @@ func Test_helperRun(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
 			if tt.testOAuth2 {
 				tt.opts.apiClient = oauth2ApiClient(tt.opts.config(), tt.apiResponse)
+			}
+			if tt.opts.apiClient == nil {
+				cfg := tt.opts.config()
+				tt.opts.apiClient = func(repoHost string) (*api.Client, error) {
+					return api.NewClientFromConfig(repoHost, cfg, false, "test")
+				}
 			}
 
 			io, stdin, stdout, stderr := cmdtest.TestIOStreams()
@@ -461,6 +528,12 @@ func Test_helperRun(t *testing.T) {
 			runErr := opts.run(t.Context())
 			if tt.wantErr {
 				require.Error(t, runErr)
+				if tt.wantErrIs != nil {
+					require.ErrorIs(t, runErr, tt.wantErrIs)
+				}
+				if tt.wantErrContains != "" {
+					require.ErrorContains(t, runErr, tt.wantErrContains)
+				}
 			} else {
 				require.NoError(t, runErr)
 			}
@@ -479,6 +552,40 @@ func Test_helperRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_helperRun_ClientBuildErrorIsNotSilent(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GITLAB_ACCESS_TOKEN", "")
+	t.Setenv("OAUTH_TOKEN", "")
+	keyring.MockInit()
+	t.Cleanup(keyring.MockInit)
+
+	// The host keeps its token in the keyring, but the keyring has no entry for it.
+	cfg := config.NewFromString(heredoc.Doc(`
+		hosts:
+		  example.com:
+		    user: "monalisa"
+		    use_keyring: "true"
+	`))
+	io, stdin, stdout, _ := cmdtest.TestIOStreams()
+	fmt.Fprint(stdin, "protocol=https\nhost=example.com\n")
+	opts := &options{
+		io:        io,
+		config:    func() config.Config { return cfg },
+		operation: "get",
+		apiClient: func(repoHost string) (*api.Client, error) {
+			return api.NewClientFromConfig(repoHost, cfg, false, "test")
+		},
+	}
+
+	err := opts.run(t.Context())
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, cmdutils.SilentError)
+	require.ErrorContains(t, err, `failed to build the API client for "example.com"`)
+	require.ErrorContains(t, err, "keyring")
+	assert.Empty(t, stdout.String())
 }
 
 func Test_helperRun_OAuth2AccessTokenOnly(t *testing.T) {

@@ -3,6 +3,7 @@ package login
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -109,54 +110,43 @@ func (o *options) run(ctx context.Context) error {
 		return cmdutils.SilentError
 	}
 
-	cfg := o.config()
-
-	output := map[string]string{}
-
 	host := expectedParams["host"]
-	isOAuth2Cfg, _ := cfg.Get(host, "is_oauth2")
-	jobToken, _ := cfg.Get(host, "job_token")
-	token, _ := cfg.Get(host, "token")
-	username, _ := cfg.Get(host, "user")
+	apiClient, err := o.apiClient(host)
+	if err != nil {
+		return fmt.Errorf("failed to build the API client for %q: %w", host, err)
+	}
+	cred, err := apiClient.Credential(ctx)
+	if errors.Is(err, api.ErrUnauthenticated) {
+		return cmdutils.SilentError
+	}
+	if err != nil {
+		return fmt.Errorf("failed to resolve the credentials for %q: %w", host, err)
+	}
 
-	switch {
-	case isOAuth2Cfg == "true":
-		// Trying to refresh access token
-		apiClient, err := o.apiClient(host)
-		if err != nil {
-			return err
-		}
-		cred, err := apiClient.Credential(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to resolve the credentials for %q: %w", host, err)
-		}
-		if cred.Kind != api.CredentialOAuth2 {
-			return fmt.Errorf("%q is configured for OAuth, but its credential resolved as %s", host, cred.Kind)
-		}
-
+	output := map[string]string{"password": cred.Token}
+	switch cred.Kind {
+	case api.CredentialOAuth2:
 		// see https://docs.gitlab.com/api/oauth2/#access-git-over-https-with-access-token
 		output["username"] = "oauth2"
-		output["password"] = cred.Token
 		if !cred.Expiry.IsZero() {
 			output["password_expiry_utc"] = fmt.Sprintf("%d", cred.Expiry.UTC().Unix())
 		}
 		if cred.RefreshToken != "" {
 			output["oauth_refresh_token"] = cred.RefreshToken
 		}
-	case jobToken != "":
-		output["username"] = "gitlab-ci-token"
+	case api.CredentialJobToken:
 		// see https://docs.gitlab.com/ci/jobs/ci_job_token/#to-git-clone-a-private-projects-repository
-		output["password"] = jobToken
-	case token != "":
+		output["username"] = "gitlab-ci-token"
+	case api.CredentialPAT:
+		username, _ := o.config().Get(host, "user")
 		if username == "" {
 			// Legacy configs and failed username lookups leave no user on
 			// record: https://gitlab.com/gitlab-org/cli/-/issues/8044
 			username = personalAccessTokenUsername
 		}
 		output["username"] = username
-		output["password"] = token
 	default:
-		return cmdutils.SilentError
+		return fmt.Errorf("unsupported credential kind %q for %q", cred.Kind, host)
 	}
 
 	if expectedParams["username"] != "" && expectedParams["username"] != output["username"] {
