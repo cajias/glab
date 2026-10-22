@@ -94,7 +94,7 @@ func NewCmdList(f cmdutils.Factory, runE func(opts *ListOptions) error, issueTyp
 			glab %[1]s list --all
 			glab %[1]s ls --all
 			glab %[1]s list --assignee=@me
-			glab %[1]s list --milestone release-2.0.0 --opened
+			glab %[1]s list --milestone release-2.0.0
 			glab %[1]s list --updated-after 2026-10-01T00:00:00Z`, issueType)),
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
