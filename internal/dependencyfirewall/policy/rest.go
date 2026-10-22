@@ -95,6 +95,8 @@ func ecosystemValue(ecosystem string) (gitlab.DependencyFirewallEcosystemValue, 
 		return gitlab.DependencyFirewallEcosystemGem, nil
 	case purl.TypeCargo:
 		return gitlab.DependencyFirewallEcosystemCargo, nil
+	case purl.TypeGolang:
+		return gitlab.DependencyFirewallEcosystemGolang, nil
 	default:
 		return "", fmt.Errorf("unsupported dependency firewall ecosystem %q", ecosystem)
 	}

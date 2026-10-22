@@ -117,6 +117,7 @@ func TestEcosystemValueMapsSupported(t *testing.T) {
 		{"maven", gitlab.DependencyFirewallEcosystemMaven},
 		{"gem", gitlab.DependencyFirewallEcosystemGem},
 		{"cargo", gitlab.DependencyFirewallEcosystemCargo},
+		{"golang", gitlab.DependencyFirewallEcosystemGolang},
 	}
 	for _, tt := range tests {
 		t.Run(tt.ecosystem, func(t *testing.T) {
