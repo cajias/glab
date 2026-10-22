@@ -72,6 +72,58 @@ func Test_remoteResolverOverride(t *testing.T) {
 	assert.Equal(t, "origin", remotes[0].Name)
 }
 
+func Test_remoteResolverConfigHostOverrideWithoutMatch(t *testing.T) {
+	rr := &remoteResolver{
+		readRemotes: func() (git.RemoteSet, error) {
+			return git.RemoteSet{
+				git.NewRemote("origin", "https://gitlab.com/gitlab-org/cli.git"),
+			}, nil
+		},
+		getConfig: func() config.Config {
+			return config.NewFromString(heredoc.Doc(`
+				host: gitlab.tuwien.ac.at
+			`))
+		},
+		parseSSHConfig: noSSHAliases,
+	}
+
+	resolver := rr.Resolver("gitlab.tuwien.ac.at")
+	remotes, err := resolver()
+	require.NoError(t, err)
+	require.Len(t, remotes, 1)
+
+	assert.Equal(t, "origin", remotes[0].Name)
+	assert.Equal(t, "gitlab.com", remotes[0].RepoHost())
+}
+
+func Test_remoteResolverConfigHostOverrideWithMatch(t *testing.T) {
+	rr := &remoteResolver{
+		readRemotes: func() (git.RemoteSet, error) {
+			return git.RemoteSet{
+				git.NewRemote("origin", "https://gitlab.com/owner/repo.git"),
+				git.NewRemote("upstream", "https://example.org/owner/repo.git"),
+			}, nil
+		},
+		getConfig: func() config.Config {
+			return config.NewFromString(heredoc.Doc(`
+				host: example.org
+				hosts:
+				  example.org:
+				    oauth_token: OTOKEN
+			`))
+		},
+		parseSSHConfig: noSSHAliases,
+	}
+
+	resolver := rr.Resolver("example.org")
+	remotes, err := resolver()
+	require.NoError(t, err)
+	require.Len(t, remotes, 1)
+
+	assert.Equal(t, "upstream", remotes[0].Name)
+	assert.Equal(t, "example.org", remotes[0].RepoHost())
+}
+
 func Test_remoteResolverSSHHostMapping(t *testing.T) {
 	rr := &remoteResolver{
 		readRemotes: func() (git.RemoteSet, error) {
@@ -423,11 +475,12 @@ func Test_remoteResolverErrors(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		remotes         git.RemoteSet
-		hostOverride    string
-		expectedError   string
-		expectedErrorIs error
+		name               string
+		remotes            git.RemoteSet
+		hostOverride       string
+		hostOverrideEnvVar string
+		expectedError      string
+		expectedErrorIs    error
 	}{
 		{
 			name:            "No remotes",
@@ -436,13 +489,32 @@ func Test_remoteResolverErrors(t *testing.T) {
 			expectedErrorIs: ErrNoGitRemotes,
 		},
 		{
-			name:         "No match with host override",
-			remotes:      testRemotes,
-			hostOverride: "nomatch.org",
+			name:               "No match with host override",
+			remotes:            testRemotes,
+			hostOverride:       "nomatch.org",
+			hostOverrideEnvVar: "GITLAB_HOST",
 			expectedError: "none of the git remotes configured for this repository correspond to the GITLAB_HOST environment variable. " +
 				"Try adding a matching remote or unsetting the variable.\n\n" +
 				"GITLAB_HOST is currently set to nomatch.org\n\n" +
 				"Configured remotes: example.org, example3.org, example2.org",
+		},
+		{
+			name:               "No match with GL_HOST override",
+			remotes:            testRemotes,
+			hostOverride:       "nomatch.org",
+			hostOverrideEnvVar: "GL_HOST",
+			expectedError: "none of the git remotes configured for this repository correspond to the GL_HOST environment variable. " +
+				"Try adding a matching remote or unsetting the variable.\n\n" +
+				"GL_HOST is currently set to nomatch.org\n\n" +
+				"Configured remotes: example.org, example3.org, example2.org",
+		},
+		{
+			name:         "No match with config host override",
+			remotes:      git.RemoteSet{git.NewRemote("origin", "https://other.example.org/owner/repo.git")},
+			hostOverride: "gitlab.example.com",
+			expectedError: "none of the git remotes configured for this repository point to a known GitLab host. " +
+				"Please use `glab auth login` to authenticate and configure a new host for glab.\n\n" +
+				"Configured remotes: other.example.org",
 		},
 		{
 			name:    "No match",
@@ -465,7 +537,8 @@ func Test_remoteResolverErrors(t *testing.T) {
 				    oauth_token: OTOKEN
 			`))
 				},
-				parseSSHConfig: noSSHAliases,
+				parseSSHConfig:     noSSHAliases,
+				hostOverrideEnvVar: test.hostOverrideEnvVar,
 			}
 
 			resolver := rr.Resolver(test.hostOverride)

@@ -3,6 +3,7 @@ package cmdutils
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -46,6 +47,7 @@ type DefaultFactory struct {
 	defaultHostname string
 	defaultProtocol string
 	transports      *api.TransportCache
+	hostEnvVar      string
 
 	mu sync.Mutex // protects the fields below
 	// cachedBaseRepo if set is the SSoT of the repository to use in BaseRepo(), GitLabClient() and other factory function that require a repository.
@@ -65,7 +67,10 @@ func NewFactory(io *iostreams.IOStreams, resolveRepos bool, cfg config.Config, b
 	}
 
 	// Fetch the custom host config from env vars, then local config.yml, then global config,yml.
-	customGLHost, _ := cfg.Get("", "host")
+	customGLHost, hostSource, _ := cfg.GetWithSource("", "host", true)
+	if slices.Contains(config.EnvKeyEquivalence("host"), hostSource) {
+		f.hostEnvVar = hostSource
+	}
 	if customGLHost != "" {
 		if utils.IsValidURL(customGLHost) {
 			var protocol string
@@ -195,10 +200,11 @@ func (f *DefaultFactory) Remotes() (glrepo.Remotes, error) {
 		hostOverride = f.defaultHostname
 	}
 	rr := &remoteResolver{
-		readRemotes:     git.Remotes,
-		getConfig:       f.Config,
-		parseSSHConfig:  git.ParseSSHConfig,
-		defaultHostname: f.defaultHostname,
+		readRemotes:        git.Remotes,
+		getConfig:          f.Config,
+		parseSSHConfig:     git.ParseSSHConfig,
+		defaultHostname:    f.defaultHostname,
+		hostOverrideEnvVar: f.hostEnvVar,
 	}
 	fn := rr.Resolver(hostOverride)
 	return fn()

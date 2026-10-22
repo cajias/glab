@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"gitlab.com/gitlab-org/cli/internal/config"
+	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/git"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
@@ -23,6 +24,9 @@ type remoteResolver struct {
 	getConfig       func() config.Config
 	parseSSHConfig  func() git.SSHAliasMap
 	defaultHostname string
+	// hostOverrideEnvVar names the environment variable that set the host
+	// override. When empty, the override came from the config file.
+	hostOverrideEnvVar string
 }
 
 func (rr *remoteResolver) Resolver(hostOverride string) func() (glrepo.Remotes, error) {
@@ -117,13 +121,18 @@ func (rr *remoteResolver) Resolver(hostOverride string) func() (glrepo.Remotes, 
 				cachedRemotes = append(cachedRemotes, r)
 			}
 
-			if len(cachedRemotes) == 0 {
-				remotesError = errors.New("none of the git remotes configured for this repository correspond to the GITLAB_HOST environment variable. Try adding a matching remote or unsetting the variable.\n\n" +
-					"GITLAB_HOST is currently set to " + hostOverride + "\n\nConfigured remotes: " + resolvedRemotes.UniqueHosts())
-				return nil, remotesError
+			if len(cachedRemotes) > 0 {
+				return cachedRemotes, nil
 			}
 
-			return cachedRemotes, nil
+			// A config-file host only prefers a matching remote. It never rejects
+			// the others. See https://gitlab.com/gitlab-org/cli/-/issues/8595.
+			if envVar := rr.hostOverrideEnvVar; envVar != "" {
+				remotesError = errors.New("none of the git remotes configured for this repository correspond to the " + envVar + " environment variable. Try adding a matching remote or unsetting the variable.\n\n" +
+					envVar + " is currently set to " + hostOverride + "\n\nConfigured remotes: " + resolvedRemotes.UniqueHosts())
+				return nil, remotesError
+			}
+			dbg.Debug("config host " + hostOverride + " matches no git remote; resolving from remotes instead")
 		}
 
 		for _, r := range resolvedRemotes {
