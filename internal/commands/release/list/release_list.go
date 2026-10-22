@@ -24,9 +24,8 @@ var getRelease = func(client *gitlab.Client, projectID any, tag string) (*gitlab
 	return release, nil
 }
 
-var listReleases = func(client *gitlab.Client, projectID any, opts *gitlab.ListReleasesOptions) ([]*gitlab.Release, error) {
-	releases, _, err := client.Releases.ListReleases(projectID, opts)
-	return releases, err
+var listReleases = func(client *gitlab.Client, projectID any, opts *gitlab.ListReleasesOptions) ([]*gitlab.Release, *gitlab.Response, error) {
+	return client.Releases.ListReleases(projectID, opts)
 }
 
 type options struct {
@@ -131,7 +130,7 @@ func (o *options) run(cmd *cobra.Command) error {
 		o.io.LogInfo(releaseutils.DisplayRelease(o.io, release, repo))
 	} else {
 
-		releases, err := listReleases(client, repo.FullName(), l)
+		releases, resp, err := listReleases(client, repo.FullName(), l)
 		if err != nil {
 			return err
 		}
@@ -144,6 +143,9 @@ func (o *options) run(cmd *cobra.Command) error {
 		title.RepoName = repo.FullName()
 		title.Page = 0
 		title.CurrentPageTotal = len(releases)
+		if resp != nil {
+			title.Total = int(resp.TotalItems)
+		}
 		err = o.io.StartPager()
 		if err != nil {
 			return err
