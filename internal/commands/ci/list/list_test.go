@@ -4,6 +4,7 @@ package list
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,64 @@ func TestCiList(t *testing.T) {
 
 		`), out)
 	assert.Empty(t, output.Stderr())
+}
+
+func TestCiListHeaderTotal(t *testing.T) {
+	t.Parallel()
+
+	pipes := []*gitlab.PipelineInfo{
+		{ID: 1, IID: 3, Status: "success", Ref: "main"},
+	}
+
+	tests := []struct {
+		name       string
+		cli        string
+		resp       *gitlab.Response
+		wantHeader string
+	}{
+		{
+			name:       "shows the total from the API",
+			cli:        "--per-page 20 --page 17",
+			resp:       &gitlab.Response{CurrentPage: 17, TotalPages: 17, TotalItems: 326},
+			wantHeader: "Showing 1 of 326 pipelines on OWNER/REPO. (Page 17)\n",
+		},
+		{
+			name:       "status filter shows the total from the API",
+			cli:        "--status failed",
+			resp:       &gitlab.Response{CurrentPage: 1, NextPage: 2, TotalPages: 4, TotalItems: 61},
+			wantHeader: "Showing 1 of 61 failed pipelines on OWNER/REPO. (Page 1)\n",
+		},
+		{
+			name:       "without a total from the API",
+			cli:        "",
+			resp:       &gitlab.Response{CurrentPage: 1, NextPage: 2},
+			wantHeader: "Showing 1 pipeline on OWNER/REPO. (Page 1)\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			testClient := gitlabtesting.NewTestClient(t)
+			testClient.MockPipelines.EXPECT().
+				ListProjectPipelines("OWNER/REPO", gomock.Any()).
+				Return(pipes, tt.resp, nil)
+
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmdList,
+				false,
+				cmdtest.WithGitLabClient(testClient.Client),
+			)
+
+			output, err := exec(tt.cli)
+			require.NoError(t, err)
+
+			assert.True(t, strings.HasPrefix(output.String(), tt.wantHeader), "got %q", output.String())
+			assert.Empty(t, output.Stderr())
+		})
+	}
 }
 
 func TestCiListJSON(t *testing.T) {
