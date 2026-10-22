@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -99,26 +101,113 @@ func sbtCommentedLines(lines []string) ([]bool, int) {
 
 var sbtCredentialLineRe = sbtCredentialLineRegexp(sbtCredentialRealm)
 
-// sbtCredentialsPathFor returns the credentials.sbt this command writes.
+// sbtCredentialsFile is one credentials.sbt loginSbt writes, with the sbt
+// builds that read it.
+type sbtCredentialsFile struct {
+	readBy string
+	path   string
+}
+
+// sbtCredentialsFilesFor returns the credentials.sbt files this command writes,
+// one in each sbt global base, and the name of the environment variable it
+// skipped while resolving the sbt 2.x base, or "" when it skipped none.
 //
-// The directory is sbt's global base, which sbt computes as
-// defaultGlobalBase/<binary version> and lets -Dsbt.global.base override.
-// Neither is reachable from here: the override is a JVM property passed on the
-// sbt command line or through SBT_OPTS, and the version belongs to whichever
-// sbt the build runs. So this assumes a stock sbt 1.x, whose global base is
-// ~/.sbt/1.0 ("Settings that should be applied to all projects can go in
-// $HOME/.sbt/1.0/global.sbt, or any file in $HOME/.sbt/1.0 with a .sbt
-// extension"). On an sbt that moved its global base, this file is one nothing
-// loads, so --sbt writes a token no build uses; the command's help says so.
-func sbtCredentialsPathFor(home string) string {
-	return filepath.Join(home, ".sbt", "1.0", "credentials.sbt")
+// sbt keeps one global base per binary version, and neither version reads the
+// other's. Which one a build reads follows the sbt.version the project declares
+// in project/build.properties, not the sbt installed, so no single file covers
+// every project on a machine. An unread file in the other base is inert, so
+// writing both is safe.
+//
+// sbt 1.x reads ~/.sbt/1.0 ("Settings that should be applied to all projects
+// can go in $HOME/.sbt/1.0/global.sbt, or any file in $HOME/.sbt/1.0 with a
+// .sbt extension"). sbt 2.x reads <base>/2, and SysProp.defaultGlobalBaseDirectory
+// in sbt 2.0.8 picks <base> from $SBT_CONFIG_HOME, then $XDG_CONFIG_HOME/sbt
+// (%LOCALAPPDATA%\sbt on Windows), then ~/.config/sbt. Those are environment
+// variables, so the 2.x base is resolved here the way sbt resolves it, trimmed
+// as sbt trims them.
+//
+// The -Dsbt.global.base override is a JVM property, so it is not visible here,
+// and BuildPaths.getGlobalBase uses it as is, with no version directory
+// appended. The one that matters is what the sbt.bat shipped with sbt 2.x
+// (2.0.8, lines 727-731) passes whenever LOCALAPPDATA is set:
+// %LOCALAPPDATA%\sbt. Every build that launcher starts, on either sbt version,
+// reads that base, so on Windows it gets a third file. With a 1.x launcher
+// nothing reads it. The property also outranks SBT_CONFIG_HOME, so such a
+// build reads neither of the other two files, and its readBy says so: without
+// that, a user who set SBT_CONFIG_HOME would take the sbt 2.x file for the one
+// in use.
+//
+// One departure: a relative value is skipped, as the XDG Base Directory spec
+// requires ("If an implementation encounters a relative path in any of these
+// variables it should consider the path invalid and ignore it"). sbt instead
+// resolves it against the directory the build runs in, which this command
+// cannot know, so no file written here would match it. A blank value is
+// skipped too: sbt drops only an empty one, so it resolves a blank one to the
+// build directory as well. Either way the sbt 2.x file reported is one sbt 2.x
+// does not read, which is why the skipped name is returned.
+func sbtCredentialsFilesFor(home, goos string) ([]sbtCredentialsFile, string) {
+	configVar := "XDG_CONFIG_HOME"
+	if goos == "windows" {
+		configVar = "LOCALAPPDATA"
+	}
+
+	base2 := filepath.Join(home, ".config", "sbt")
+	skipped := ""
+	for _, name := range []string{"SBT_CONFIG_HOME", configVar} {
+		if value, ok := absoluteEnv(name); ok {
+			base2 = value
+			if name == configVar {
+				base2 = filepath.Join(value, "sbt")
+			}
+			break
+		}
+		if skipped == "" && os.Getenv(name) != "" {
+			skipped = name
+		}
+	}
+
+	files := []sbtCredentialsFile{
+		{readBy: "sbt 1.x", path: filepath.Join(home, ".sbt", "1.0", "credentials.sbt")},
+		{readBy: "sbt 2.x", path: filepath.Join(base2, "2", "credentials.sbt")},
+	}
+	if goos == "windows" {
+		if localAppData, ok := absoluteEnv("LOCALAPPDATA"); ok {
+			files = append(files, sbtCredentialsFile{
+				readBy: "sbt 1.x and 2.x builds started by the sbt.bat of sbt 2.x, which read no other file, even with SBT_CONFIG_HOME set",
+				path:   filepath.Join(localAppData, "sbt", "credentials.sbt"),
+			})
+		}
+	}
+	return files, skipped
+}
+
+// absoluteEnv returns the environment variable name with surrounding
+// whitespace trimmed, and false when it is unset, blank, or a relative path.
+func absoluteEnv(name string) (string, bool) {
+	value := strings.TrimSpace(os.Getenv(name))
+	return value, filepath.IsAbs(value)
+}
+
+// describeSbtCredentialsFiles renders files as "<path> for <readBy>", joined
+// with "and", for the success line and the partial-write error.
+func describeSbtCredentialsFiles(files []sbtCredentialsFile) string {
+	parts := make([]string, len(files))
+	for i, file := range files {
+		parts[i] = fmt.Sprintf("%s for %s", file.path, file.readBy)
+	}
+	return strings.Join(parts, " and ")
 }
 
 // loginSbt upserts a `credentials += Credentials("artifact-registry", host,
-// "__token__", token)` line in sbt's global credentials.sbt for registry's
-// host, matched by the host appearing as the second quoted argument, so a
-// different host's line is left untouched.
-func loginSbt(registry *url.URL, token string) error {
+// "__token__", token)` line in every file sbtCredentialsFilesFor returns, for
+// registry's host, matched by the host appearing as the second quoted argument,
+// so a different host's line is left untouched. It returns the files written
+// and the variable sbtCredentialsFilesFor skipped.
+//
+// A failure after an earlier file was written still fails the login, and the
+// error names the files that do hold the token: a build that reads the file
+// that failed would go out unauthenticated after a login reported as done.
+func loginSbt(registry *url.URL, token string) ([]sbtCredentialsFile, string, error) {
 	// Hostname(), not Host: sbt's IvyAuthenticator and coursier both look
 	// credentials up by the port-less requesting host
 	// (Authenticator.getRequestingHost / URI.getHost). Writing "host:port"
@@ -135,10 +224,28 @@ func loginSbt(registry *url.URL, token string) error {
 
 	home, err := homeDir()
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 
-	return upsertLines(sbtCredentialsPathFor(home), func(lines []string) ([]string, error) {
+	files, skipped := sbtCredentialsFilesFor(home, runtime.GOOS)
+	var written []sbtCredentialsFile
+	for _, file := range files {
+		if err := upsertSbtCredentialLine(file.path, host, line); err != nil {
+			if len(written) == 0 {
+				return nil, skipped, err
+			}
+			return written, skipped, fmt.Errorf("wrote %s, but not the file for %s: %w", describeSbtCredentialsFiles(written), file.readBy, err)
+		}
+		written = append(written, file)
+	}
+
+	return written, skipped, nil
+}
+
+// upsertSbtCredentialLine refreshes host's entry in the credentials.sbt at
+// path with line, or appends line when the file has none.
+func upsertSbtCredentialLine(path, host, line string) error {
+	return upsertLines(path, func(lines []string) ([]string, error) {
 		commented, depth := sbtCommentedLines(lines)
 		if depth > 0 {
 			return nil, errors.New("found an unterminated /* comment: the credentials line would be appended inside it, where sbt never reads it; close the comment, or add the line by hand")

@@ -110,14 +110,23 @@ var writers = []writer{
 	},
 	{
 		flag:       "sbt",
-		usage:      "Configure sbt to authenticate against the registry. Writes to ~/.sbt/1.0/credentials.sbt.",
+		usage:      "Configure sbt to authenticate against the registry. Writes credentials.sbt to the sbt 1.x and 2.x global bases.",
 		needsAlias: false,
 		needsURL:   true,
 		login: func(o *options, alias string, result *artifactregistry.ExchangeResult) error {
-			if err := loginSbt(o.registryURL, result.Token); err != nil {
+			written, skipped, err := loginSbt(o.registryURL, result.Token)
+			if err != nil {
 				return err
 			}
-			o.io.LogInfof("%s Configured sbt for %s. Token expires at %s.\n", o.io.Color().GreenCheck(), o.registry, result.ExpiresAt.Format(time.RFC3339))
+			// sbt compiles credentials.sbt once, when it loads the build, and does
+			// not watch the global base, so a refreshed token never reaches an sbt
+			// that is already running. sbt 2.x keeps a server running by default.
+			o.io.LogInfof("%s Configured sbt for %s. Wrote %s. Token expires at %s. An sbt shell or sbt 2.x server that is already running keeps the credentials it loaded: run `reload` in it, or `sbt shutdown`.\n",
+				o.io.Color().GreenCheck(), o.registry, describeSbtCredentialsFiles(written), result.ExpiresAt.Format(time.RFC3339))
+			if skipped != "" {
+				o.io.LogErrorf("%s %s is blank or a relative path, so glab skipped it. sbt 2.x resolves it against the directory the build runs in, and does not read the sbt 2.x file above. Set it to an absolute path, or unset it.\n",
+					o.io.Color().WarnIcon(), skipped)
+			}
 			return nil
 		},
 	},
@@ -243,10 +252,21 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			  an %[1]snpmRegistryServer%[1]s that matches %[1]s--registry%[1]s. Rewriting the
 			  file can change its formatting, like indentation, blank lines, and line endings.
 			- %[1]s--sbt%[1]s: writes a %[1]scredentials +=%[1]s line in
-			  %[1]s~/.sbt/1.0/credentials.sbt%[1]s, which assumes a stock sbt 1.x.
-			  An sbt that moved its global base, with
-			  %[1]s-Dsbt.global.base%[1]s or a newer default, does not read that
-			  file.
+			  %[1]s~/.sbt/1.0/credentials.sbt%[1]s, which sbt 1.x reads, and the
+			  same line in %[1]s2/credentials.sbt%[1]s in the sbt 2.x global base,
+			  which sbt 2.x reads. That base is %[1]s~/.config/sbt%[1]s, or
+			  %[1]s%%LOCALAPPDATA%%\sbt%[1]s on Windows, unless
+			  %[1]sSBT_CONFIG_HOME%[1]s or %[1]sXDG_CONFIG_HOME%[1]s moves it.
+			  On Windows it also writes
+			  %[1]s%%LOCALAPPDATA%%\sbt\credentials.sbt%[1]s. The %[1]ssbt.bat%[1]s
+			  of sbt 2.x points every build it starts, on either version, at
+			  that file only, even when %[1]sSBT_CONFIG_HOME%[1]s is set.
+			  The %[1]ssbt.version%[1]s in a project's
+			  %[1]sproject/build.properties%[1]s decides which file its build
+			  reads. An sbt started with any other %[1]s-Dsbt.global.base%[1]s
+			  reads none of them. An sbt shell or sbt 2.x server that is
+			  already running keeps the credentials it loaded, so run
+			  %[1]sreload%[1]s in it, or %[1]ssbt shutdown%[1]s, after you log in.
 
 			Token lifetime:
 
@@ -308,6 +328,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 				DOCKER_CONFIG: the directory holding Docker's config.json, written by --docker. Defaults to ~/.docker.
 				GRADLE_USER_HOME: the directory holding gradle.properties, written by --gradle. Defaults to ~/.gradle.
 				npm_config_userconfig: the .npmrc written by --npm. Defaults to ~/.npmrc.
+				SBT_CONFIG_HOME: the sbt 2.x global base; --sbt writes 2/credentials.sbt in it. Defaults to $XDG_CONFIG_HOME/sbt, else ~/.config/sbt. On Windows, the sbt.bat of sbt 2.x overrides it with %LOCALAPPDATA%\sbt. --sbt skips a blank or relative value of this variable and the next two.
+				XDG_CONFIG_HOME: used by --sbt for the sbt 2.x base when SBT_CONFIG_HOME is unset. Not read on Windows.
+				LOCALAPPDATA: on Windows, used by --sbt in place of XDG_CONFIG_HOME, and for the base the sbt.bat of sbt 2.x passes.
 			`),
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {

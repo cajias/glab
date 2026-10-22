@@ -59,6 +59,9 @@ func setHome(t *testing.T, dir string) {
 	t.Setenv("GRADLE_USER_HOME", "")
 	t.Setenv("npm_config_userconfig", "")
 	t.Setenv("NPM_CONFIG_USERCONFIG", "")
+	t.Setenv("SBT_CONFIG_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("LOCALAPPDATA", "")
 }
 
 // failingConfig wraps a config.Config and makes reads of failKey return err,
