@@ -314,6 +314,72 @@ func TestLogin_Yarn_RegistryMustHaveSchemeAndHost(t *testing.T) {
 	assert.Contains(t, err.Error(), "scheme and host")
 }
 
+// TestLogin_Sbt_SuccessMessageNamesEachFileAndItsVersion pins that the message
+// says which file each sbt version reads. sbt picks one from the sbt.version a
+// project declares, so a message naming only one file leaves a user on the
+// other version unable to tell where the token went.
+func TestLogin_Sbt_SuccessMessageNamesEachFileAndItsVersion(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	token := artifactregistrytest.MakeJWT(t, jwt.RegisteredClaims{
+		Issuer:    "https://gitlab.example.com",
+		Subject:   "gid://gitlab/User/1",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour).Truncate(time.Second)),
+	})
+	var gotBody wireRequest
+	srv, _ := tokenServer(t, token, &gotBody)
+	exec := newWriterTestExec(t, srv)
+
+	out, err := exec("--sbt --registry https://ar.example.com")
+	require.NoError(t, err)
+	assert.Contains(t, out.OutBuf.String(), "Configured sbt for https://ar.example.com. Wrote "+
+		sbtCredentialsPath(home)+" for sbt 1.x and "+sbt2CredentialsPath(home)+" for sbt 2.x.")
+	assert.Empty(t, out.ErrBuf.String())
+}
+
+// TestLogin_Sbt_SuccessMessageSaysARunningSbtKeepsItsCredentials pins the
+// reload hint. sbt compiles credentials.sbt when it loads the build, and sbt 2.x
+// keeps a server running for days by default, so without the hint a refreshed
+// login looks done while the next build still sends the expired token.
+func TestLogin_Sbt_SuccessMessageSaysARunningSbtKeepsItsCredentials(t *testing.T) {
+	setHome(t, t.TempDir())
+
+	token := artifactregistrytest.MakeJWT(t, jwt.RegisteredClaims{
+		Issuer:    "https://gitlab.example.com",
+		Subject:   "gid://gitlab/User/1",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour).Truncate(time.Second)),
+	})
+	var gotBody wireRequest
+	srv, _ := tokenServer(t, token, &gotBody)
+	exec := newWriterTestExec(t, srv)
+
+	out, err := exec("--sbt --registry https://ar.example.com")
+	require.NoError(t, err)
+	assert.Contains(t, out.OutBuf.String(), "An sbt shell or sbt 2.x server that is already running keeps the credentials it loaded: run `reload` in it, or `sbt shutdown`.")
+}
+
+// TestLogin_Sbt_WarnsAboutASkippedVariable pins the warning for a relative
+// SBT_CONFIG_HOME. sbt 2.x resolves it against the build directory, so the
+// sbt 2.x file the success line names is one that build never reads.
+func TestLogin_Sbt_WarnsAboutASkippedVariable(t *testing.T) {
+	setHome(t, t.TempDir())
+	t.Setenv("SBT_CONFIG_HOME", "relative")
+
+	token := artifactregistrytest.MakeJWT(t, jwt.RegisteredClaims{
+		Issuer:    "https://gitlab.example.com",
+		Subject:   "gid://gitlab/User/1",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour).Truncate(time.Second)),
+	})
+	var gotBody wireRequest
+	srv, _ := tokenServer(t, token, &gotBody)
+	exec := newWriterTestExec(t, srv)
+
+	out, err := exec("--sbt --registry https://ar.example.com")
+	require.NoError(t, err)
+	assert.Contains(t, out.ErrBuf.String(), "SBT_CONFIG_HOME is blank or a relative path, so glab skipped it.")
+}
+
 // TestLogin_Yarn_SuccessMessageClaimsOnlyTheToken pins that the message says a
 // token was written, not that Yarn was configured: Yarn keeps fetching from
 // its default registry until npmRegistryServer names this one.
