@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,10 +20,12 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/config"
+	"gitlab.com/gitlab-org/cli/internal/git"
 )
 
 func TestFactory_ResolveHostNameFromConfig(t *testing.T) {
 	// GIVEN
+	isolateHost(t)
 	cfg := config.NewFromString(heredoc.Doc(`
 		host: gitlab.example.com
 	`))
@@ -36,6 +39,7 @@ func TestFactory_ResolveHostNameFromConfig(t *testing.T) {
 
 func TestFactory_ResolveHostNameFromEnv(t *testing.T) {
 	// GIVEN
+	isolateHost(t)
 	t.Setenv("GITLAB_HOST", "gitlab.example.com")
 	cfg := config.NewFromString(heredoc.Doc(`
 		host: another.gitlab.example.com
@@ -50,6 +54,7 @@ func TestFactory_ResolveHostNameFromEnv(t *testing.T) {
 
 func TestFactory_ResolveToGitLabComByDefault(t *testing.T) {
 	// GIVEN
+	isolateHost(t)
 	cfg := config.NewBlankConfig()
 
 	// WHEN
@@ -92,6 +97,7 @@ func TestFactory_GitLabClientUsesCorrectHost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// GIVEN
+			isolateHost(t)
 			if tt.env != nil {
 				for k, v := range tt.env {
 					t.Setenv(k, v)
@@ -147,6 +153,83 @@ func TestFactory_ApiClientsReuseConnection(t *testing.T) {
 
 	// THEN
 	assert.Equal(t, int64(1), conns.Load())
+}
+
+func TestFactory_ConfigHostDoesNotOverrideRemote(t *testing.T) {
+	// GIVEN
+	isolateHost(t)
+	require.NoError(t, exec.Command("git", "remote", "add", "origin", "https://gitlab.com/owner/repo.git").Run())
+	cfg := config.NewFromString(heredoc.Doc(`
+		host: gitlab.example.com
+	`))
+
+	// WHEN
+	f := NewFactory(nil, false, cfg, api.BuildInfo{})
+
+	// THEN
+	assert.Equal(t, "gitlab.com", f.DefaultHostname())
+	repo, err := f.BaseRepo()
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab.com", repo.RepoHost())
+
+	require.NoError(t, f.RepoOverride("group/proj"))
+	repo, err = f.BaseRepo()
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab.com", repo.RepoHost())
+	assert.Equal(t, "group/proj", repo.FullName())
+}
+
+func TestFactory_EnvHostOverridesRemote(t *testing.T) {
+	// GIVEN
+	isolateHost(t)
+	require.NoError(t, exec.Command("git", "remote", "add", "origin", "https://gitlab.com/owner/repo.git").Run())
+	t.Setenv("GITLAB_HOST", "gitlab.example.com")
+	cfg := config.NewBlankConfig()
+
+	// WHEN
+	f := NewFactory(nil, false, cfg, api.BuildInfo{})
+
+	// THEN
+	assert.Equal(t, "gitlab.example.com", f.DefaultHostname())
+	_, err := f.BaseRepo()
+	require.ErrorContains(t, err, "GITLAB_HOST is currently set to gitlab.example.com")
+
+	require.NoError(t, f.RepoOverride("group/proj"))
+	repo, err := f.BaseRepo()
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab.example.com", repo.RepoHost())
+	assert.Equal(t, "group/proj", repo.FullName())
+}
+
+func TestFactory_CIHostOverridesRemote(t *testing.T) {
+	// GIVEN
+	isolateHost(t)
+	require.NoError(t, exec.Command("git", "remote", "add", "origin", "https://gitlab.com/owner/repo.git").Run())
+	t.Setenv("GLAB_ENABLE_CI_AUTOLOGIN", "true")
+	t.Setenv("GITLAB_CI", "true")
+	t.Setenv("CI_SERVER_FQDN", "gitlab.example.com")
+	cfg := config.NewBlankConfig()
+
+	// WHEN
+	f := NewFactory(nil, false, cfg, api.BuildInfo{})
+
+	// THEN
+	assert.Equal(t, "gitlab.example.com", f.DefaultHostname())
+	_, err := f.BaseRepo()
+	require.ErrorContains(t, err, "correspond to the CI_SERVER_FQDN environment variable")
+	require.ErrorContains(t, err, "CI_SERVER_FQDN is currently set to gitlab.example.com")
+}
+
+// isolateHost keeps the developer's environment and the glab checkout's own
+// remotes out of host resolution.
+func isolateHost(t *testing.T) {
+	t.Helper()
+
+	git.InitGitRepo(t)
+	t.Setenv("GLAB_ENABLE_CI_AUTOLOGIN", "")
+	for _, key := range config.EnvKeyEquivalence("host") {
+		t.Setenv(key, "")
+	}
 }
 
 func mustURL(t *testing.T, s string) *url.URL {

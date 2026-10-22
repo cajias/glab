@@ -152,7 +152,7 @@ var KeySchema = []KeyDef{
 		Default: "gitlab.com", UserSettable: true,
 		Aliases:     []string{"gitlab_host", "gitlab_uri", "gl_host"},
 		EnvVars:     []string{"GITLAB_HOST", "GITLAB_URI", "GL_HOST"},
-		Description: "Default GitLab hostname to use.",
+		Description: "Default GitLab hostname to use. Inside a repository, a Git remote on another host takes precedence over the config key. A host from an environment variable, such as 'GITLAB_HOST', always wins, and glab errors if no remote matches it.",
 	},
 	{
 		Name: "no_prompt", Scope: ScopeGlobal, Type: TypeBool,
