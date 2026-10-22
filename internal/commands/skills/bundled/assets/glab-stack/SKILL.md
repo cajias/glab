@@ -5,7 +5,7 @@ description: Manage stacked diffs and merge requests with the GitLab CLI. Use wh
 
 # glab stack
 
-`glab stack` is a feature of the [GitLab CLI](https://gitlab.com/gitlab-org/cli) for managing **stacked diffs** — a series of small, dependent merge requests that build on each other to deliver a larger feature. Each diff in the stack is a separate branch with its own MR. Reviewers see only the changes in their diff; you keep building while earlier changes are in review.
+`glab stack` is a feature of the [GitLab CLI](https://gitlab.com/gitlab-org/cli) for managing **stacked diffs**: small, dependent changes that build on each other to deliver a larger feature. Each diff in the stack is a separate branch with its own MR. Reviewers see only the changes in their diff; you keep building while earlier changes are in review.
 
 > **Status:** Experiment, released in GitLab CLI v1.42.0. The interface may change.
 
