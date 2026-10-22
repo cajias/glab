@@ -52,7 +52,7 @@ func (o Operation) String() string {
 
 // Coordinate is the exact package identity a check is performed against.
 type Coordinate struct {
-	Ecosystem string // "npm", "pypi", "maven", "gem"
+	Ecosystem string
 	Name      string
 	Version   string
 }

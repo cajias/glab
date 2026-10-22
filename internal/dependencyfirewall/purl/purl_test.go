@@ -28,6 +28,14 @@ func TestParse(t *testing.T) {
 		{"maven deep group", "pkg:maven/org.apache.commons/commons-lang3@3.14.0", TypeMaven, "org.apache.commons:commons-lang3", "3.14.0"},
 		{"gem", "pkg:gem/rails@7.1.3", TypeGem, "rails", "7.1.3"},
 		{"cargo", "pkg:cargo/serde@1.0.197", TypeCargo, "serde", "1.0.197"},
+		{"golang", "pkg:golang/github.com/pkg/errors@v0.9.1", TypeGolang, "github.com/pkg/errors", "v0.9.1"},
+		{"golang mixed case keeps case", "pkg:golang/github.com/BurntSushi/toml@v1.4.0", TypeGolang, "github.com/BurntSushi/toml", "v1.4.0"},
+		{"golang no namespace", "pkg:golang/example@v1.0.0", TypeGolang, "example", "v1.0.0"},
+		{"golang incompatible version", "pkg:golang/github.com/docker/docker@v20.10.7%2Bincompatible", TypeGolang, "github.com/docker/docker", "v20.10.7+incompatible"},
+		{"golang subpath and qualifiers ignored", "pkg:golang/github.com/Azure/go-autorest@v14.2.0%2Bincompatible?vcs_url=x#autorest/azure", TypeGolang, "github.com/Azure/go-autorest", "v14.2.0+incompatible"},
+		{"golang percent-encoded segment", "pkg:golang/gopkg.in/yaml%2Ev3@v3.0.1", TypeGolang, "gopkg.in/yaml.v3", "v3.0.1"},
+		{"golang pkg:// form", "pkg://golang/github.com/BurntSushi/toml@v1.4.0", TypeGolang, "github.com/BurntSushi/toml", "v1.4.0"},
+		{"golang @ in qualifier and subpath", "pkg:golang/github.com/BurntSushi/toml@v1.4.0?vcs_url=git%40github.com#a@b", TypeGolang, "github.com/BurntSushi/toml", "v1.4.0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -50,7 +50,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		Long: heredoc.Docf(`
 			Check a single package coordinate against the GitLab Dependency Firewall policy for the current project and report the outcome (allow, warning, blocked). No package manager binary is required.
 
-			Supported package URL (PURL) types are %[1]snpm%[1]s, %[1]spypi%[1]s, %[1]smaven%[1]s, %[1]sgem%[1]s, and %[1]scargo%[1]s. The PURL must include a version, for example %[1]spkg:npm/left-pad@1.3.0%[1]s.
+			Supported package URL (PURL) types are %[1]snpm%[1]s, %[1]spypi%[1]s, %[1]smaven%[1]s, %[1]sgem%[1]s, %[1]scargo%[1]s, and %[1]sgolang%[1]s. The PURL must include a version, for example %[1]spkg:npm/left-pad@1.3.0%[1]s. For %[1]sgolang%[1]s, the module path keeps its case, for example %[1]spkg:golang/github.com/BurntSushi/toml@v1.4.0%[1]s.
 
 			This command does not write to the CI log at %[1]s.gitlab/df/ci-log.json%[1]s, so %[1]sglab dependency-firewall ci-summary%[1]s does not include its result.
 
@@ -77,6 +77,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 			# Check a Cargo package version
 			glab dependency-firewall package pkg:cargo/serde@1.0.197
+
+			# Check a Go module version
+			glab dependency-firewall package pkg:golang/github.com/pkg/errors@v0.9.1
 		`),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
