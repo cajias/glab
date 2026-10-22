@@ -112,7 +112,7 @@ func NewCmdList(f cmdutils.Factory) *cobra.Command {
 				l.UpdatedBefore = new(updatedBeforeTime)
 			}
 
-			pipes, _, err := client.Pipelines.ListProjectPipelines(repo.FullName(), l)
+			pipes, resp, err := client.Pipelines.ListProjectPipelines(repo.FullName(), l)
 			if err != nil {
 				return err
 			}
@@ -121,6 +121,9 @@ func NewCmdList(f cmdutils.Factory) *cobra.Command {
 			title.RepoName = repo.FullName()
 			title.Page = int(l.Page)
 			title.CurrentPageTotal = len(pipes)
+			if resp != nil {
+				title.Total = int(resp.TotalItems)
+			}
 
 			if jsonOut {
 				return f.IO().PrintJSON(pipes)
