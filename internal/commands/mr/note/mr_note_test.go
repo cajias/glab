@@ -5,9 +5,11 @@ package note
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"git.sr.ht/~timofurrer/ugh"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -15,6 +17,7 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 	gitlabtesting "gitlab.com/gitlab-org/api/client-go/v3/testing"
 
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
@@ -25,6 +28,24 @@ func TestMain(m *testing.M) {
 
 func Test_NewCmdNote(t *testing.T) {
 	t.Parallel()
+
+	t.Run("help points to current discussion commands", func(t *testing.T) {
+		t.Parallel()
+
+		exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+			cmd := NewCmdNote(f)
+			cmd.SetOut(f.IO().StdOut)
+			return cmd
+		}, false)
+
+		output, err := exec("--help")
+		require.NoError(t, err)
+
+		help := strings.Join(strings.Fields(output.String()), " ")
+		assert.Contains(t, help, "Creates a comment by default. Use `glab mr note resolve` to resolve a discussion or `glab mr note reopen` to reopen one.")
+		assert.NotContains(t, help, "--resolve")
+		assert.NotContains(t, help, "--unresolve")
+	})
 
 	t.Run("--message flag specified", func(t *testing.T) {
 		t.Parallel()

@@ -51,6 +51,30 @@ func TestNewCmdList(t *testing.T) {
 	})
 }
 
+func TestNewCmdListHelpExamples(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		issueType issuable.IssueType
+		example   string
+	}{
+		{name: "issue", issueType: issuable.TypeIssue, example: "glab issue list --milestone release-2.0.0"},
+		{name: "incident", issueType: issuable.TypeIncident, example: "glab incident list --milestone release-2.0.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := cmdtest.SetupCmdForTest(t, func(f cmdutils.Factory) *cobra.Command {
+				cmd := NewCmdList(f, nil, tc.issueType)
+				cmd.SetOut(f.IO().StdOut)
+				return cmd
+			}, false)
+
+			output, err := exec("--help")
+			require.NoError(t, err)
+			assert.Contains(t, output.String(), tc.example)
+			assert.NotContains(t, output.String(), "--opened")
+		})
+	}
+}
+
 func TestIssueList_tty(t *testing.T) {
 	// NOTE: we need to force disable colors, otherwise we'd need ANSI sequences in our test output assertions.
 	t.Setenv("NO_COLOR", "true")

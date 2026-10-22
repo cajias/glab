@@ -24,8 +24,7 @@ func NewCmdNote(f cmdutils.Factory) *cobra.Command {
 		Aliases: []string{"comment"},
 		Short:   "Manage comments and discussions on a merge request.",
 		Long: heredoc.Docf(`
-			Creates a comment by default. Use %[1]s--resolve%[1]s or
-			%[1]s--unresolve%[1]s to manage existing discussion threads.
+			Creates a comment by default. Use %[1]sglab mr note resolve%[1]s to resolve a discussion or %[1]sglab mr note reopen%[1]s to reopen one.
 		`, "`"),
 		Args: cobra.MaximumNArgs(1),
 		Annotations: map[string]string{
