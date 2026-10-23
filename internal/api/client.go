@@ -191,7 +191,7 @@ func (c *Client) initializeHTTPClient() error {
 		rt = &customHeadersTransport{rt: rt, headers: c.customHeaders, allowedHosts: allowedHosts}
 	}
 
-	c.httpClient = &http.Client{Transport: rt}
+	c.httpClient = &http.Client{Transport: rt, CheckRedirect: refuseMethodChangingRedirect}
 	return nil
 }
 

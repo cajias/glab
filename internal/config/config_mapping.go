@@ -36,10 +36,16 @@ func schemaEnvVars(key string) []string {
 	return []string{strings.ToUpper(canonical)}
 }
 
+// CIAutologinEnabled reports whether CI auto-login is on, which is when
+// ciAutologinEnvOverrides decide where each key is read from.
+func CIAutologinEnabled() bool {
+	return os.Getenv("GLAB_ENABLE_CI_AUTOLOGIN") == "true" && os.Getenv("GITLAB_CI") == "true"
+}
+
 func EnvKeyEquivalence(key string) []string {
 	canonical := resolveAlias(key)
 
-	if os.Getenv("GLAB_ENABLE_CI_AUTOLOGIN") == "true" && os.Getenv("GITLAB_CI") == "true" {
+	if CIAutologinEnabled() {
 		dbg.Debug("CI auto-login is enabled because GLAB_ENABLE_CI_AUTOLOGIN and GITLAB_CI are both true. This enables auto-login using GitLab's predefined CI/CD variables and potentially authenticates with the CI_JOB_TOKEN")
 		if overrides, ok := ciAutologinEnvOverrides[canonical]; ok {
 			return overrides
