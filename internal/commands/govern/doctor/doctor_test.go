@@ -389,7 +389,7 @@ func TestCheckFallbackSync_GovernanceNotEnabledStaysHealthy(t *testing.T) {
 	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
 
 	assert.True(t, result.ok, "sessions in projects without governance are expected")
-	assert.Contains(t, result.message, "governance not enabled for 2 projects (gitlab.com/me/dotfiles, gitlab.com/gitlab-org/cli)")
+	assert.Contains(t, result.message, "governance not enabled for 2 projects (gitlab.com/me/dotfiles, gitlab.com/gitlab-org/cli), ask a group Owner or administrator to turn it on")
 }
 
 func TestCheckFallbackSync_ProjectNotFoundStaysHealthy(t *testing.T) {
