@@ -34,6 +34,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/claudehooks"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/fallbacksync"
+	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/opencodeplugin"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
@@ -220,8 +221,10 @@ func newSyncAllEnv(t *testing.T, hooksInstalled bool) *syncAllEnv {
 	t.Setenv("GLAB_CONFIG_DIR", filepath.Join(home, "glab"))
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	t.Setenv("OPENCODE_SESSION_ID", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
 
 	if hooksInstalled {
+		installOpenCodePlugin(t)
 		hooks := map[string][]claudehooks.HookGroup{}
 		claudehooks.AddHook(hooks, "Stop", claudehooks.StopHookCommand)
 		hooksJSON, err := json.Marshal(hooks)
@@ -700,8 +703,17 @@ func TestSyncAll_KeepsCompletedOpenCodeSession(t *testing.T) {
 	assert.Equal(t, "/opencode/that/was/removed", meta.Transcript)
 }
 
+func installOpenCodePlugin(t *testing.T) {
+	t.Helper()
+	path, err := opencodeplugin.Path()
+	require.NoError(t, err)
+	_, err = opencodeplugin.Install(path)
+	require.NoError(t, err)
+}
+
 func TestSyncAll_HooksRemovedPausesOnlyClaudeCode(t *testing.T) {
 	env := newSyncAllEnv(t, false)
+	installOpenCodePlugin(t)
 	env.writeClaudeSession(t, "sess-1", "my-group/my-project", "toolu_1")
 	env.writeOpenCodeSession(t, "ses_1", "call_1")
 
@@ -710,6 +722,55 @@ func TestSyncAll_HooksRemovedPausesOnlyClaudeCode(t *testing.T) {
 
 	assert.Equal(t, []string{"ses_1"}, env.fake.sessionsCreated)
 	assert.Equal(t, []string{"claude-code: the glab Stop hook is not installed in ~/.claude/settings.json"}, readStatus(t).Paused)
+}
+
+func TestSyncAll_PluginRemovedPausesOnlyOpenCode(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	path, err := opencodeplugin.Path()
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(path))
+	env.writeClaudeSession(t, "sess-1", "my-group/my-project", "toolu_1")
+	require.NoError(t, writeSessionMeta("ses_1", sessionMeta{
+		AgentType:         "opencode",
+		PathWithNamespace: "my-group/my-project",
+		Host:              testHost,
+		Transcript:        "/bin/sh",
+	}))
+
+	// The executor has no expectations, so running opencode export fails the test.
+	_, err = env.exec("--all")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"sess-1"}, env.fake.sessionsCreated)
+	assert.Equal(t, []string{"opencode: the glab OpenCode plugin is not installed in ~/.config/opencode/plugins/glab-govern.js"}, readStatus(t).Paused)
+}
+
+func TestOpenCodePausedReason(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	path, err := opencodeplugin.Path()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+
+	for name, content := range map[string]string{
+		"out of date":           "// Installed by glab govern setup.\n// an older version\n",
+		"not installed by glab": "// the user's own plugin\n",
+	} {
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+		reason, err := openCode{}.pausedReason()
+		require.NoError(t, err)
+		if name == "out of date" {
+			assert.Empty(t, reason, "an older plugin still syncs")
+		} else {
+			assert.Equal(t, "the glab OpenCode plugin is not installed in ~/.config/opencode/plugins/glab-govern.js", reason)
+		}
+	}
+}
+
+func TestOpenCodePausedReason_Windows(t *testing.T) {
+	reason, err := openCodePausedReason("windows")
+	require.NoError(t, err)
+	assert.Equal(t, "the OpenCode plugin is not supported on Windows", reason)
 }
 
 func TestSyncAll_UnsupportedAgent(t *testing.T) {
@@ -751,7 +812,7 @@ func (e *syncAllEnv) writeOpenCodeSession(t *testing.T, sessionID string, callID
 	}))
 	export := openCodeExportJSON(t, time.Now(), callIDs...)
 	e.mExec.EXPECT().
-		ExecWithIO(gomock.Any(), binary, []string{"export", sessionID}, nil, nil, gomock.Any(), gomock.Any()).
+		ExecWithIO(gomock.Any(), binary, []string{"session", "export", "--standalone", sessionID}, nil, nil, gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ string, _, _ []string, _ io.Reader, stdout, _ io.Writer) error {
 			_, err := stdout.Write(export)
 			return err
@@ -819,7 +880,7 @@ func (e *syncAllEnv) writeUnfoundOpenCodeSession(t *testing.T, sessionID string,
 	require.NoError(t, err)
 	require.NoError(t, os.Chtimes(mp, recorded, recorded))
 	e.mExec.EXPECT().
-		ExecWithIO(gomock.Any(), "/bin/sh", []string{"export", sessionID}, nil, nil, gomock.Any(), gomock.Any()).
+		ExecWithIO(gomock.Any(), "/bin/sh", []string{"session", "export", "--standalone", sessionID}, nil, nil, gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ string, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
 			_, _ = io.WriteString(stderr, "Error: Session not found: "+sessionID)
 			return errors.New("exit status 1")
@@ -991,6 +1052,14 @@ func TestOpenCodeTranscript_Read(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mExec := cmdtest.NewMockExecutor(ctrl)
 	mExec.EXPECT().LookPath("opencode").Return("/usr/local/bin/opencode", nil)
+	// OpenCode 1 has no session export, so it prints its help and fails.
+	mExec.EXPECT().
+		ExecWithIO(gomock.Any(), "/usr/local/bin/opencode", []string{"session", "export", "--standalone", "ses_1"}, nil, nil, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
+			_, _ = io.WriteString(stderr, "opencode session\n\nmanage sessions\n")
+			return errors.New("exit status 1")
+		}).
+		Times(1)
 	mExec.EXPECT().
 		ExecWithIO(gomock.Any(), "/usr/local/bin/opencode", []string{"export", "ses_1"}, nil, nil, gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ string, _, _ []string, _ io.Reader, stdout, stderr io.Writer) error {
@@ -1030,7 +1099,7 @@ func TestOpenCodeTranscript_Read(t *testing.T) {
 func TestOpenCodeTranscript_ExportFails(t *testing.T) {
 	t.Parallel()
 
-	export := func(t *testing.T, stderrText string) error {
+	export := func(t *testing.T, stderrText string, attempts int) error {
 		t.Helper()
 		mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
 		mExec.EXPECT().
@@ -1038,7 +1107,8 @@ func TestOpenCodeTranscript_ExportFails(t *testing.T) {
 			DoAndReturn(func(_ context.Context, _ string, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
 				_, _ = io.WriteString(stderr, stderrText)
 				return errors.New("exit status 1")
-			})
+			}).
+			Times(attempts)
 
 		src := &openCodeTranscript{sessionID: "ses_1", binary: "/bin/opencode", executor: mExec}
 		_, cursor, err := src.read(t.Context(), 5)
@@ -1048,14 +1118,14 @@ func TestOpenCodeTranscript_ExportFails(t *testing.T) {
 
 	t.Run("session not found", func(t *testing.T) {
 		t.Parallel()
-		err := export(t, "Error: Session not found: ses_1")
+		err := export(t, "Error: Session not found: ses_1", 1)
 		require.ErrorIs(t, err, errAgentSessionNotFound)
 		require.NotErrorIs(t, err, errTranscriptNotFound, "the job may see a different OpenCode data directory, so this is not proof of deletion")
 	})
 
 	t.Run("other failure", func(t *testing.T) {
 		t.Parallel()
-		err := export(t, "Error: database is locked")
+		err := export(t, "Error: database is locked", len(openCodeExportCommands))
 		require.Error(t, err)
 		require.NotErrorIs(t, err, errTranscriptNotFound, "only a deleted session may make --all forget it")
 		assert.Contains(t, err.Error(), "database is locked")
@@ -1105,6 +1175,145 @@ func fakeOpenCode(t *testing.T, script string) string {
 	return path
 }
 
+// openCodeV2ExportJSON returns an OpenCode 2 session export, shaped like a
+// real one: a skipped first prompt, a completed shell call, a failed read, a
+// call aborted before it ran, a call still streaming, and a block glab does not
+// know.
+func openCodeV2ExportJSON(t *testing.T, created time.Time) []byte {
+	t.Helper()
+
+	ms := func(d time.Duration) int64 { return created.Add(d).UnixMilli() }
+	data, err := json.Marshal(map[string]any{
+		"info": map[string]any{
+			"id":       "ses_2",
+			"location": map[string]any{"directory": "/home/me/project"},
+			"time":     map[string]any{"created": ms(0), "updated": ms(10 * time.Second), "idle": ms(10 * time.Second)},
+		},
+		"messages": []map[string]any{
+			{"id": "msg_0", "type": "user", "time": map[string]any{"created": ms(0)}, "text": "<command>/init</command>"},
+			{"id": "msg_1", "type": "user", "time": map[string]any{"created": ms(0)}, "text": "explain each file", "files": []any{}, "agents": []any{}},
+			{
+				"id": "msg_2", "type": "assistant", "time": map[string]any{"created": ms(time.Second), "completed": ms(5 * time.Second)},
+				"content": []map[string]any{
+					{"type": "text", "text": "I'll look at the files."},
+					{
+						"type": "tool", "id": "call_ls", "name": "shell",
+						"state": map[string]any{"status": "completed", "input": map[string]any{"command": "ls -la"}, "content": []any{map[string]any{"type": "text"}}},
+						"time":  map[string]any{"created": ms(2 * time.Second), "ran": ms(2*time.Second + 100*time.Millisecond), "completed": ms(2*time.Second + 300*time.Millisecond)},
+					},
+					{
+						"type": "tool", "id": "call_read", "name": "read",
+						"state": map[string]any{"status": "error", "input": map[string]any{"path": "missing.md"}, "error": map[string]any{"type": "unknown", "message": "File not found"}},
+						"time":  map[string]any{"created": ms(3 * time.Second), "ran": ms(3 * time.Second), "completed": ms(3*time.Second + 50*time.Millisecond)},
+					},
+					{"type": "future-block", "content": "a shape glab does not know"},
+					{
+						"type": "tool", "id": "call_edit", "name": "edit",
+						"state": map[string]any{"status": "error", "input": map[string]any{}, "error": map[string]any{"type": "aborted"}},
+						"time":  map[string]any{"created": ms(4 * time.Second)},
+					},
+					{
+						"type": "tool", "id": "call_write", "name": "write",
+						"state": map[string]any{"status": "streaming", "input": `{"path": "no`},
+						"time":  map[string]any{"created": ms(5 * time.Second)},
+					},
+				},
+			},
+			{"id": "msg_4", "type": "idle", "time": map[string]any{"created": ms(9 * time.Second)}},
+			{"id": "msg_3", "type": "outcome", "outcome": map[string]any{"type": "completed"}, "time": map[string]any{"created": ms(10 * time.Second)}},
+		},
+	})
+	require.NoError(t, err)
+	return data
+}
+
+func TestOpenCodeTranscript_ReadOpenCode2(t *testing.T) {
+	t.Parallel()
+
+	created := time.UnixMilli(time.Now().Add(-time.Hour).UnixMilli())
+	export := openCodeV2ExportJSON(t, created)
+	mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
+	mExec.EXPECT().
+		ExecWithIO(gomock.Any(), "/opt/opencode", []string{"session", "export", "--standalone", "ses_2"}, nil, nil, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _, _ []string, _ io.Reader, stdout, _ io.Writer) error {
+			_, err := stdout.Write(export)
+			return err
+		}).
+		Times(1)
+	src := &openCodeTranscript{sessionID: "ses_2", binary: "/opt/opencode", executor: mExec}
+
+	data, cursor, err := src.read(t.Context(), 0)
+	require.NoError(t, err)
+	assert.Equal(t, "explain each file", data.Goal, "a command prompt is not the goal")
+	assert.Equal(t, created, data.StartedAt)
+	assert.Equal(t, int64(4), cursor)
+
+	require.Len(t, data.ToolCalls, 4)
+	assert.Equal(t, "call_ls", data.ToolCalls[0].ID)
+	assert.Equal(t, "shell", data.ToolCalls[0].Name)
+	assert.JSONEq(t, `{"command":"ls -la"}`, string(data.ToolCalls[0].Input))
+	assert.Equal(t, created.Add(2*time.Second+100*time.Millisecond), data.ToolCalls[0].Timestamp, "a call starts when it ran")
+	assert.Equal(t, created.Add(3*time.Second), data.ToolCalls[1].Timestamp)
+	assert.Equal(t, created.Add(4*time.Second), data.ToolCalls[2].Timestamp, "a call that never ran starts when it was created")
+	assert.Equal(t, "call_write", data.ToolCalls[3].ID)
+	assert.Nil(t, data.ToolCalls[3].Input, "a streaming call's partial input is not recorded")
+
+	require.Len(t, data.ToolResults, 3, "a streaming call has no result yet")
+	assert.False(t, data.ToolResults[0].IsError)
+	assert.Equal(t, 200*time.Millisecond, data.ToolResults[0].Duration)
+	assert.True(t, data.ToolResults[1].IsError)
+	assert.Equal(t, "File not found", data.ToolResults[1].Error)
+	assert.Equal(t, 50*time.Millisecond, data.ToolResults[1].Duration)
+	assert.Equal(t, "aborted", data.ToolResults[2].Error, "an error without a message reports its type")
+
+	data, cursor, err = src.read(t.Context(), 1)
+	require.NoError(t, err)
+	assert.Empty(t, data.Goal)
+	require.Len(t, data.ToolCalls, 3)
+	assert.Equal(t, "call_read", data.ToolCalls[0].ID)
+	assert.Equal(t, int64(4), cursor)
+
+	last, err := src.lastActivity(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, created.Add(10*time.Second), last)
+}
+
+func TestOpenCodeTranscript_SessionNotFoundStopsFallback(t *testing.T) {
+	t.Parallel()
+
+	mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
+	mExec.EXPECT().
+		ExecWithIO(gomock.Any(), "/opt/opencode", []string{"session", "export", "--standalone", "ses_gone"}, nil, nil, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
+			_, _ = io.WriteString(stderr, "Session not found: ses_gone\n")
+			return errors.New("exit status 1")
+		}).
+		Times(1)
+	src := &openCodeTranscript{sessionID: "ses_gone", binary: "/opt/opencode", executor: mExec}
+
+	_, _, err := src.read(t.Context(), 0)
+	require.ErrorIs(t, err, errAgentSessionNotFound)
+}
+
+func TestOpenCodeTranscript_ReportsBothExportFailures(t *testing.T) {
+	t.Parallel()
+
+	mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
+	mExec.EXPECT().
+		ExecWithIO(gomock.Any(), "/opt/opencode", gomock.Any(), nil, nil, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, args []string, _ []string, _ io.Reader, _, stderr io.Writer) error {
+			_, _ = io.WriteString(stderr, "broken "+args[0])
+			return errors.New("exit status 2")
+		}).
+		Times(2)
+	src := &openCodeTranscript{sessionID: "ses_1", binary: "/opt/opencode", executor: mExec}
+
+	_, _, err := src.read(t.Context(), 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "opencode session export --standalone ses_1: exit status 2: broken session")
+	assert.Contains(t, err.Error(), "opencode export ses_1: exit status 2: broken export")
+}
+
 func TestOpenCodeTranscript_ChildKeepingOutputOpen(t *testing.T) {
 	t.Parallel()
 
@@ -1133,6 +1342,23 @@ sleep 20`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out after 300ms")
 	assert.Less(t, time.Since(start), 5*time.Second, "a hung export must not block the run")
+}
+
+func TestOpenCodeTranscript_TimeoutStopsFallback(t *testing.T) {
+	t.Parallel()
+
+	mExec := cmdtest.NewMockExecutor(gomock.NewController(t))
+	mExec.EXPECT().
+		ExecWithIO(gomock.Any(), "/opt/opencode", gomock.Any(), nil, nil, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ string, _, _ []string, _ io.Reader, _, _ io.Writer) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}).
+		Times(1)
+	src := &openCodeTranscript{sessionID: "ses_1", binary: "/opt/opencode", executor: mExec, timeout: 50 * time.Millisecond}
+
+	_, _, err := src.read(t.Context(), 0)
+	require.ErrorIs(t, err, errOpenCodeExportTimedOut)
 }
 
 // A hook must finish quickly, so unlike a sync run directly it does not wait

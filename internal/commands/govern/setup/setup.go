@@ -17,6 +17,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/claudehooks"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/fallbacksync"
+	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/opencodeplugin"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
@@ -55,15 +56,16 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 			- Stop hook in %[1]s~/.claude/settings.json%[1]s, which syncs the session after every agent turn.
 			- SessionEnd hook in %[1]s~/.claude/settings.json%[1]s, which syncs the session and marks it completed.
+			- With %[1]s--agents opencode%[1]s, a plugin for OpenCode 1.4 or later in %[1]s~/.config/opencode/plugins/glab-govern.js%[1]s (under %[1]s$XDG_CONFIG_HOME%[1]s when it is set), which syncs the OpenCode session every time it goes idle. OpenCode loads it for all your sessions, in every project. Later setups keep it up to date, and only %[1]s--uninstall%[1]s removes it.
 			- Fallback periodic sync: a launchd agent (%[1]s~/Library/LaunchAgents/com.gitlab.glab-govern-audit-sync.plist%[1]s) on macOS, or a systemd user timer (%[1]s~/.config/systemd/user/glab-govern-audit-sync.timer%[1]s) on Linux.
 
-			The fallback periodic sync runs %[1]sglab govern audit sync --all%[1]s every 30 minutes, and on Linux also 5 minutes after boot, until you remove it. It uploads anything the hooks missed for sessions they have already recorded (see %[1]sglab govern audit sync --help%[1]s for what is uploaded), using your stored glab credentials and the glab configuration directory in use when you run setup. Each session goes to the project and host of the Git repository the agent ran in. It also marks sessions completed once they have been idle for 24 hours. It pauses sessions from agents that use hooks while those hooks are not installed. Pass %[1]s--no-fallback-sync%[1]s to install only the hooks. The fallback periodic sync is not available on Windows.
+			The fallback periodic sync runs %[1]sglab govern audit sync --all%[1]s every 30 minutes, and on Linux also 5 minutes after boot, until you remove it. It uploads anything the hooks missed for sessions they have already recorded (see %[1]sglab govern audit sync --help%[1]s for what is uploaded), using your stored glab credentials and the glab configuration directory in use when you run setup. Each session goes to the project and host of the Git repository the agent ran in. It also marks sessions completed once they have been idle for 24 hours. It pauses sessions from agents that use hooks while those hooks are not installed. Pass %[1]s--no-fallback-sync%[1]s to install only the hooks and plugin. The fallback periodic sync is not available on Windows.
 
 			Pass %[1]s--agents codex,cursor%[1]s to also sync Codex and Cursor sessions. glab installs no hooks for those agents: the fallback periodic sync finds their sessions by scanning their transcripts in %[1]s~/.codex/sessions%[1]s and %[1]s~/.cursor/projects%[1]s, including sessions from before you enabled them, and uploads those from repositories on GitLab hosts you are logged in to with glab. Their sessions are marked completed once they have been idle for 24 hours. Run setup again with a different %[1]s--agents%[1]s list to change which agents are synced, or with %[1]s--agents ""%[1]s to stop. Every setup prompt names the agents that are synced, and %[1]s--uninstall%[1]s also stops syncing them.
 
 			Safe to run multiple times: existing hooks are not duplicated, and an existing fallback periodic sync job is replaced. Run %[1]sglab govern doctor%[1]s afterwards to verify the setup.
 
-			Run %[1]sglab govern setup --uninstall%[1]s to remove everything setup installed: the hooks, the fallback periodic sync job, and Codex and Cursor session syncing. Other hooks and settings in %[1]s~/.claude/settings.json%[1]s are left unchanged.
+			Run %[1]sglab govern setup --uninstall%[1]s to remove everything setup installed: the hooks, the OpenCode plugin, the fallback periodic sync job, and Codex and Cursor session syncing. Other hooks and settings in %[1]s~/.claude/settings.json%[1]s, and other OpenCode plugins, are left unchanged.
 		`, "`") + text.ExperimentalString,
 		Example: heredoc.Doc(`
 			# Configure hooks and the fallback periodic sync
@@ -71,6 +73,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 			# Configure only the hooks
 			$ glab govern setup --no-fallback-sync
+
+			# Also sync OpenCode sessions
+			$ glab govern setup --agents opencode
 
 			# Also sync Codex and Cursor sessions through the fallback periodic sync
 			$ glab govern setup --agents codex,cursor
@@ -85,7 +90,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.agentsChanged = cmd.Flags().Changed("agents")
-			if err := validateAgents(opts.agents); err != nil {
+			if err := validateAgents(opts.agents, opts.noFallbackSync); err != nil {
 				return err
 			}
 			if opts.uninstall {
@@ -99,19 +104,22 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	fl.BoolVarP(&opts.yes, "yes", "y", false, "Skip confirmation prompt.")
 	fl.BoolVar(&opts.noFallbackSync, "no-fallback-sync", false, "Install only the hooks, without the fallback periodic sync job.")
 	fl.BoolVar(&opts.uninstall, "uninstall", false, "Remove the hooks and the fallback periodic sync job, and stop syncing Codex and Cursor sessions.")
-	fl.StringSliceVar(&opts.agents, "agents", nil, fmt.Sprintf("Also sync sessions from these agents, found by the fallback periodic sync without hooks: %s. Replaces the agents enabled by an earlier run. Multiple agents can be comma-separated or specified by repeating the flag.", strings.Join(fallbacksync.DiscoverableAgents, ", ")))
+	fl.StringSliceVar(&opts.agents, "agents", nil, fmt.Sprintf("Also sync sessions from these agents: %s. opencode installs a plugin that runs for all your OpenCode sessions, and stays installed until --uninstall. The others are found by the fallback periodic sync without hooks, and replace those enabled by an earlier run. Multiple agents can be comma-separated or specified by repeating the flag.", strings.Join(supportedAgents(), ", ")))
 	cmd.MarkFlagsMutuallyExclusive("uninstall", "no-fallback-sync")
-	cmd.MarkFlagsMutuallyExclusive("agents", "no-fallback-sync")
 	cmd.MarkFlagsMutuallyExclusive("agents", "uninstall")
 
 	return cmd
 }
 
-func setupPrompt(goos string, noFallbackSync bool, agents []string) string {
-	prompt := "glab will install agent session hooks in ~/.claude/settings.json"
-	if !noFallbackSync {
-		prompt += fmt.Sprintf(" and %s that syncs sessions in the background every %d minutes, replacing any existing job", fallbacksync.Description(goos), int(fallbacksync.Interval.Minutes()))
+func setupPrompt(goos string, noFallbackSync bool, agents []string, openCodePlugin string) string {
+	items := []string{"agent session hooks in ~/.claude/settings.json"}
+	if openCodePlugin != "" {
+		items = append(items, "an OpenCode plugin in "+opencodeplugin.Display(openCodePlugin)+" that runs for all your OpenCode sessions")
 	}
+	if !noFallbackSync {
+		items = append(items, fmt.Sprintf("%s that syncs sessions in the background every %d minutes, replacing any existing job", fallbacksync.Description(goos), int(fallbacksync.Interval.Minutes())))
+	}
+	prompt := "glab will install " + joinAnd(items)
 	prompt += ". Agent sessions will be uploaded to the GitLab project of the repository they run in, including your prompts and each tool call's arguments, such as commands and file edits"
 	if !noFallbackSync && len(agents) > 0 {
 		prompt += fmt.Sprintf(". The job will also upload your %s sessions the same way, from the last 89 days and from now on", strings.Join(agents, " and "))
@@ -119,24 +127,61 @@ func setupPrompt(goos string, noFallbackSync bool, agents []string) string {
 	return prompt + ". Do you wish to continue?"
 }
 
-func uninstallPrompt(hooks bool, agents []string) string {
-	prompt := "glab will remove the fallback periodic sync job"
+func uninstallPrompt(hooks bool, openCodePlugin string, agents []string) string {
+	var items []string
 	if hooks {
-		prompt = "glab will remove the agent session hooks from ~/.claude/settings.json and the fallback periodic sync job"
+		items = append(items, "the agent session hooks from ~/.claude/settings.json")
 	}
+	if openCodePlugin != "" {
+		items = append(items, "the OpenCode plugin at "+opencodeplugin.Display(openCodePlugin))
+	}
+	items = append(items, "the fallback periodic sync job")
+	prompt := "glab will remove " + joinAnd(items)
 	if len(agents) > 0 {
-		prompt += fmt.Sprintf(", and stop syncing %s sessions", strings.Join(agents, " and "))
+		prompt += fmt.Sprintf(". It will also stop syncing %s sessions", strings.Join(agents, " and "))
 	}
 	return prompt + ". Do you wish to continue?"
 }
 
-func validateAgents(agents []string) error {
+func joinAnd(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + ", and " + items[len(items)-1]
+	}
+}
+
+func supportedAgents() []string {
+	return append([]string{"opencode"}, fallbacksync.DiscoverableAgents...)
+}
+
+func validateAgents(agents []string, noFallbackSync bool) error {
 	for _, a := range agents {
-		if !slices.Contains(fallbacksync.DiscoverableAgents, a) {
-			return cmdutils.FlagError{Err: fmt.Errorf("unsupported agent %q in --agents; use %s", a, strings.Join(fallbacksync.DiscoverableAgents, ", "))}
+		switch {
+		case !slices.Contains(supportedAgents(), a):
+			return cmdutils.FlagError{Err: fmt.Errorf("unsupported agent %q in --agents; use %s", a, strings.Join(supportedAgents(), ", "))}
+		case noFallbackSync && slices.Contains(fallbacksync.DiscoverableAgents, a):
+			return cmdutils.FlagError{Err: fmt.Errorf("%s sessions are only synced by the fallback periodic sync, so --agents %s cannot be used with --no-fallback-sync", a, a)}
 		}
 	}
 	return nil
+}
+
+// discoveredFrom returns the agents in agents that the fallback periodic sync
+// discovers.
+func discoveredFrom(agents []string) []string {
+	discovered := []string{}
+	for _, a := range agents {
+		if slices.Contains(fallbacksync.DiscoverableAgents, a) && !slices.Contains(discovered, a) {
+			discovered = append(discovered, a)
+		}
+	}
+	return discovered
 }
 
 func confirm(ctx context.Context, opts *options, prompt string) (bool, error) {
@@ -160,15 +205,25 @@ func runSetup(ctx context.Context, opts *options) error {
 
 	// The agents already enabled are named too, because re-running setup
 	// brings their discovery back with the job.
-	agents := opts.agents
-	if !opts.agentsChanged {
+	// --agents opencode alone leaves discovery as it is.
+	agents := discoveredFrom(opts.agents)
+	changeDiscovery := opts.agentsChanged && (len(opts.agents) == 0 || len(agents) > 0)
+	if !changeDiscovery {
 		enabled, err := fallbacksync.DiscoveredAgents()
 		if err != nil {
 			return fmt.Errorf("could not read which agents are synced: %w", err)
 		}
 		agents = enabled
 	}
-	confirmed, err := confirm(ctx, opts, setupPrompt(opts.goos, opts.noFallbackSync, agents))
+	requested := slices.Contains(opts.agents, "opencode")
+	openCodePlugin, err := openCodePluginToInstall(opts.goos, requested)
+	switch {
+	case err != nil && requested:
+		return err
+	case err != nil:
+		io.LogErrorf("warning: %v, so it was not updated\n", err)
+	}
+	confirmed, err := confirm(ctx, opts, setupPrompt(opts.goos, opts.noFallbackSync, agents, openCodePlugin))
 	if err != nil {
 		return err
 	}
@@ -183,6 +238,13 @@ func runSetup(ctx context.Context, opts *options) error {
 	}
 	io.LogInfof("%s Hooks installed in ~/%s\n", c.GreenCheck(), claudehooks.SettingsFile)
 
+	if openCodePlugin != "" {
+		if _, err := opencodeplugin.Install(openCodePlugin); err != nil {
+			return fmt.Errorf("failed to install the OpenCode plugin: %w", err)
+		}
+		io.LogInfof("%s OpenCode plugin installed in %s\n", c.GreenCheck(), opencodeplugin.Display(openCodePlugin))
+	}
+
 	if !opts.noFallbackSync {
 		if err := installFallbackSync(ctx, opts); err != nil {
 			io.LogErrorf("warning: could not install fallback periodic sync: %v\nAny previous fallback periodic sync job has been removed. Run 'glab govern setup' again once this is fixed.\n", err)
@@ -191,12 +253,12 @@ func runSetup(ctx context.Context, opts *options) error {
 		}
 	}
 
-	if opts.agentsChanged {
-		if err := fallbacksync.SetDiscoveredAgents(opts.agents); err != nil {
+	if changeDiscovery {
+		if err := fallbacksync.SetDiscoveredAgents(agents); err != nil {
 			return fmt.Errorf("failed to enable session discovery: %w", err)
 		}
-		if len(opts.agents) > 0 {
-			io.LogInfof("%s Syncing sessions from: %s.\n", c.GreenCheck(), strings.Join(opts.agents, ", "))
+		if len(agents) > 0 {
+			io.LogInfof("%s Syncing sessions from: %s.\n", c.GreenCheck(), strings.Join(agents, ", "))
 		} else {
 			io.LogInfo("Session discovery turned off.")
 		}
@@ -225,18 +287,22 @@ func runUninstall(ctx context.Context, opts *options) error {
 	// An unreadable settings file must not block removing the rest, but the
 	// user is told before confirming that its hooks will stay.
 	hooksPresent, hooksErr := claudeHooksInstalled(opts)
-	if !jobPresent && !hooksPresent && len(agents) == 0 && !unreadable {
-		if hooksErr != nil {
-			return fmt.Errorf("could not read agent session hooks: %w", hooksErr)
+	openCodePlugin, pluginErr := installedOpenCodePlugin()
+	if !jobPresent && !hooksPresent && openCodePlugin == "" && len(agents) == 0 && !unreadable {
+		if hooksErr != nil || pluginErr != nil {
+			return errors.Join(uninstallReadErrors(hooksErr, pluginErr)...)
 		}
-		io.LogInfo("Nothing to uninstall: no hooks or fallback periodic sync job found.")
+		io.LogInfo("Nothing to uninstall: no hooks, OpenCode plugin, or fallback periodic sync job found.")
 		return nil
 	}
 	if hooksErr != nil {
 		io.LogErrorf("warning: could not read ~/%s, so its hooks will not be removed: %v\n", claudehooks.SettingsFile, hooksErr)
 	}
+	if pluginErr != nil {
+		io.LogErrorf("warning: could not check for the OpenCode plugin, so it will not be removed: %v\n", pluginErr)
+	}
 
-	confirmed, err := confirm(ctx, opts, uninstallPrompt(hooksPresent, agents))
+	confirmed, err := confirm(ctx, opts, uninstallPrompt(hooksPresent, openCodePlugin, agents))
 	if err != nil {
 		return err
 	}
@@ -254,6 +320,18 @@ func runUninstall(ctx context.Context, opts *options) error {
 	}
 	if len(agents) > 0 {
 		io.LogInfof("%s Stopped syncing %s sessions.\n", c.GreenCheck(), strings.Join(agents, ", "))
+	}
+
+	if openCodePlugin != "" {
+		removed, err := opencodeplugin.Remove(openCodePlugin)
+		switch {
+		case err != nil:
+			return fmt.Errorf("failed to remove the OpenCode plugin: %w", err)
+		case removed:
+			io.LogInfof("%s OpenCode plugin removed from %s\n", c.GreenCheck(), opencodeplugin.Display(openCodePlugin))
+		default:
+			io.LogInfo("No OpenCode plugin found.")
+		}
 	}
 
 	if jobPresent {
@@ -279,10 +357,60 @@ func runUninstall(ctx context.Context, opts *options) error {
 			io.LogInfo("No agent session hooks found.")
 		}
 	}
+	return errors.Join(uninstallReadErrors(hooksErr, pluginErr)...)
+}
+
+// uninstallReadErrors reports what uninstall left in place because it could
+// not be read.
+func uninstallReadErrors(hooksErr, pluginErr error) []error {
+	var errs []error
 	if hooksErr != nil {
-		return fmt.Errorf("the agent session hooks were not removed; fix ~/%s and run 'glab govern setup --uninstall' again: %w", claudehooks.SettingsFile, hooksErr)
+		errs = append(errs, fmt.Errorf("the agent session hooks were not removed; fix ~/%s and run 'glab govern setup --uninstall' again: %w", claudehooks.SettingsFile, hooksErr))
 	}
-	return nil
+	if pluginErr != nil {
+		errs = append(errs, fmt.Errorf("the OpenCode plugin may still be installed; fix it and run 'glab govern setup --uninstall' again: %w", pluginErr))
+	}
+	return errs
+}
+
+// openCodePluginToInstall returns where to install the OpenCode plugin when
+// --agents opencode asks for it or glab installed it earlier, or an empty
+// string when there is nothing to install.
+func openCodePluginToInstall(goos string, requested bool) (string, error) {
+	if goos == "windows" {
+		if requested {
+			return "", errors.New("the OpenCode plugin is not supported on Windows")
+		}
+		return "", nil
+	}
+	path, err := opencodeplugin.Path()
+	if err != nil {
+		return "", err
+	}
+	state, err := opencodeplugin.Check(path)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("could not read the OpenCode plugin: %w", err)
+	case state == opencodeplugin.Foreign && requested:
+		return "", opencodeplugin.ForeignError(path)
+	case state == opencodeplugin.Current, state == opencodeplugin.Outdated, requested:
+		return path, nil
+	}
+	return "", nil
+}
+
+// installedOpenCodePlugin returns the path of the OpenCode plugin glab
+// installed, or an empty string when there is none.
+func installedOpenCodePlugin() (string, error) {
+	path, err := opencodeplugin.Path()
+	if err != nil {
+		return "", err
+	}
+	state, err := opencodeplugin.Check(path)
+	if err != nil || state == opencodeplugin.NotInstalled || state == opencodeplugin.Foreign {
+		return "", err
+	}
+	return path, nil
 }
 
 func claudeHooksInstalled(opts *options) (bool, error) {
