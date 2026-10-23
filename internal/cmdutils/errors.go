@@ -54,6 +54,10 @@ func NewGitLabErrorHandler(streams *iostreams.IOStreams) fang.ErrorHandler {
 			}
 		}
 
+		// Fang title-cases the first word of ErrorText, which rewrites
+		// case-sensitive tokens such as flags, config keys, and paths.
+		styles.ErrorText = styles.ErrorText.UnsetTransform()
+
 		// Delegate the human-readable rendering to Fang's default handler
 		fang.DefaultErrorHandler(w, styles, err)
 	}

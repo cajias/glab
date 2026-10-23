@@ -180,3 +180,70 @@ func TestGitLabErrorHandler_EndToEnd(t *testing.T) {
 		})
 	}
 }
+
+func TestNewGitLabErrorHandler_KeepsErrorTextAsWritten(t *testing.T) {
+	tests := []struct {
+		name     string
+		errMsg   string
+		wantText string
+	}{
+		{
+			name:     "long flag",
+			errMsg:   "--title required for snippets",
+			wantText: "--title required for snippets.",
+		},
+		{
+			name:     "hyphenated long flag",
+			errMsg:   "--source-branch is required",
+			wantText: "--source-branch is required.",
+		},
+		{
+			name:     "short flag",
+			errMsg:   "-t is required",
+			wantText: "-t is required.",
+		},
+		{
+			name:     "single-quoted flag list",
+			errMsg:   "'--stdin', '--token', '--job-token', '--web', or '--device' required when not running interactively",
+			wantText: "'--stdin', '--token', '--job-token', '--web', or '--device' required when not running interactively.",
+		},
+		{
+			name:     "backtick-quoted flag",
+			errMsg:   "`--token` parameter can be omitted only if `CI_JOB_TOKEN` environment variable is set",
+			wantText: "`--token` parameter can be omitted only if `CI_JOB_TOKEN` environment variable is set.",
+		},
+		{
+			name:     "uppercase acronym",
+			errMsg:   "JSON marshal: boom",
+			wantText: "JSON marshal: boom.",
+		},
+		{
+			name:     "prose error keeps lowercase first word",
+			errMsg:   "flag needs an argument: -t",
+			wantText: "flag needs an argument: -t.",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ios, _, fangOut := errorHandlerHarness(t)
+			cmd := &cobra.Command{
+				Use:  "test",
+				RunE: func(*cobra.Command, []string) error { return errors.New(tc.errMsg) },
+			}
+			cmd.SetErr(fangOut)
+			cmd.SetArgs([]string{})
+
+			err := fang.Execute(
+				t.Context(),
+				cmd,
+				fang.WithoutCompletions(),
+				fang.WithoutManpage(),
+				fang.WithoutVersion(),
+				fang.WithErrorHandler(NewGitLabErrorHandler(ios)),
+			)
+			require.EqualError(t, err, tc.errMsg)
+			assert.Contains(t, fangOut.String(), tc.wantText)
+		})
+	}
+}
