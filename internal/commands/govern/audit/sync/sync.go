@@ -418,6 +418,33 @@ func syncAllSessions(ctx context.Context, opts *options) error {
 			status.GovernanceNotEnabled = append(status.GovernanceNotEnabled, projectKey)
 		}
 	}
+	// A project lookup answers 404 for a deleted project, one the user cannot
+	// see, and any private project when no token is found, which the job can
+	// hit when it runs without the user's shell environment. The session is
+	// kept for a later run rather than dropped.
+	recordProjectNotFound := func(projectKey string) {
+		if !slices.Contains(status.ProjectNotFound, projectKey) {
+			status.ProjectNotFound = append(status.ProjectNotFound, projectKey)
+		}
+	}
+	// A host is only reported when something there failed, because a host
+	// without a token still syncs if every lookup and upload succeeds.
+	tokenChecked := map[string]struct{}{}
+	failedWithoutToken := func(host string) {
+		if _, ok := tokenChecked[host]; ok {
+			return
+		}
+		tokenChecked[host] = struct{}{}
+		// A token that cannot be read, such as from a locked keyring, fails
+		// the client and is recorded as an error instead.
+		cfg := opts.config()
+		if token, _, err := cfg.GetWithSource(host, "token", true); err != nil || token != "" {
+			return
+		}
+		if jobToken, err := cfg.Get(host, "job_token"); err == nil && jobToken == "" {
+			status.NoToken = append(status.NoToken, host)
+		}
+	}
 	for _, sessionID := range sessionIDs {
 		meta, err := readSessionMeta(sessionID)
 		if err != nil {
@@ -511,7 +538,13 @@ func syncAllSessions(ctx context.Context, opts *options) error {
 		// list with a copy for each of its sessions.
 		projectKey := meta.Host + "/" + meta.PathWithNamespace
 		t, err := lookupTarget(targets, meta, opts)
-		if err != nil {
+		switch {
+		case errors.Is(err, gitlab.ErrNotFound):
+			failedWithoutToken(meta.Host)
+			recordProjectNotFound(projectKey)
+			continue
+		case err != nil:
+			failedWithoutToken(meta.Host)
 			recordOnce("project "+projectKey, sessionID, err)
 			continue
 		}
@@ -525,6 +558,7 @@ func syncAllSessions(ctx context.Context, opts *options) error {
 			case unsupportedAgentType(err):
 				identity.unsupported = true
 			case err != nil:
+				failedWithoutToken(meta.Host)
 				recordOnce("identity "+identityKey, sessionID, err)
 			}
 			if registered != nil {
@@ -557,6 +591,7 @@ func syncAllSessions(ctx context.Context, opts *options) error {
 		case unsupportedAgentType(err):
 			recordUnsupported(meta.AgentType, meta.Host, sessionID)
 		case err != nil:
+			failedWithoutToken(meta.Host)
 			recordErr(sessionID, err)
 		}
 	}
