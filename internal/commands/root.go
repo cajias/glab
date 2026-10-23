@@ -20,6 +20,7 @@ import (
 	configCmd "gitlab.com/gitlab-org/cli/internal/commands/config"
 	containerRegistryCmd "gitlab.com/gitlab-org/cli/internal/commands/container_registry"
 	deployKeyCmd "gitlab.com/gitlab-org/cli/internal/commands/deploy-key"
+	deployTokenCmd "gitlab.com/gitlab-org/cli/internal/commands/deploy-token"
 	dfCmd "gitlab.com/gitlab-org/cli/internal/commands/df"
 	duoCmd "gitlab.com/gitlab-org/cli/internal/commands/duo"
 	governCmd "gitlab.com/gitlab-org/cli/internal/commands/govern"
@@ -120,6 +121,7 @@ func NewCmdRoot(f cmdutils.Factory) *cobra.Command {
 	rootCmd.AddCommand(clusterCmd.NewCmdCluster(f))
 	rootCmd.AddCommand(containerRegistryCmd.NewCmd(f))
 	rootCmd.AddCommand(deployKeyCmd.NewCmdDeployKey(f))
+	rootCmd.AddCommand(deployTokenCmd.NewCmd(f))
 	rootCmd.AddCommand(dfCmd.NewCmd(f))
 	rootCmd.AddCommand(duoCmd.NewCmd(f))
 	rootCmd.AddCommand(governCmd.NewCmd(f))
