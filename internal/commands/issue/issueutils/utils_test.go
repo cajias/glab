@@ -122,6 +122,24 @@ func Test_issueMetadataFromURL(t *testing.T) {
 			path: "",
 		},
 		{
+			name: "invalid scheme-less URL",
+			str:  "//gitlab.com/namespace/repo/-/issues/1",
+			want: 0,
+			path: "",
+		},
+		{
+			name: "invalid merge request URL",
+			str:  "https://gitlab.com/namespace/repo/-/merge_requests/1",
+			want: 0,
+			path: "",
+		},
+		{
+			name: "valid URL with trailing merge_requests segment",
+			str:  "https://gitlab.com/namespace/repo/issues/12/merge_requests/3",
+			want: 12,
+			path: "https://gitlab.com/namespace/repo/",
+		},
+		{
 			name: "invalid issue URL, missing issues path",
 			str:  "https://gitlab.com/namespace/project/subproject/repo/10/",
 			want: 0,

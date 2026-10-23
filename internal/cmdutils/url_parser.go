@@ -1,9 +1,6 @@
 // This file implements URL parsing for GitLab resources to allow commands
 // to accept full GitLab URLs instead of just resource IDs.
 //
-// TODO: Unify this URL parsing logic with issueutils.issueMetadataFromURL
-// in a follow-up MR to avoid code duplication and ensure consistency.
-//
 // Supported URL formats:
 // - Merge Requests: https://gitlab.com/group/project/-/merge_requests/123
 // - Issues: https://gitlab.com/group/project/-/issues/456
@@ -52,7 +49,7 @@ type GitLabResourceMetadata struct {
 // instead of .* which can cause catastrophic backtracking in edge cases.
 var mergeRequestURLPathRE = regexp.MustCompile(`^(/(?:[^-][^/]+/){2,})+(?:-/)?merge_requests/(\d+)(?:/.*)?$`)
 
-// issueURLPathRE is a regex which matches the following patterns (duplicated from issueutils for consistency):
+// issueURLPathRE is a regex which matches the following patterns:
 //
 //	OWNER/REPO/issues/id
 //	OWNER/REPO/-/issues/id
@@ -70,66 +67,22 @@ var mergeRequestURLPathRE = regexp.MustCompile(`^(/(?:[^-][^/]+/){2,})+(?:-/)?me
 // The pattern tolerates trailing path segments (e.g., /issues/1/foo) to align
 // with mergeRequestURLPathRE behavior. Note that url.Parse strips query strings
 // and fragments into separate fields before regex matching.
-//
-// TODO: Unify this with issueutils.issueURLPathRE in a follow-up MR.
 var issueURLPathRE = regexp.MustCompile(`^(/(?:[^-][^/]+/){2,})+(?:-/)?(?:issues/(?:incident/)?|work_items/)(\d+)(?:/.*)?$`)
 
+// ParseGitLabURL returns nil when urlStr is not a merge request or issue URL.
+// URLs without a scheme are accepted.
 func ParseGitLabURL(urlStr, defaultHostname string, cfg config.Config) *GitLabResourceMetadata {
-	u, err := url.Parse(urlStr)
-	if err != nil {
+	u := parseResourceURL(urlStr)
+	if u == nil {
 		return nil
 	}
 
-	// Allow URLs without scheme or with http/https
-	if u.Scheme != "" && u.Scheme != "https" && u.Scheme != "http" {
-		return nil
-	}
-
-	// Try to match merge request URL
 	if m := mergeRequestURLPathRE.FindStringSubmatch(u.Path); m != nil {
-		resourceID, err := strconv.Atoi(m[2])
-		if err != nil {
-			return nil
-		}
-
-		// Use the captured group which contains the repository path
-		u.Path = m[1]
-
-		repo, err := glrepo.FromURL(u, defaultHostname, cfg)
-		if err != nil {
-			return nil
-		}
-
-		return &GitLabResourceMetadata{
-			ID:   resourceID,
-			Type: GitLabResourceMergeRequest,
-			Repo: repo,
-		}
+		return resourceFromMatch(*u, m, GitLabResourceMergeRequest, defaultHostname, cfg)
 	}
-
-	// Try to match issue URL (duplicated from issueutils for consistency)
-	// TODO: Unify this with issueutils.issueMetadataFromURL in a follow-up MR.
 	if m := issueURLPathRE.FindStringSubmatch(u.Path); m != nil {
-		resourceID, err := strconv.Atoi(m[2])
-		if err != nil {
-			return nil
-		}
-
-		// Use the captured group which contains the repository path
-		u.Path = m[1]
-
-		repo, err := glrepo.FromURL(u, defaultHostname, cfg)
-		if err != nil {
-			return nil
-		}
-
-		return &GitLabResourceMetadata{
-			ID:   resourceID,
-			Type: GitLabResourceIssue,
-			Repo: repo,
-		}
+		return resourceFromMatch(*u, m, GitLabResourceIssue, defaultHostname, cfg)
 	}
-
 	return nil
 }
 
@@ -141,4 +94,56 @@ func ParseMergeRequestFromURL(urlStr, defaultHostname string, cfg config.Config)
 		return metadata.ID, metadata.Repo
 	}
 	return 0, nil
+}
+
+// ParseIssueFromURL returns 0 and nil if urlStr is not an issue, incident, or work item URL.
+// Unlike ParseGitLabURL, it never resolves the URL as a merge request, so an
+// issue URL with a trailing merge_requests segment still parses as an issue.
+func ParseIssueFromURL(urlStr, defaultHostname string, cfg config.Config) (int, glrepo.Interface) {
+	u := parseResourceURL(urlStr)
+	if u == nil {
+		return 0, nil
+	}
+
+	m := issueURLPathRE.FindStringSubmatch(u.Path)
+	if m == nil {
+		return 0, nil
+	}
+	metadata := resourceFromMatch(*u, m, GitLabResourceIssue, defaultHostname, cfg)
+	if metadata == nil {
+		return 0, nil
+	}
+	return metadata.ID, metadata.Repo
+}
+
+func parseResourceURL(urlStr string) *url.URL {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return nil
+	}
+	if u.Scheme != "" && u.Scheme != "https" && u.Scheme != "http" {
+		return nil
+	}
+	return u
+}
+
+// resourceFromMatch expects m to be a submatch of mergeRequestURLPathRE or
+// issueURLPathRE, where m[1] is the project path and m[2] is the resource ID.
+func resourceFromMatch(u url.URL, m []string, resourceType GitLabResourceType, defaultHostname string, cfg config.Config) *GitLabResourceMetadata {
+	resourceID, err := strconv.Atoi(m[2])
+	if err != nil {
+		return nil
+	}
+
+	u.Path = m[1]
+	repo, err := glrepo.FromURL(&u, defaultHostname, cfg)
+	if err != nil {
+		return nil
+	}
+
+	return &GitLabResourceMetadata{
+		ID:   resourceID,
+		Type: resourceType,
+		Repo: repo,
+	}
 }

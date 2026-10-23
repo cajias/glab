@@ -91,6 +91,91 @@ func TestParseGitLabURL(t *testing.T) {
 			wantType:    GitLabResourceMergeRequest,
 			wantRepoURL: "https://gitlab.com/gitlab-org/cli/",
 		},
+		// Issue URLs
+		{
+			name:        "valid issue URL",
+			url:         "https://gitlab.com/namespace/repo/-/issues/1",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:        "valid issue URL without dash",
+			url:         "https://gitlab.com/namespace/repo/issues/1",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:        "valid issue URL with nested subgroup",
+			url:         "https://gitlab.com/namespace/project/subproject/repo/-/issues/100",
+			wantID:      100,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/project/subproject/repo/",
+		},
+		{
+			name:        "valid incident URL",
+			url:         "https://gitlab.com/namespace/repo/-/issues/incident/1",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:        "valid incident URL without dash",
+			url:         "https://gitlab.com/namespace/repo/issues/incident/1",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:        "valid work item URL",
+			url:         "https://gitlab.com/gitlab-org/gitlab/-/work_items/337780",
+			wantID:      337780,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/gitlab-org/gitlab/",
+		},
+		{
+			name:        "valid work item URL without dash",
+			url:         "https://gitlab.com/namespace/repo/work_items/1",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:        "issue URL with trailing slash",
+			url:         "https://gitlab.com/namespace/repo/-/issues/1/",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:        "issue URL with query and fragment",
+			url:         "https://gitlab.com/namespace/repo/-/issues/1?foo=bar#note_123",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:        "issue URL over http",
+			url:         "http://gitlab.example.com/namespace/repo/-/issues/1",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.example.com/namespace/repo/",
+		},
+		{
+			name:        "scheme-less issue URL",
+			url:         "//gitlab.com/namespace/repo/-/issues/1",
+			wantID:      1,
+			wantType:    GitLabResourceIssue,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:        "issue URL with trailing merge_requests segment resolves as merge request",
+			url:         "https://gitlab.com/namespace/repo/issues/12/merge_requests/3",
+			wantID:      3,
+			wantType:    GitLabResourceMergeRequest,
+			wantRepoURL: "https://gitlab.com/namespace/repo/issues/12/",
+		},
 		// Invalid URLs
 		{
 			name:     "invalid URL - no resource ID",
@@ -119,6 +204,36 @@ func TestParseGitLabURL(t *testing.T) {
 		{
 			name:     "invalid URL - missing repo name",
 			url:      "https://gitlab.com/gitlab-org/-/merge_requests/123",
+			wantID:   0,
+			wantType: "",
+		},
+		{
+			name:     "invalid issue URL - no issue number",
+			url:      "https://gitlab.com/namespace/repo/issues",
+			wantID:   0,
+			wantType: "",
+		},
+		{
+			name:     "invalid incident URL - no incident number",
+			url:      "https://gitlab.com/namespace/repo/issues/incident",
+			wantID:   0,
+			wantType: "",
+		},
+		{
+			name:     "invalid issue URL - missing repo name",
+			url:      "https://gitlab.com/namespace/issues/100",
+			wantID:   0,
+			wantType: "",
+		},
+		{
+			name:     "invalid issue URL - wrong protocol",
+			url:      "ftp://gitlab.com/namespace/repo/-/issues/1",
+			wantID:   0,
+			wantType: "",
+		},
+		{
+			name:     "invalid issue URL - no hostname",
+			url:      "/namespace/repo/-/issues/1",
 			wantID:   0,
 			wantType: "",
 		},
@@ -172,6 +287,69 @@ func TestParseMergeRequestFromURL(t *testing.T) {
 			require.Equal(t, tt.wantID, id)
 
 			if tt.wantID != 0 && tt.wantRepoURL != "" {
+				expectedRepo, err := glrepo.FromFullName(tt.wantRepoURL, glinstance.DefaultHostname, config.NewBlankConfig())
+				require.NoError(t, err)
+				require.Equal(t, expectedRepo, repo)
+			} else {
+				require.Nil(t, repo)
+			}
+		})
+	}
+}
+
+func TestParseIssueFromURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		url         string
+		wantID      int
+		wantRepoURL string
+	}{
+		{
+			name:        "valid issue URL",
+			url:         "https://gitlab.com/gitlab-org/cli/-/issues/8398",
+			wantID:      8398,
+			wantRepoURL: "https://gitlab.com/gitlab-org/cli/",
+		},
+		{
+			name:        "valid work item URL",
+			url:         "https://gitlab.com/gitlab-org/cli/-/work_items/8398",
+			wantID:      8398,
+			wantRepoURL: "https://gitlab.com/gitlab-org/cli/",
+		},
+		{
+			name:        "issue URL with trailing merge_requests segment",
+			url:         "https://gitlab.com/namespace/repo/issues/12/merge_requests/3",
+			wantID:      12,
+			wantRepoURL: "https://gitlab.com/namespace/repo/",
+		},
+		{
+			name:   "merge request URL should return 0",
+			url:    "https://gitlab.com/gitlab-org/cli/-/merge_requests/1234",
+			wantID: 0,
+		},
+		{
+			name:   "wrong protocol should return 0",
+			url:    "ftp://gitlab.com/gitlab-org/cli/-/issues/1",
+			wantID: 0,
+		},
+		{
+			name:   "URL without hostname should return 0",
+			url:    "/gitlab-org/cli/-/issues/1",
+			wantID: 0,
+		},
+		{
+			name:   "invalid URL should return 0",
+			url:    "not-a-url",
+			wantID: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, repo := ParseIssueFromURL(tt.url, glinstance.DefaultHostname, config.NewBlankConfig())
+			require.Equal(t, tt.wantID, id)
+
+			if tt.wantID != 0 {
 				expectedRepo, err := glrepo.FromFullName(tt.wantRepoURL, glinstance.DefaultHostname, config.NewBlankConfig())
 				require.NoError(t, err)
 				require.Equal(t, expectedRepo, repo)

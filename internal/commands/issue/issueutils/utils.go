@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
 
 	"gitlab.com/gitlab-org/cli/internal/api"
+	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
@@ -141,51 +141,13 @@ func IssueFromArg(apiClientFunc func(repoHost string) (*api.Client, error), clie
 	return issue, baseRepo, err
 }
 
-// issueURLPathRE is a regex which matches the following patterns:
-//
-//	OWNER/REPO/issues/id
-//	OWNER/REPO/-/issues/id
-//	OWNER/REPO/-/issues/incident/id
-//	OWNER/REPO/-/work_items/id
-//	GROUP/NAMESPACE/REPO/issues/id
-//	GROUP/NAMESPACE/REPO/-/issues/id
-//	GROUP/NAMESPACE/REPO/-/issues/incident/id
-//	GROUP/NAMESPACE/REPO/-/work_items/id
-//	including nested subgroups:
-//		GROUP/SUBGROUP/../../REPO/-/issues/id
-//		GROUP/SUBGROUP/../../REPO/-/issues/incident/id
-//		GROUP/SUBGROUP/../../REPO/-/work_items/id
-//
-// The pattern tolerates trailing path segments (e.g., /issues/1/foo) to align
-// with mergeRequestURLPathRE behavior. Note that url.Parse strips query strings
-// and fragments into separate fields before regex matching.
-var issueURLPathRE = regexp.MustCompile(`^(/(?:[^-][^/]+/){2,})+(?:-/)?(?:issues/(?:incident/)?|work_items/)(\d+)(?:/.*)?$`)
-
 func issueMetadataFromURL(s, defaultHostname string, cfg config.Config) (int64, glrepo.Interface) {
 	u, err := url.Parse(s)
-	if err != nil {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
 		return 0, nil
 	}
 
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return 0, nil
-	}
-
-	m := issueURLPathRE.FindStringSubmatch(u.Path)
-	if m == nil {
-		return 0, nil
-	}
-
-	issueIID, err := strconv.Atoi(m[2])
-	if err != nil {
-		return 0, nil
-	}
-	u.Path = m[1]
-
-	repo, err := glrepo.FromURL(u, defaultHostname, cfg)
-	if err != nil {
-		return 0, nil
-	}
+	issueIID, repo := cmdutils.ParseIssueFromURL(s, defaultHostname, cfg)
 	return int64(issueIID), repo
 }
 
