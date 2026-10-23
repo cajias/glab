@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +38,57 @@ func (c *countingChecker) Check(context.Context, Request) (Result, error) {
 		<-c.gate
 	}
 	return c.result, c.err
+}
+
+// stalledChecker models an API that accepts the request and never answers:
+// it returns only when its context ends.
+type stalledChecker struct{}
+
+func (stalledChecker) Check(ctx context.Context, _ Request) (Result, error) {
+	<-ctx.Done()
+	return Result{}, ctx.Err()
+}
+
+type ctxErrChecker struct{}
+
+func (ctxErrChecker) Check(ctx context.Context, _ Request) (Result, error) {
+	return Result{}, ctx.Err()
+}
+
+func TestCacheStalledCheckFailsClosedAtCallerDeadline(t *testing.T) {
+	t.Parallel()
+	c := NewCachingChecker(stalledChecker{}, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	type outcome struct {
+		res Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := c.Check(ctx, req("npm", "x", "1.0.0"))
+		done <- outcome{res, err}
+	}()
+	select {
+	case out := <-done:
+		require.NoError(t, out.err)
+		assert.Equal(t, verdict.Blocked, out.res.Verdict)
+		assert.Contains(t, out.res.Reason, context.DeadlineExceeded.Error())
+	case <-time.After(5 * time.Second):
+		t.Fatal("Check outlived the caller's deadline, so a stalled policy API hangs the download")
+	}
+}
+
+func TestCacheCallerCancellationDoesNotEndSharedCheck(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	c := NewCachingChecker(ctxErrChecker{}, nil)
+
+	res, err := c.Check(ctx, req("npm", "x", "1.0.0"))
+	require.NoError(t, err)
+	assert.Equal(t, Result{}, res, "one caller walking away must not fail the check shared with every coalesced caller")
 }
 
 func TestCacheMemoizesByRequestKey(t *testing.T) {
