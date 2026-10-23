@@ -256,26 +256,26 @@ func TestNewCmdClone(t *testing.T) {
 	}
 }
 
-func TestCloneHost(t *testing.T) {
+func TestCloneRepo(t *testing.T) {
 	t.Parallel()
 
 	const defaultHost = "gitlab.com"
 
 	testCases := []struct {
-		name      string
-		repoArg   string
-		subfolder string
-		wantHost  string
-		wantErr   bool
+		name         string
+		repoArg      string
+		subfolder    string
+		wantHost     string
+		wantFullName string
+		wantErr      bool
 	}{
-		{name: "path argument uses default host", repoArg: "NAMESPACE/REPO", wantHost: defaultHost},
-		{name: "project ID uses default host", repoArg: "4356677", wantHost: defaultHost},
-		{name: "default host URL", repoArg: "https://gitlab.com/gitlab-org/cli", wantHost: defaultHost},
-		{name: "self-managed URL uses its own host", repoArg: "https://mygitlab.com/mygroup/myrepo", wantHost: "mygitlab.com"},
-		{name: "scp-style URL uses its own host", repoArg: "git@mygitlab.com:mygroup/myrepo.git", wantHost: "mygitlab.com"},
-		{name: "ported host keeps its port", repoArg: "https://mygitlab.com:8080/mygroup/myrepo", wantHost: "mygitlab.com:8080"},
-		{name: "URL resolves without a configured subfolder", repoArg: "https://example.com/gitlab/myrepo", wantHost: "example.com"},
-		{name: "configured subfolder is stripped before parsing", repoArg: "https://example.com/gitlab/myrepo", subfolder: "gitlab", wantErr: true},
+		{name: "default host URL", repoArg: "https://gitlab.com/gitlab-org/cli", wantHost: defaultHost, wantFullName: "gitlab-org/cli"},
+		{name: "self-managed URL uses its own host", repoArg: "https://mygitlab.com/mygroup/myrepo", wantHost: "mygitlab.com", wantFullName: "mygroup/myrepo"},
+		{name: "scp-style URL uses its own host", repoArg: "git@mygitlab.com:mygroup/myrepo.git", wantHost: "mygitlab.com", wantFullName: "mygroup/myrepo"},
+		{name: "ported host keeps its port", repoArg: "https://mygitlab.com:8080/mygroup/myrepo", wantHost: "mygitlab.com:8080", wantFullName: "mygroup/myrepo"},
+		{name: "URL resolves without a configured subfolder", repoArg: "https://example.com/gitlab/myrepo", wantHost: "example.com", wantFullName: "gitlab/myrepo"},
+		{name: "configured subfolder is stripped from the full name", repoArg: "https://example.com/gitlab/mygroup/myrepo", subfolder: "gitlab", wantHost: "example.com", wantFullName: "mygroup/myrepo"},
+		{name: "configured subfolder leaving no owner is rejected", repoArg: "https://example.com/gitlab/myrepo", subfolder: "gitlab", wantErr: true},
 		{name: "URL without a repo segment is rejected", repoArg: "https://gitlab.com/group", wantErr: true},
 		{name: "trailing-slash URL is rejected", repoArg: "https://gitlab.com/mygroup/", wantErr: true},
 	}
@@ -288,13 +288,14 @@ func TestCloneHost(t *testing.T) {
 				require.NoError(t, cfg.Set("example.com", "subfolder", tt.subfolder))
 			}
 
-			host, err := cloneHost(tt.repoArg, defaultHost, cfg)
+			repo, err := cloneRepo(tt.repoArg, defaultHost, cfg)
 			if tt.wantErr {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantHost, host)
+			assert.Equal(t, tt.wantHost, repo.RepoHost())
+			assert.Equal(t, tt.wantFullName, repo.FullName())
 		})
 	}
 }
@@ -358,6 +359,41 @@ func TestCloneWikiFromFullURLUsesURLHost(t *testing.T) {
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab.example.com", apiClientHost, "a full URL wiki clone must build the API client for the URL's host, not the default")
+}
+
+func TestCloneWikiFromFullURLStripsConfiguredSubfolder(t *testing.T) {
+	io, _, _, _ := cmdtest.TestIOStreams()
+
+	cfg := config.NewBlankConfig()
+	require.NoError(t, cfg.Set("example.com", "subfolder", "gitlab"))
+
+	fac := cmdtest.NewTestFactory(io, func(f *cmdtest.Factory) {
+		f.ConfigStub = func() config.Config { return cfg }
+		f.ApiClientStub = func(repoHost string) (*api.Client, error) {
+			tc := gitlabtesting.NewTestClient(t)
+			tc.MockProjects.EXPECT().GetProject("mygroup/myrepo", gomock.Any()).Return(
+				&gitlab.Project{
+					PathWithNamespace: "mygroup/myrepo",
+					SSHURLToRepo:      "git@example.com:gitlab/mygroup/myrepo.git",
+					HTTPURLToRepo:     "https://example.com/gitlab/mygroup/myrepo.git",
+					WikiAccessLevel:   gitlab.EnabledAccessControl,
+				}, nil, nil)
+			return cmdtest.NewTestApiClient(t, nil, "", repoHost, api.WithGitLabClient(tc.Client)), nil
+		}
+	})
+
+	cs, restore := test.InitCmdStubber()
+	defer restore()
+	cs.Stub("")
+
+	cmd := NewCmdClone(fac, nil)
+	cmd.SetArgs([]string{"--wiki", "https://example.com/gitlab/mygroup/myrepo"})
+	cmd.SetIn(io.In)
+	cmd.SetOut(io.StdOut)
+	cmd.SetErr(io.StdErr)
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
 }
 
 func TestCloneWikiRepository(t *testing.T) {
