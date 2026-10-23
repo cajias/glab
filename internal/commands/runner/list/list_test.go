@@ -3,6 +3,7 @@
 package list
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/MakeNowJust/heredoc/v2"
@@ -148,6 +149,82 @@ func TestRunnerList_Pagination(t *testing.T) {
 
 	`), out.String())
 	assert.Empty(t, out.Stderr())
+}
+
+func TestRunnerList_HeaderTotal(t *testing.T) {
+	t.Parallel()
+
+	runners := []*gitlab.Runner{
+		{ID: 1, Description: "runner-1", Status: "online", RunnerType: "project_type", Paused: false},
+	}
+	withTotal := &gitlab.Response{CurrentPage: 2, TotalPages: 3, TotalItems: 11}
+
+	tests := []struct {
+		name       string
+		cli        string
+		expect     func(tc *gitlabtesting.TestClient, resp *gitlab.Response)
+		resp       *gitlab.Response
+		wantHeader string
+	}{
+		{
+			name: "project shows the total from the API",
+			cli:  "--page 2 --per-page 5",
+			expect: func(tc *gitlabtesting.TestClient, resp *gitlab.Response) {
+				tc.MockRunners.EXPECT().ListProjectRunners("OWNER/REPO", gomock.Any(), gomock.Any()).Return(runners, resp, nil)
+			},
+			resp:       withTotal,
+			wantHeader: "Showing 1 of 11 runners on OWNER/REPO. (Page 2)\n",
+		},
+		{
+			name: "group shows the total from the API",
+			cli:  "--group mygroup --page 2 --per-page 5",
+			expect: func(tc *gitlabtesting.TestClient, resp *gitlab.Response) {
+				tc.MockRunners.EXPECT().ListGroupsRunners("mygroup", gomock.Any(), gomock.Any()).Return(runners, resp, nil)
+			},
+			resp:       withTotal,
+			wantHeader: "Showing 1 of 11 runners on mygroup. (Page 2)\n",
+		},
+		{
+			name: "instance shows the total from the API",
+			cli:  "--instance --page 2 --per-page 5",
+			expect: func(tc *gitlabtesting.TestClient, resp *gitlab.Response) {
+				tc.MockRunners.EXPECT().ListRunners(gomock.Any(), gomock.Any()).Return(runners, resp, nil)
+			},
+			resp:       withTotal,
+			wantHeader: "Showing 1 of 11 runners on instance. (Page 2)\n",
+		},
+		{
+			name: "without a total from the API",
+			expect: func(tc *gitlabtesting.TestClient, resp *gitlab.Response) {
+				tc.MockRunners.EXPECT().ListProjectRunners("OWNER/REPO", gomock.Any(), gomock.Any()).Return(runners, resp, nil)
+			},
+			resp:       &gitlab.Response{CurrentPage: 1, NextPage: 2},
+			wantHeader: "Showing 1 runner on OWNER/REPO. (Page 1)\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc := gitlabtesting.NewTestClient(t)
+			tt.expect(tc, tt.resp)
+
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmd,
+				false,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(tc.Client))),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+			)
+
+			out, err := exec(tt.cli)
+			require.NoError(t, err)
+
+			assert.True(t, strings.HasPrefix(out.String(), tt.wantHeader), "got %q", out.String())
+			assert.Empty(t, out.Stderr())
+		})
+	}
 }
 
 func TestRunnerList_JSON(t *testing.T) {

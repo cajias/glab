@@ -118,7 +118,7 @@ func (o *options) run(ctx context.Context) error {
 		listOpts.Sort = new(strings.ToLower(o.sort))
 	}
 
-	jobs, _, err := client.Runners.ListRunnerJobs(o.runnerID, listOpts, gitlab.WithContext(ctx))
+	jobs, resp, err := client.Runners.ListRunnerJobs(o.runnerID, listOpts, gitlab.WithContext(ctx))
 	if err != nil {
 		return cmdutils.WrapError(err, "failed to list runner jobs")
 	}
@@ -127,14 +127,17 @@ func (o *options) run(ctx context.Context) error {
 	case "json":
 		return o.io.PrintJSON(jobs)
 	default:
-		return o.printTable(jobs)
+		return o.printTable(jobs, resp)
 	}
 }
 
-func (o *options) printTable(jobs []*gitlab.Job) error {
+func (o *options) printTable(jobs []*gitlab.Job, resp *gitlab.Response) error {
 	title := utils.NewListTitle("job")
 	title.Page = int(o.page)
 	title.CurrentPageTotal = len(jobs)
+	if resp != nil {
+		title.Total = int(resp.TotalItems)
+	}
 
 	if err := o.io.StartPager(); err != nil {
 		return err
