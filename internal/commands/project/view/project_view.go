@@ -202,12 +202,20 @@ func getReadmeFile(opts *options, project *gitlab.Project) (*gitlab.File, error)
 	if !found {
 		return nil, fmt.Errorf("invalid README URL: %q", project.ReadmeURL)
 	}
-	readmePathComponents := strings.SplitN(readmePath, "/", 2)
-	if len(readmePathComponents) != 2 {
-		return nil, fmt.Errorf("invalid README URL: %q", project.ReadmeURL)
+
+	// GitLab builds the README URL from the default branch, whose name can
+	// contain slashes (for example "release/main"), so split there first.
+	var readmeRef, readmeFileName string
+	if fileName, ok := strings.CutPrefix(readmePath, project.DefaultBranch+"/"); ok {
+		readmeRef, readmeFileName = project.DefaultBranch, fileName
+	} else {
+		readmePathComponents := strings.SplitN(readmePath, "/", 2)
+		if len(readmePathComponents) != 2 {
+			return nil, fmt.Errorf("invalid README URL: %q", project.ReadmeURL)
+		}
+		readmeRef = readmePathComponents[0]
+		readmeFileName = readmePathComponents[1]
 	}
-	readmeRef := readmePathComponents[0]
-	readmeFileName := readmePathComponents[1]
 
 	if opts.branch == "" {
 		opts.branch = readmeRef

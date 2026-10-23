@@ -110,6 +110,110 @@ test readme
 `),
 		},
 		{
+			name: "view another project whose default branch contains a slash",
+			cli:  "OWNER/REPO",
+			setupMocks: func(t *testing.T, testClient *gitlabtesting.TestClient) {
+				t.Helper()
+				testClient.MockProjects.EXPECT().
+					GetProject("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Project{
+						NameWithNamespace: "Test User / REPO",
+						Description:       "slash branch",
+						PathWithNamespace: "OWNER/REPO",
+						DefaultBranch:     "release/main",
+						WebURL:            "https://gitlab.com/OWNER/REPO",
+						ReadmeURL:         "https://gitlab.com/OWNER/REPO/-/blob/release/main/docs/README.md",
+					}, nil, nil)
+				testClient.MockRepositoryFiles.EXPECT().
+					GetFile("OWNER/REPO", "docs/README.md", &gitlab.GetFileOptions{Ref: new("release/main")}).
+					Return(&gitlab.File{Content: "dGVzdCByZWFkbWUK"}, nil, nil)
+			},
+			expectedOutput: heredoc.Doc(`name:	Test User / REPO
+description:	slash branch
+---
+test readme
+
+`),
+		},
+		{
+			name: "view the current project whose default branch contains a slash",
+			cli:  "",
+			setupMocks: func(t *testing.T, testClient *gitlabtesting.TestClient) {
+				t.Helper()
+				testClient.MockProjects.EXPECT().
+					GetProject("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Project{
+						NameWithNamespace: "Test User / REPO",
+						Description:       "slash branch",
+						PathWithNamespace: "OWNER/REPO",
+						DefaultBranch:     "release/main",
+						WebURL:            "https://gitlab.com/OWNER/REPO",
+						ReadmeURL:         "https://gitlab.com/OWNER/REPO/-/blob/release/main/README.md",
+					}, nil, nil)
+				testClient.MockRepositoryFiles.EXPECT().
+					GetFile("OWNER/REPO", "README.md", &gitlab.GetFileOptions{Ref: new("#current-branch")}).
+					Return(&gitlab.File{Content: "dGVzdCByZWFkbWUK"}, nil, nil)
+			},
+			expectedOutput: heredoc.Doc(`name:	Test User / REPO
+description:	slash branch
+---
+test readme
+
+`),
+		},
+		{
+			name: "view a branch of another project whose default branch contains a slash",
+			cli:  "OWNER/REPO --branch release/next",
+			setupMocks: func(t *testing.T, testClient *gitlabtesting.TestClient) {
+				t.Helper()
+				testClient.MockProjects.EXPECT().
+					GetProject("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Project{
+						NameWithNamespace: "Test User / REPO",
+						Description:       "slash branch",
+						PathWithNamespace: "OWNER/REPO",
+						DefaultBranch:     "release/main",
+						WebURL:            "https://gitlab.com/OWNER/REPO",
+						ReadmeURL:         "https://gitlab.com/OWNER/REPO/-/blob/release/main/README.md",
+					}, nil, nil)
+				testClient.MockRepositoryFiles.EXPECT().
+					GetFile("OWNER/REPO", "README.md", &gitlab.GetFileOptions{Ref: new("release/next")}).
+					Return(&gitlab.File{Content: "dGVzdCByZWFkbWUK"}, nil, nil)
+			},
+			expectedOutput: heredoc.Doc(`name:	Test User / REPO
+description:	slash branch
+---
+test readme
+
+`),
+		},
+		{
+			name: "view another project whose README URL does not start with the default branch",
+			cli:  "OWNER/REPO",
+			setupMocks: func(t *testing.T, testClient *gitlabtesting.TestClient) {
+				t.Helper()
+				testClient.MockProjects.EXPECT().
+					GetProject("OWNER/REPO", gomock.Any()).
+					Return(&gitlab.Project{
+						NameWithNamespace: "Test User / REPO",
+						Description:       "other ref",
+						PathWithNamespace: "OWNER/REPO",
+						DefaultBranch:     "main",
+						WebURL:            "https://gitlab.com/OWNER/REPO",
+						ReadmeURL:         "https://gitlab.com/OWNER/REPO/-/blob/stable/docs/README.md",
+					}, nil, nil)
+				testClient.MockRepositoryFiles.EXPECT().
+					GetFile("OWNER/REPO", "docs/README.md", &gitlab.GetFileOptions{Ref: new("stable")}).
+					Return(&gitlab.File{Content: "dGVzdCByZWFkbWUK"}, nil, nil)
+			},
+			expectedOutput: heredoc.Doc(`name:	Test User / REPO
+description:	other ref
+---
+test readme
+
+`),
+		},
+		{
 			name: "view the details of a project owned by the current user",
 			cli:  "foo",
 			setupMocks: func(t *testing.T, testClient *gitlabtesting.TestClient) {
