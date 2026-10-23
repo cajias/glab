@@ -397,6 +397,14 @@ type Status struct {
 	// them. These are expected for a user who works in many projects, so they
 	// are not errors.
 	GovernanceNotEnabled []string `json:"governance_not_enabled,omitempty"`
+	// ProjectNotFound lists the projects, as host/path, that GitLab answered
+	// 404 for: deleted, renamed, or not visible to the user. Like
+	// GovernanceNotEnabled, these are expected and are not errors.
+	ProjectNotFound []string `json:"project_not_found,omitempty"`
+	// NoToken lists the GitLab hosts the run found no token for and could not
+	// sync a session on. It looked up their projects anonymously, so their
+	// private projects are in ProjectNotFound too.
+	NoToken []string `json:"no_token,omitempty"`
 	// AgentTypeNotSupported lists agent types a GitLab host does not accept
 	// yet, as "<agent> on <host>". Their sessions are not uploaded, then or
 	// after an upgrade.

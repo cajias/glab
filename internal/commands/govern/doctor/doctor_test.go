@@ -392,6 +392,46 @@ func TestCheckFallbackSync_GovernanceNotEnabledStaysHealthy(t *testing.T) {
 	assert.Contains(t, result.message, "governance not enabled for 2 projects (gitlab.com/me/dotfiles, gitlab.com/gitlab-org/cli)")
 }
 
+func TestCheckFallbackSync_ProjectNotFoundStaysHealthy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GLAB_CONFIG_DIR", home)
+	glab, err := os.Executable()
+	require.NoError(t, err)
+	installTestJob(t, home, glab)
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, fallbacksync.WriteStatus(fallbacksync.Status{
+		FinishedAt:      now,
+		ProjectNotFound: []string{"gitlab.com/gitlab-org/cli-docs-test-nonexistent"},
+	}))
+
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
+
+	assert.True(t, result.ok, "sessions in projects the user can't see are expected")
+	assert.Contains(t, result.message, "1 project not found or not accessible (gitlab.com/gitlab-org/cli-docs-test-nonexistent)")
+}
+
+func TestCheckFallbackSync_NoTokenFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GLAB_CONFIG_DIR", home)
+	glab, err := os.Executable()
+	require.NoError(t, err)
+	installTestJob(t, home, glab)
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, fallbacksync.WriteStatus(fallbacksync.Status{
+		FinishedAt:      now,
+		NoToken:         []string{"gitlab.com"},
+		ProjectNotFound: []string{"gitlab.com/my-group/private-project"},
+	}))
+
+	result := checkFallbackSync(t.Context(), healthyLinuxJob(t, glab, testVersion), "linux", testBuild, now)
+
+	assert.False(t, result.ok, "GitLab needs a token to create sessions and audit events")
+	assert.Contains(t, result.message, "the last run had no token for gitlab.com and could not sync some sessions there")
+	assert.Contains(t, result.fix, "glab auth login --hostname gitlab.com")
+}
+
 func TestCheckFallbackSync_AgentTypeNotSupportedStaysHealthy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

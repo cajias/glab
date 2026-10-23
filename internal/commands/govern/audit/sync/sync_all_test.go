@@ -62,6 +62,9 @@ type fakeGitLab struct {
 	// for the project.
 	identityStatus int
 	sessionStatus  int
+	// projectStatus, when set, answers lookups of unknown projects with that
+	// HTTP status instead of 404.
+	projectStatus int
 	// identityBody, when set, is the body sent with identityStatus.
 	identityBody string
 	// maxElements, when set, replaces the 5,000 JSON elements GitLab accepts
@@ -95,6 +98,10 @@ func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		name, _ := url.PathUnescape(project)
 		f.projectLookups[name]++
 		id, ok := f.projects[name]
+		if !ok && f.projectStatus != 0 {
+			writeStatus(w, f.projectStatus)
+			return
+		}
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"404 Project Not Found"}`)
@@ -214,6 +221,12 @@ type syncAllEnv struct {
 
 func newSyncAllEnv(t *testing.T, hooksInstalled bool) *syncAllEnv {
 	t.Helper()
+	return newSyncAllEnvWithConfig(t, hooksInstalled, "hosts:\n  "+testHost+":\n    token: test-token\n")
+}
+
+// newSyncAllEnvWithConfig is newSyncAllEnv with glab configuration cfg.
+func newSyncAllEnvWithConfig(t *testing.T, hooksInstalled bool, cfg string) *syncAllEnv {
+	t.Helper()
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -245,7 +258,7 @@ func newSyncAllEnv(t *testing.T, hooksInstalled bool) *syncAllEnv {
 		false,
 		cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "test-token", testHost, api.WithGitLabClient(client))),
 		cmdtest.WithExecutor(mExec),
-		cmdtest.WithConfig(config.NewFromString("hosts:\n  "+testHost+":\n    token: test-token\n")),
+		cmdtest.WithConfig(config.NewFromString(cfg)),
 	)
 
 	return &syncAllEnv{home: home, fake: fake, exec: exec, mExec: mExec}
@@ -391,6 +404,7 @@ func TestSyncAll_RegistersIdentityOncePerProject(t *testing.T) {
 
 func TestSyncAll_RecordsFailedProjectOnce(t *testing.T) {
 	env := newSyncAllEnv(t, true)
+	env.fake.projectStatus = http.StatusForbidden
 	env.writeClaudeSession(t, "sess-1", "gone/project", "toolu_1")
 	env.writeClaudeSession(t, "sess-2", "gone/project", "toolu_2")
 
@@ -430,6 +444,87 @@ func TestSyncAll_GovernanceNotEnabledIsNotAnError(t *testing.T) {
 			assert.Zero(t, cursor, "the session syncs once governance is enabled")
 		})
 	}
+}
+
+func TestSyncAll_ProjectNotFoundIsNotAnError(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.writeClaudeSession(t, "sess-1", "gone/project", "toolu_1")
+	env.writeClaudeSession(t, "sess-2", "gone/project", "toolu_2")
+	env.writeClaudeSession(t, "sess-good", "my-group/my-project", "toolu_3")
+
+	_, err := env.exec("--all")
+	require.NoError(t, err)
+
+	status := readStatus(t)
+	assert.Empty(t, status.Errors, "a project the user can't see is expected, not a failure")
+	assert.Equal(t, []string{testHost + "/gone/project"}, status.ProjectNotFound)
+	assert.Equal(t, []string{"sess-good"}, env.fake.sessionsCreated)
+	assert.Equal(t, 1, env.fake.projectLookups["gone/project"])
+	for _, id := range []string{"sess-1", "sess-2"} {
+		meta, err := readSessionMeta(id)
+		require.NoError(t, err)
+		assert.Nil(t, meta.CompletedAt, "a 404 can mean no token was found, so the session is kept")
+	}
+
+	env.fake.projects["gone/project"] = 7
+	_, err = env.exec("--all")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"sess-good", "sess-1", "sess-2"}, env.fake.sessionsCreated, "the sessions sync once the project is visible")
+	assert.Empty(t, readStatus(t).ProjectNotFound)
+}
+
+func TestSyncAll_RecordsHostsWithoutToken(t *testing.T) {
+	for _, name := range []string{"GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "JOB_TOKEN", "CI_JOB_TOKEN", "GLAB_ENABLE_CI_AUTOLOGIN"} {
+		t.Setenv(name, "")
+	}
+	env := newSyncAllEnvWithConfig(t, true, "hosts:\n  "+testHost+":\n    api_protocol: https\n")
+	env.writeClaudeSession(t, "sess-1", "my-group/my-project", "toolu_1")
+	env.writeClaudeSession(t, "sess-2", "gone/project", "toolu_2")
+
+	_, err := env.exec("--all")
+	require.NoError(t, err)
+
+	status := readStatus(t)
+	assert.Equal(t, []string{testHost + "/gone/project"}, status.ProjectNotFound, "the host is recorded because this lookup failed")
+	assert.Equal(t, []string{testHost}, status.NoToken, "each host is recorded once")
+}
+
+func TestSyncAll_HostWithoutTokenThatSyncsIsNotRecorded(t *testing.T) {
+	for _, name := range []string{"GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "JOB_TOKEN", "CI_JOB_TOKEN", "GLAB_ENABLE_CI_AUTOLOGIN"} {
+		t.Setenv(name, "")
+	}
+	env := newSyncAllEnvWithConfig(t, true, "hosts:\n  "+testHost+":\n    api_protocol: https\n")
+	env.writeClaudeSession(t, "sess-1", "my-group/my-project", "toolu_1")
+
+	_, err := env.exec("--all")
+	require.NoError(t, err)
+
+	status := readStatus(t)
+	assert.Equal(t, 1, status.SessionsSynced)
+	assert.Empty(t, status.NoToken, "nothing failed, so the missing token did not matter")
+}
+
+func TestSyncAll_HostWithTokenIsNotRecorded(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.writeClaudeSession(t, "sess-1", "my-group/my-project", "toolu_1")
+
+	_, err := env.exec("--all")
+	require.NoError(t, err)
+
+	assert.Empty(t, readStatus(t).NoToken)
+}
+
+func TestSyncAll_HostWithJobTokenIsNotRecorded(t *testing.T) {
+	for _, name := range []string{"GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "JOB_TOKEN", "CI_JOB_TOKEN", "GLAB_ENABLE_CI_AUTOLOGIN"} {
+		t.Setenv(name, "")
+	}
+	env := newSyncAllEnvWithConfig(t, true, "hosts:\n  "+testHost+":\n    api_protocol: https\n    job_token: job-token\n")
+	env.writeClaudeSession(t, "sess-1", "my-group/my-project", "toolu_1")
+
+	_, err := env.exec("--all")
+	require.NoError(t, err)
+
+	assert.Empty(t, readStatus(t).NoToken)
 }
 
 func TestSyncAll_RejectedSessionErrorIsNotRepeated(t *testing.T) {
@@ -561,6 +656,7 @@ func TestSyncAll_LooksUpEachProjectOnce(t *testing.T) {
 
 func TestSyncAll_ContinuesPastFailedProjectLookup(t *testing.T) {
 	env := newSyncAllEnv(t, true)
+	env.fake.projectStatus = http.StatusForbidden
 	env.writeClaudeSession(t, "sess-bad", "gone/project", "toolu_1")
 	env.writeClaudeSession(t, "sess-good", "my-group/my-project", "toolu_2")
 

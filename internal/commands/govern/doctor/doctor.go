@@ -369,6 +369,17 @@ func checkFallbackSync(ctx context.Context, executor cmdutils.Executor, goos str
 		return checkResult{name: name, ok: true, message: fmt.Sprintf("installed (%s); could not read last run: %v", glabPath, err)}
 	}
 
+	// The job may run without the token of the shell that runs doctor, so a
+	// token check in doctor alone does not show that the job is logged in.
+	if len(status.NoToken) > 0 {
+		return checkResult{
+			name:    name,
+			ok:      false,
+			message: fmt.Sprintf("installed (%s), but the last run had no token for %s and could not sync some sessions there; %s", glabPath, strings.Join(status.NoToken, ", "), describeLastRun(status, now)),
+			fix:     fmt.Sprintf("Run 'glab auth login --hostname %s'. Environment variables set only in your shell, such as GITLAB_TOKEN or GLAB_CONFIG_DIR, are not visible to the job, so a sync run from your shell does not show that the job can sync", status.NoToken[0]),
+		}
+	}
+
 	if len(status.Errors) > 0 && status.SessionsSynced == 0 && status.SessionsCompleted == 0 {
 		return checkResult{
 			name:    name,
@@ -428,6 +439,9 @@ func describeLastRun(s *fallbacksync.Status, now time.Time) string {
 	}
 	if n := len(s.GovernanceNotEnabled); n > 0 {
 		desc += fmt.Sprintf("; governance not enabled for %s (%s)", plural(n, "project"), strings.Join(s.GovernanceNotEnabled, ", "))
+	}
+	if n := len(s.ProjectNotFound); n > 0 {
+		desc += fmt.Sprintf("; %s not found or not accessible (%s)", plural(n, "project"), strings.Join(s.ProjectNotFound, ", "))
 	}
 	return desc
 }
