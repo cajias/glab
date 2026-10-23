@@ -21,6 +21,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/claudehooks"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/fallbacksync"
+	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/opencodeplugin"
 	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/iostreams"
@@ -65,6 +66,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			- Authentication: glab is authenticated with a valid token
 			- glab in PATH: the binary is findable so hooks will work
 			- Agent session hooks: the Stop and SessionEnd hooks are installed
+			- OpenCode plugin: whether the glab plugin is installed and up to date
 			- API connectivity: can reach the GitLab API
 			- Fallback periodic sync: whether the scheduled job is installed and loaded, whether the glab binary it runs still exists and is the same build as this glab, and the result of its last run
 
@@ -95,6 +97,7 @@ func runDoctor(ctx context.Context, opts *options) error {
 		checkGlabInPath(),
 		checkAuthentication(opts),
 		checkClaudeHooks(),
+		checkOpenCodePlugin(),
 		checkAPIConnectivity(ctx, opts),
 		checkFallbackSync(ctx, opts.executor, runtime.GOOS, opts.buildInfo, time.Now()),
 	}
@@ -245,6 +248,37 @@ func checkClaudeHooks() checkResult {
 		ok:      true,
 		message: "Stop and SessionEnd hooks installed",
 	}
+}
+
+func checkOpenCodePlugin() checkResult {
+	const name = "OpenCode plugin"
+
+	if runtime.GOOS == "windows" {
+		return checkResult{name: name, ok: true, message: "not supported on Windows"}
+	}
+
+	path, err := opencodeplugin.Path()
+	if err != nil {
+		return checkResult{name: name, ok: false, message: err.Error()}
+	}
+	state, err := opencodeplugin.Check(path)
+	display := opencodeplugin.Display(path)
+	if err != nil {
+		return checkResult{name: name, ok: false, message: fmt.Sprintf("could not read %s: %v", display, err), fix: "Fix the file, then run: glab govern setup --agents opencode"}
+	}
+	switch state {
+	case opencodeplugin.Current:
+		return checkResult{name: name, ok: true, message: "installed in " + display}
+	case opencodeplugin.Outdated:
+		return checkResult{name: name, ok: false, message: display + " is out of date", fix: "Run: glab govern setup"}
+	case opencodeplugin.Foreign:
+		return checkResult{name: name, ok: false, message: display + " was not installed by glab", fix: "Remove or rename it, then run: glab govern setup --agents opencode"}
+	}
+
+	if detected, err := opencodeplugin.Detected(); err == nil && detected {
+		return checkResult{name: name, ok: true, message: "not installed, so OpenCode sessions are not synced; run 'glab govern setup --agents opencode' to sync them"}
+	}
+	return checkResult{name: name, ok: true, message: "not installed"}
 }
 
 func checkAPIConnectivity(ctx context.Context, opts *options) checkResult {

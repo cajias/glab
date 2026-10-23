@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"time"
 
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/opencodeplugin"
 	"gitlab.com/gitlab-org/cli/internal/dbg"
 )
 
@@ -58,13 +61,29 @@ func (openCode) discover(context.Context, func(string) bool) ([]discoveredSessio
 	return nil, nil
 }
 
-// pausedReason never pauses OpenCode, because glab installs nothing in
-// OpenCode that the user could remove to pause syncing.
 func (openCode) pausedReason() (string, error) {
+	return openCodePausedReason(runtime.GOOS)
+}
+
+func openCodePausedReason(goos string) (string, error) {
+	if goos == "windows" {
+		return "the OpenCode plugin is not supported on Windows", nil
+	}
+	path, err := opencodeplugin.Path()
+	if err != nil {
+		return "", err
+	}
+	state, err := opencodeplugin.Check(path)
+	if err != nil {
+		return "", err
+	}
+	if state == opencodeplugin.NotInstalled || state == opencodeplugin.Foreign {
+		return "the glab OpenCode plugin is not installed in " + opencodeplugin.Display(path), nil
+	}
 	return "", nil
 }
 
-// openCodeTranscript reads an OpenCode session through `opencode export`
+// openCodeTranscript reads an OpenCode session through its export command
 // rather than OpenCode's storage directly. The storage moved from JSON files
 // to SQLite in OpenCode 1.2 and its schema keeps changing, while the export
 // format is the documented interface.
@@ -82,17 +101,29 @@ type openCodeTranscript struct {
 	export *openCodeExport
 }
 
+// openCodeExport holds what glab reads from either export format. OpenCode 1
+// keeps each message's role and parts under info and parts. OpenCode 2 gives
+// each message a type, with the user's text or the assistant's content.
 type openCodeExport struct {
 	Info struct {
 		Time openCodeTime `json:"time"`
 	} `json:"info"`
-	Messages []struct {
-		Info struct {
-			Role string       `json:"role"`
-			Time openCodeTime `json:"time"`
-		} `json:"info"`
-		Parts []openCodePart `json:"parts"`
-	} `json:"messages"`
+	Messages []openCodeMessage `json:"messages"`
+}
+
+type openCodeMessage struct {
+	Info struct {
+		Role string       `json:"role"`
+		Time openCodeTime `json:"time"`
+	} `json:"info"`
+	Parts []openCodePart `json:"parts"`
+
+	Type string       `json:"type"`
+	Time openCodeTime `json:"time"`
+	Text string       `json:"text"`
+	// Content is decoded one block at a time in tools, so that a block in a
+	// shape glab does not know does not fail the whole export.
+	Content []json.RawMessage `json:"content"`
 }
 
 // openCodeTime holds Unix timestamps in milliseconds.
@@ -119,9 +150,133 @@ type openCodePart struct {
 	} `json:"state"`
 }
 
+// openCodeContent is an OpenCode 2 assistant content block.
+type openCodeContent struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	State struct {
+		Status string          `json:"status"`
+		Input  json.RawMessage `json:"input"`
+		Error  json.RawMessage `json:"error"`
+	} `json:"state"`
+	Time struct {
+		Created   int64 `json:"created"`
+		Ran       int64 `json:"ran"`
+		Completed int64 `json:"completed"`
+	} `json:"time"`
+}
+
+// errorText returns a tool error's message, or its type when it has none.
+func (c openCodeContent) errorText() string {
+	var structured struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(c.State.Error, &structured) == nil {
+		if structured.Message != "" {
+			return structured.Message
+		}
+		return structured.Type
+	}
+	var text string
+	_ = json.Unmarshal(c.State.Error, &text)
+	return text
+}
+
+// openCodeTool is a tool call from either export format, with times in Unix
+// milliseconds. start and end are zero until the call has started or ended.
+type openCodeTool struct {
+	id, name string
+	input    json.RawMessage
+	status   string
+	err      string
+	created  int64
+	start    int64
+	end      int64
+}
+
+func (e *openCodeExport) goal() string {
+	for _, msg := range e.Messages {
+		if msg.Type == "user" {
+			if goal := goalFromText(msg.Text); goal != "" {
+				return goal
+			}
+		}
+		if msg.Info.Role != "user" {
+			continue
+		}
+		for _, part := range msg.Parts {
+			if part.Type != "text" || part.Synthetic {
+				continue
+			}
+			if goal := goalFromText(part.Text); goal != "" {
+				return goal
+			}
+		}
+	}
+	return ""
+}
+
+func (e *openCodeExport) tools() []openCodeTool {
+	var tools []openCodeTool
+	for _, msg := range e.Messages {
+		for _, part := range msg.Parts {
+			if part.Type != "tool" {
+				continue
+			}
+			id := part.CallID
+			if id == "" {
+				id = part.ID
+			}
+			tools = append(tools, openCodeTool{
+				id:      id,
+				name:    part.Tool,
+				input:   part.State.Input,
+				status:  part.State.Status,
+				err:     part.State.Error,
+				created: msg.Info.Time.Created,
+				start:   part.State.Time.Start,
+				end:     part.State.Time.End,
+			})
+		}
+		for _, raw := range msg.Content {
+			var block openCodeContent
+			if err := json.Unmarshal(raw, &block); err != nil || block.Type != "tool" {
+				continue
+			}
+			input := block.State.Input
+			// A streaming call's input is a string of partial JSON, and the
+			// call is not synced again once it has been counted.
+			if block.State.Status == "streaming" {
+				input = nil
+			}
+			tools = append(tools, openCodeTool{
+				id:      block.ID,
+				name:    block.Name,
+				input:   input,
+				status:  block.State.Status,
+				err:     block.errorText(),
+				created: block.Time.Created,
+				start:   block.Time.Ran,
+				end:     block.Time.Completed,
+			})
+		}
+	}
+	return tools
+}
+
 func (t *openCodeTranscript) String() string {
 	return "OpenCode session " + t.sessionID
 }
+
+// openCodeExportCommands are the commands that print a session, newest
+// OpenCode first. OpenCode 2 moved export under session, and --standalone
+// reads it without OpenCode's background service, which the scheduled job
+// would otherwise start.
+var openCodeExportCommands = [][]string{{"session", "export", "--standalone"}, {"export"}}
+
+var errOpenCodeExportTimedOut = errors.New("timed out")
 
 func (t *openCodeTranscript) load(ctx context.Context) error {
 	if t.export != nil {
@@ -137,24 +292,37 @@ func (t *openCodeTranscript) load(ctx context.Context) error {
 		binary = path
 	}
 
-	stdout, stderr, err := t.runExport(ctx, binary)
-	if err != nil {
+	var failures []error
+	for _, command := range openCodeExportCommands {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		args := append(slices.Clone(command), t.sessionID)
+		stdout, stderr, err := t.runExport(ctx, binary, args)
+		switch {
 		// opencode reports a deleted session only through this message. It is
 		// not proof that the session was deleted: the job may see a different
 		// OpenCode data directory from the agent.
-		if strings.Contains(string(stderr), "Session not found") {
-			return fmt.Errorf("opencode export %s: %w", t.sessionID, errAgentSessionNotFound)
+		case err != nil && strings.Contains(string(stderr), "Session not found"):
+			return fmt.Errorf("opencode %s: %w", strings.Join(args, " "), errAgentSessionNotFound)
+		case errors.Is(err, errOpenCodeExportTimedOut):
+			return fmt.Errorf("opencode %s: %w", strings.Join(args, " "), err)
+		case err != nil:
+			// OpenCode 1 answers session export with its whole help text.
+			reason, _, _ := strings.Cut(strings.TrimSpace(string(stderr)), "\n")
+			failures = append(failures, fmt.Errorf("opencode %s: %w: %s", strings.Join(args, " "), err, reason))
+			continue
 		}
-		return fmt.Errorf("opencode export %s: %w: %s", t.sessionID, err, strings.TrimSpace(string(stderr)))
-	}
 
-	var export openCodeExport
-	if err := json.Unmarshal(stdout, &export); err != nil {
-		return fmt.Errorf("could not parse opencode export: %w", err)
+		var export openCodeExport
+		if err := json.Unmarshal(stdout, &export); err != nil {
+			return fmt.Errorf("could not parse opencode export: %w", err)
+		}
+		t.raw = stdout
+		t.export = &export
+		return nil
 	}
-	t.raw = stdout
-	t.export = &export
-	return nil
+	return errors.Join(failures...)
 }
 
 // openCodeExportTimeout bounds one opencode export. launchd and systemd do not
@@ -162,11 +330,11 @@ func (t *openCodeTranscript) load(ctx context.Context) error {
 // otherwise stop all later syncing.
 const openCodeExportTimeout = 2 * time.Minute
 
-// runExport runs opencode export with its output in temporary files rather
-// than buffers. With a buffer, exec copies the output through a pipe and
-// waits for the pipe to close, so a child process of opencode that inherits
-// it keeps the wait blocked even after opencode is killed.
-func (t *openCodeTranscript) runExport(ctx context.Context, binary string) ([]byte, []byte, error) {
+// runExport runs an opencode export command with its output in temporary
+// files rather than buffers. With a buffer, exec copies the output through a
+// pipe and waits for the pipe to close, so a child process of opencode that
+// inherits it keeps the wait blocked even after opencode is killed.
+func (t *openCodeTranscript) runExport(ctx context.Context, binary string, args []string) ([]byte, []byte, error) {
 	timeout := t.timeout
 	if timeout == 0 {
 		timeout = openCodeExportTimeout
@@ -185,9 +353,9 @@ func (t *openCodeTranscript) runExport(ctx context.Context, binary string) ([]by
 	}()
 	outPath, errPath := filepath.Join(dir, "stdout"), filepath.Join(dir, "stderr")
 
-	runErr := t.exportToFiles(ctx, binary, outPath, errPath)
+	runErr := t.exportToFiles(ctx, binary, args, outPath, errPath)
 	if runErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		runErr = fmt.Errorf("timed out after %s", timeout)
+		runErr = fmt.Errorf("%w after %s", errOpenCodeExportTimedOut, timeout)
 	}
 
 	stdout, err := os.ReadFile(outPath)
@@ -201,7 +369,7 @@ func (t *openCodeTranscript) runExport(ctx context.Context, binary string) ([]by
 	return stdout, stderr, runErr
 }
 
-func (t *openCodeTranscript) exportToFiles(ctx context.Context, binary, outPath, errPath string) (err error) {
+func (t *openCodeTranscript) exportToFiles(ctx context.Context, binary string, args []string, outPath, errPath string) (err error) {
 	outFile, err := os.Create(outPath)
 	if err != nil {
 		return err
@@ -213,7 +381,7 @@ func (t *openCodeTranscript) exportToFiles(ctx context.Context, binary, outPath,
 	}
 	defer func() { err = errors.Join(err, errFile.Close()) }()
 
-	return t.executor.ExecWithIO(ctx, binary, []string{"export", t.sessionID}, nil, nil, outFile, errFile)
+	return t.executor.ExecWithIO(ctx, binary, args, nil, nil, outFile, errFile)
 }
 
 func (t *openCodeTranscript) read(ctx context.Context, cursor int64) (*sessionData, int64, error) {
@@ -225,55 +393,43 @@ func (t *openCodeTranscript) read(ctx context.Context, cursor int64) (*sessionDa
 		SessionID: t.sessionID,
 		StartedAt: time.UnixMilli(t.export.Info.Time.Created),
 	}
-	var seen int64
-	for _, msg := range t.export.Messages {
-		for _, part := range msg.Parts {
-			switch part.Type {
-			case "text":
-				if cursor == 0 && data.Goal == "" && msg.Info.Role == "user" && !part.Synthetic {
-					data.Goal = goalFromText(part.Text)
-				}
-			case "tool":
-				if seen >= cursor {
-					// Pending tool calls have no start time yet.
-					started := part.State.Time.Start
-					if started == 0 {
-						started = msg.Info.Time.Created
-					}
-					id := part.CallID
-					if id == "" {
-						id = part.ID
-					}
-					data.ToolCalls = append(data.ToolCalls, toolCall{
-						ID:        id,
-						Name:      part.Tool,
-						Input:     part.State.Input,
-						Timestamp: time.UnixMilli(started),
-					})
-					// The cursor counts tool calls, so a result is only
-					// recorded when the call has finished by the time it is
-					// first synced, which is usual as syncs follow each turn.
-					if status := part.State.Status; status == "completed" || status == "error" {
-						result := toolResult{
-							CallID:    id,
-							Name:      part.Tool,
-							IsError:   status == "error",
-							Error:     part.State.Error,
-							Timestamp: time.UnixMilli(part.State.Time.End),
-						}
-						if end, start := part.State.Time.End, part.State.Time.Start; end > 0 && start > 0 {
-							result.Duration = time.Duration(end-start) * time.Millisecond
-						} else {
-							result.Timestamp = time.UnixMilli(started)
-						}
-						data.ToolResults = append(data.ToolResults, result)
-					}
-				}
-				seen++
-			}
-		}
+	if cursor == 0 {
+		data.Goal = t.export.goal()
 	}
-	return data, max(seen, cursor), nil
+	tools := t.export.tools()
+	for _, tool := range tools[min(cursor, int64(len(tools))):] {
+		// Pending tool calls have no start time yet.
+		started := tool.start
+		if started == 0 {
+			started = tool.created
+		}
+		data.ToolCalls = append(data.ToolCalls, toolCall{
+			ID:        tool.id,
+			Name:      tool.name,
+			Input:     tool.input,
+			Timestamp: time.UnixMilli(started),
+		})
+		// The cursor counts tool calls, so a result is only recorded when the
+		// call has finished by the time it is first synced, which is usual as
+		// syncs follow each turn.
+		if tool.status != "completed" && tool.status != "error" {
+			continue
+		}
+		result := toolResult{
+			CallID:    tool.id,
+			Name:      tool.name,
+			IsError:   tool.status == "error",
+			Error:     tool.err,
+			Timestamp: time.UnixMilli(tool.end),
+		}
+		if tool.end > 0 && tool.start > 0 {
+			result.Duration = time.Duration(tool.end-tool.start) * time.Millisecond
+		} else {
+			result.Timestamp = time.UnixMilli(started)
+		}
+		data.ToolResults = append(data.ToolResults, result)
+	}
+	return data, max(int64(len(tools)), cursor), nil
 }
 
 func (t *openCodeTranscript) lastActivity(ctx context.Context) (time.Time, error) {
@@ -282,7 +438,7 @@ func (t *openCodeTranscript) lastActivity(ctx context.Context) (time.Time, error
 	}
 	last := t.export.Info.Time.Updated
 	for _, msg := range t.export.Messages {
-		last = max(last, msg.Info.Time.Created)
+		last = max(last, msg.Info.Time.Created, msg.Time.Created)
 	}
 	if last == 0 {
 		// Without any timestamp the session must not look idle, or --all

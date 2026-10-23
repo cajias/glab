@@ -23,6 +23,7 @@ import (
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/claudehooks"
 	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/fallbacksync"
+	"gitlab.com/gitlab-org/cli/internal/commands/govern/internal/opencodeplugin"
 	"gitlab.com/gitlab-org/cli/internal/mcpannotations"
 	"gitlab.com/gitlab-org/cli/internal/testing/cmdtest"
 )
@@ -499,4 +500,65 @@ func TestChecks_ReportHomeDirError(t *testing.T) {
 	fallback := checkFallbackSync(t.Context(), nil, "linux", testBuild, time.Now())
 	assert.False(t, fallback.ok)
 	assert.Contains(t, fallback.message, "could not determine home directory: $HOME is not defined")
+}
+
+func TestCheckOpenCodePlugin(t *testing.T) {
+	setup := func(t *testing.T) string {
+		t.Helper()
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		path, err := opencodeplugin.Path()
+		require.NoError(t, err)
+		return path
+	}
+
+	t.Run("not installed", func(t *testing.T) {
+		setup(t)
+		result := checkOpenCodePlugin()
+		assert.True(t, result.ok)
+		assert.Equal(t, "not installed", result.message)
+	})
+
+	t.Run("OpenCode found without the plugin", func(t *testing.T) {
+		setup(t)
+		dir, err := opencodeplugin.ConfigDir()
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		result := checkOpenCodePlugin()
+		assert.True(t, result.ok, "the plugin is only installed when asked for")
+		assert.Contains(t, result.message, "run 'glab govern setup --agents opencode' to sync them")
+	})
+
+	t.Run("plugin installed", func(t *testing.T) {
+		path := setup(t)
+		_, err := opencodeplugin.Install(path)
+		require.NoError(t, err)
+		result := checkOpenCodePlugin()
+		assert.True(t, result.ok)
+		assert.Equal(t, "installed in "+opencodeplugin.Display(path), result.message)
+	})
+
+	t.Run("plugin out of date", func(t *testing.T) {
+		path := setup(t)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte("// Installed by glab govern setup.\n// an older version\n"), 0o644))
+		result := checkOpenCodePlugin()
+		assert.False(t, result.ok)
+		assert.Contains(t, result.message, "is out of date")
+	})
+
+	t.Run("file not installed by glab", func(t *testing.T) {
+		path := setup(t)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte("// the user's own plugin\n"), 0o644))
+		result := checkOpenCodePlugin()
+		assert.False(t, result.ok)
+		assert.Contains(t, result.message, "was not installed by glab")
+	})
+}
+
+// TestMain keeps the OpenCode plugin check under the HOME each test sets,
+// rather than under the XDG_CONFIG_HOME of whoever runs the tests.
+func TestMain(m *testing.M) {
+	_ = os.Unsetenv("XDG_CONFIG_HOME")
+	os.Exit(m.Run())
 }
