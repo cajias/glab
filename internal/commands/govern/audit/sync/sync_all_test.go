@@ -269,19 +269,7 @@ func newSyncAllEnvWithConfig(t *testing.T, hooksInstalled bool, cfg string) *syn
 func (e *syncAllEnv) writeClaudeSession(t *testing.T, sessionID, project string, toolIDs ...string) string {
 	t.Helper()
 
-	var content []byte
-	for _, id := range toolIDs {
-		line, err := json.Marshal(map[string]any{
-			"type":      "assistant",
-			"sessionId": sessionID,
-			"timestamp": time.Now().Format(time.RFC3339),
-			"message": map[string]any{
-				"content": []map[string]any{{"type": "tool_use", "id": id, "name": "Bash"}},
-			},
-		})
-		require.NoError(t, err)
-		content = append(append(content, line...), '\n')
-	}
+	content := claudeTranscriptLines(t, sessionID, toolIDs...)
 
 	path := filepath.Join(e.home, ".claude", "projects", "-work-"+sessionID, sessionID+".jsonl")
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
@@ -867,6 +855,79 @@ func TestSyncAll_UploadsOpenCodeSession(t *testing.T) {
 	cursor, err := readCursor("ses_1")
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), cursor)
+}
+
+func TestRunSync_GovernanceNotEnabled(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.fake.identityStatus = http.StatusNotFound
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-1")
+
+	out, err := env.exec("-R my-group/my-project")
+	require.NoError(t, err)
+
+	assert.Contains(t, out.String(), governanceNotEnabled)
+	assert.Empty(t, out.Stderr(), "governance being off is not a failure")
+}
+
+func TestRunSync_GovernanceNotEnabledSilent(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.fake.identityStatus = http.StatusNotFound
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-1")
+	writeHookTranscript(t, "sess-1", "toolu_1")
+
+	out, err := env.exec("-R my-group/my-project --silent")
+	require.NoError(t, err)
+
+	assert.Empty(t, out.String(), "hooks run with --silent")
+	assert.Empty(t, out.Stderr())
+	assert.Empty(t, env.fake.sessionsCreated, "no session is created without an identity")
+}
+
+// writeHookTranscript writes a Claude Code transcript where a hook run from
+// the current directory looks for it.
+func writeHookTranscript(t *testing.T, sessionID string, toolIDs ...string) {
+	t.Helper()
+
+	cwd, err := currentCWD()
+	require.NoError(t, err)
+	path, err := transcriptPath(sessionID, cwd)
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, claudeTranscriptLines(t, sessionID, toolIDs...), 0o644))
+}
+
+// claudeTranscriptLines returns a Claude Code transcript with one Bash tool
+// call for each ID.
+func claudeTranscriptLines(t *testing.T, sessionID string, toolIDs ...string) []byte {
+	t.Helper()
+
+	var content []byte
+	for _, id := range toolIDs {
+		line, err := json.Marshal(map[string]any{
+			"type":      "assistant",
+			"sessionId": sessionID,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"message": map[string]any{
+				"content": []map[string]any{{"type": "tool_use", "id": id, "name": "Bash"}},
+			},
+		})
+		require.NoError(t, err)
+		content = append(append(content, line...), '\n')
+	}
+	return content
+}
+
+func TestRunSync_IdentityErrorStillWarns(t *testing.T) {
+	env := newSyncAllEnv(t, true)
+	env.fake.identityStatus = http.StatusForbidden
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-1")
+
+	out, err := env.exec("-R my-group/my-project")
+	require.NoError(t, err)
+
+	assert.Contains(t, out.Stderr(), "warning: ")
+	assert.NotContains(t, out.String(), governanceNotEnabled, "only a 404 means governance is off")
 }
 
 func TestRunSync_RecordsMetaBeforeProjectLookup(t *testing.T) {

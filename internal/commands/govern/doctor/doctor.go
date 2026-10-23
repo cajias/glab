@@ -438,7 +438,9 @@ func describeLastRun(s *fallbacksync.Status, now time.Time) string {
 		desc += "; not synced: " + strings.Join(s.Skipped, "; ")
 	}
 	if n := len(s.GovernanceNotEnabled); n > 0 {
-		desc += fmt.Sprintf("; governance not enabled for %s (%s)", plural(n, "project"), strings.Join(s.GovernanceNotEnabled, ", "))
+		desc += fmt.Sprintf("; governance not enabled for %s (%s), ask a group Owner or administrator to turn it on "+
+			"(not available for personal projects on GitLab.com)",
+			plural(n, "project"), strings.Join(s.GovernanceNotEnabled, ", "))
 	}
 	if n := len(s.ProjectNotFound); n > 0 {
 		desc += fmt.Sprintf("; %s not found or not accessible (%s)", plural(n, "project"), strings.Join(s.ProjectNotFound, ", "))

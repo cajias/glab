@@ -176,6 +176,12 @@ func runSync(ctx context.Context, opts *options) error {
 	t := target{client: client, project: project}
 	if opts.agentType != "" {
 		identity, err := gaig.RegisterIdentity(client, project.ID, opts.agentType)
+		if errors.Is(err, gitlab.ErrNotFound) {
+			if !opts.silent {
+				opts.io.LogInfo(governanceNotEnabled)
+			}
+			return nil
+		}
 		if err != nil && !opts.silent {
 			opts.io.LogErrorf("warning: %v\n", err)
 		}
@@ -664,6 +670,9 @@ type sessionRequest struct {
 type sessionResponse struct {
 	ID int `json:"id"`
 }
+
+const governanceNotEnabled = "AI Governance is not turned on for this project. " +
+	"Ask a group Owner or administrator to turn it on. It is not available for personal projects on GitLab.com."
 
 // syncTypeFor reports which path is syncing the session. GitLab keeps the value
 // sent when it creates the session. The hooks are the only callers that pass
