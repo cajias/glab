@@ -97,9 +97,16 @@ func (c *CachingChecker) Check(ctx context.Context, r Request) (Result, error) {
 		// The inner check is shared across every caller coalesced onto this
 		// entry, so it must not inherit one caller's cancellation: WithoutCancel
 		// keeps a single participant walking away from killing the shared check
-		// for the rest. A hit past this point ignores ctx entirely, which is
-		// intentional for a per-run cache.
-		res, err := c.inner.Check(context.WithoutCancel(ctx), r)
+		// for the rest. WithoutCancel also drops the deadline, and the API
+		// client has no timeout of its own, so the deadline is put back to keep
+		// a stalled API failing closed. A hit past this point ignores ctx
+		// entirely, which is intentional for a per-run cache.
+		shared, cancel := context.WithoutCancel(ctx), context.CancelFunc(func() {})
+		if deadline, ok := ctx.Deadline(); ok {
+			shared, cancel = context.WithDeadline(shared, deadline)
+		}
+		defer cancel()
+		res, err := c.inner.Check(shared, r)
 		switch {
 		case errors.Is(err, errFirewallNotEvaluating):
 			// Fail open: the firewall is not evaluating this project (feature
