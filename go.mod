@@ -25,6 +25,7 @@ require (
 	github.com/google/renameio/v2 v2.0.2
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/uuid v1.6.0
+	github.com/goproxy/goproxy v0.27.0
 	github.com/gosuri/uilive v0.0.4
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hashicorp/go-retryablehttp v0.7.8
@@ -51,6 +52,7 @@ require (
 	go.uber.org/mock v0.6.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.58.0
+	golang.org/x/mod v0.42.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
@@ -68,6 +70,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/andybalholm/cascadia v1.3.4 // indirect
+	github.com/aofei/backoff v1.2.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
