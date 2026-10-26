@@ -16,6 +16,7 @@ import (
 
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/cmdutils"
+	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/dbg"
 	"gitlab.com/gitlab-org/cli/internal/git"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
@@ -56,6 +57,7 @@ type options struct {
 type ContextOpts struct {
 	Project *gitlab.Project
 	Repo    string
+	repo    glrepo.Interface
 }
 
 func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *cobra.Command {
@@ -157,20 +159,43 @@ func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *c
 				return runE(opts, ctxOpts)
 			}
 
+			cfg := f.Config()
 			opts.host = f.DefaultHostname()
 
-			apiClient, err := f.ApiClient(opts.host)
-			if err != nil {
-				return err
-			}
-			opts.apiClient = apiClient
+			// A full URL is handed to git as-is, so a plain clone needs no API
+			// client or authenticated user. Only --wiki resolves the repository
+			// through the API: it builds a client for the URL's host, which sends
+			// a configured or GITLAB_TOKEN credential to that host, the same as
+			// --wiki with -R <url>.
+			switch {
+			case git.IsValidURL(ctxOpts.Repo):
+				if opts.wiki {
+					repo, err := cloneRepo(ctxOpts.Repo, opts.host, cfg)
+					if err != nil {
+						return err
+					}
+					opts.host = repo.RepoHost()
+					ctxOpts.repo = repo
 
-			opts.currentUser, _, err = opts.apiClient.Lab().Users.CurrentUser()
-			if err != nil {
-				return err
+					apiClient, err := f.ApiClient(opts.host)
+					if err != nil {
+						return err
+					}
+					opts.apiClient = apiClient
+				}
+			default:
+				apiClient, err := f.ApiClient(opts.host)
+				if err != nil {
+					return err
+				}
+				opts.apiClient = apiClient
+
+				opts.currentUser, _, err = apiClient.Lab().Users.CurrentUser()
+				if err != nil {
+					return err
+				}
 			}
 
-			cfg := f.Config()
 			opts.protocol, _ = cfg.Get(opts.host, "git_protocol")
 
 			if opts.groupName != "" {
@@ -207,6 +232,33 @@ func NewCmdClone(f cmdutils.Factory, runE func(*options, *ContextOpts) error) *c
 	})
 
 	return repoCloneCmd
+}
+
+// cloneRepo parses a full URL argument into a repository. The result carries
+// both the URL's own host (so cloning from another instance does not target the
+// default one) and its project path with any configured subfolder stripped, so
+// a --wiki lookup reuses that path instead of parsing the URL a second time.
+func cloneRepo(repoArg, defaultHost string, cfg config.Config) (glrepo.Interface, error) {
+	u, err := git.ParseURL(repoArg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid argument: %w", err)
+	}
+	repo, err := glrepo.FromURL(u, defaultHost, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid argument: %w", err)
+	}
+	return repo, nil
+}
+
+// wikiProjectPath is the namespace/repo the wiki lookup queries. A full URL is
+// parsed once in RunE, so its path already has any configured subfolder
+// stripped; FullNameFromURL does not strip it, so it is only a fallback for
+// callers that reach cloneRun without a pre-parsed repository.
+func wikiProjectPath(ctxOpts *ContextOpts) (string, error) {
+	if ctxOpts.repo != nil {
+		return ctxOpts.repo.FullName(), nil
+	}
+	return glrepo.FullNameFromURL(ctxOpts.Repo)
 }
 
 func groupClone(opts *options, ctxOpts *ContextOpts) error {
@@ -377,7 +429,7 @@ func cloneRun(opts *options, ctxOpts *ContextOpts) error {
 	}
 	if opts.wiki {
 		if ctxOpts.Project == nil {
-			projectPath, err := glrepo.FullNameFromURL(ctxOpts.Repo)
+			projectPath, err := wikiProjectPath(ctxOpts)
 			if err != nil {
 				return err
 			}
@@ -396,6 +448,7 @@ func cloneRun(opts *options, ctxOpts *ContextOpts) error {
 		ctxOpts.Repo = wikiURL
 	}
 	isUserFork := ctxOpts.Project != nil && ctxOpts.Project.ForkedFromProject != nil &&
+		opts.currentUser != nil &&
 		strings.Contains(ctxOpts.Project.PathWithNamespace, opts.currentUser.Username)
 	if isUserFork && localDir == "" {
 		if err := validateAPIPath(ctxOpts.Project.Path); err != nil {
