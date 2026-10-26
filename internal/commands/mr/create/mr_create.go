@@ -537,20 +537,11 @@ func (o *options) run(ctx context.Context) error {
 		}
 
 		if o.SourceBranch == "" {
-			sourceBranch := fmt.Sprintf("%d-%s", issue.IID, utils.ReplaceNonAlphaNumericChars(strings.ToLower(issue.Title), "-"))
-			branchOpts := &gitlab.CreateBranchOptions{
-				Branch: &sourceBranch,
-				Ref:    &o.TargetBranch,
-			}
-
-			_, _, err = client.Branches.CreateBranch(baseRepo.FullName(), branchOpts)
+			issueBranch := fmt.Sprintf("%d-%s", issue.IID, utils.ReplaceNonAlphaNumericChars(strings.ToLower(issue.Title), "-"))
+			o.SourceBranch, err = mrutils.CreateUniqueBranch(ctx, client, baseRepo.FullName(), issueBranch, o.TargetBranch)
 			if err != nil {
-				for branchErr, branchCount := err, 1; branchErr != nil; branchCount++ {
-					sourceBranch = fmt.Sprintf("%d-%s-%d", issue.IID, strings.ReplaceAll(strings.ToLower(issue.Title), " ", "-"), branchCount)
-					_, _, branchErr = client.Branches.CreateBranch(baseRepo.FullName(), branchOpts)
-				}
+				return err
 			}
-			o.SourceBranch = sourceBranch
 		}
 	} else {
 		if o.SourceBranch == o.TargetBranch && glrepo.IsSame(baseRepo, headRepo) {

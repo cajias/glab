@@ -74,26 +74,10 @@ func NewCmdFor(f cmdutils.Factory) *cobra.Command {
 				}
 			}
 
-			sourceBranch := fmt.Sprintf("%d-%s", issue.IID, utils.ReplaceNonAlphaNumericChars(strings.ToLower(issue.Title), "-"))
-
-			lb := &gitlab.CreateBranchOptions{
-				Branch: &sourceBranch,
-				Ref:    &targetBranch,
-			}
-
-			_, _, err = client.Branches.CreateBranch(repo.FullName(), lb)
+			issueBranch := fmt.Sprintf("%d-%s", issue.IID, utils.ReplaceNonAlphaNumericChars(strings.ToLower(issue.Title), "-"))
+			sourceBranch, err := mrutils.CreateUniqueBranch(cmd.Context(), client, repo.FullName(), issueBranch, targetBranch)
 			if err != nil {
-				for branchErr, branchCount := err, 1; branchErr != nil; branchCount++ {
-
-					numberedBranch := fmt.Sprintf("%d-%s-%d", issue.IID, strings.ReplaceAll(strings.ToLower(issue.Title), " ", "-"), branchCount)
-					lb = &gitlab.CreateBranchOptions{
-						Branch: &numberedBranch,
-						Ref:    &targetBranch,
-					}
-					sourceBranch = numberedBranch
-					_, _, branchErr = client.Branches.CreateBranch(repo.FullName(), lb)
-					fmt.Println(branchErr)
-				}
+				return err
 			}
 
 			var mergeTitle string
