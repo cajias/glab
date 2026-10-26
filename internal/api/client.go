@@ -168,17 +168,75 @@ func (c *Client) initializeHTTPClient() error {
 		key.proxyURL = c.proxyURL.String()
 	}
 
+	rt, err := c.roundTripper(key, u)
+	if err != nil {
+		return err
+	}
+
+	c.httpClient = &http.Client{Transport: rt, CheckRedirect: refuseMethodChangingRedirect}
+
+	// Configure cookie jar and SSO transport if cookie file is provided.
+	// refuseMethodChangingRedirect stays in place: ssoTransport resolves
+	// 301/302/303 on mutating methods itself and never hands one back to the
+	// client, so the policy only ever sees method-preserving redirects.
+	if c.cookieFile != "" {
+		jar, err := c.createCookieJar()
+		if err != nil {
+			return fmt.Errorf("failed to create cookie jar: %w", err)
+		}
+		c.httpClient.Jar = jar
+
+		// The SSO legs reach the identity provider, not the instance, so they must not
+		// inherit the instance's TLS exceptions: skip_tls_verify would disable
+		// certificate validation on the very hop that carries the IdP session cookie,
+		// and the client certificate would be offered to a third party. The CA stays,
+		// because a corporate CA is often exactly what the IdP chain needs.
+		ssoKey := key
+		ssoKey.insecure = false
+		ssoKey.clientCertFile = ""
+		ssoKey.clientKeyFile = ""
+		ssoRT, err := c.roundTripper(ssoKey, u)
+		if err != nil {
+			return err
+		}
+
+		// ssoClient carries the transport, jar and timeout that ssoTransport lends to the
+		// clients it builds per flow. It uses the underlying transport, not ssoTransport,
+		// so those clients cannot recurse back into SSO handling. Its own redirect policy
+		// is deliberately left unset: every borrower sets one that suits its leg of the
+		// flow, and ssoClient.Do is never called.
+		ssoClient := &http.Client{
+			Transport: ssoRT,
+			Jar:       jar,
+			Timeout:   ssoTimeout,
+		}
+
+		c.httpClient.Transport = &ssoTransport{
+			rt:             rt,
+			ssoClient:      ssoClient,
+			allowedDomains: c.ssoAllowedDomains,
+		}
+		dbg.Debugf("ssoTransport: initialized with cookie file %q and %d pre-approved SSO domains", c.cookieFile, len(c.ssoAllowedDomains))
+	}
+
+	return nil
+}
+
+// roundTripper builds the transport chain for key: the pooled or standalone base
+// transport, then the debug and custom-header wrappers. Taking the key as a
+// parameter lets the SSO client use a transport that differs from the instance's.
+func (c *Client) roundTripper(key transportKey, u *url.URL) (http.RoundTripper, error) {
 	var rt http.RoundTripper
 	if c.transports != nil {
 		t, err := c.transports.transport(key)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rt = &pooledTransport{rt: t}
 	} else {
 		t, err := newTransport(key)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rt = t
 	}
@@ -196,44 +254,7 @@ func (c *Client) initializeHTTPClient() error {
 		rt = &customHeadersTransport{rt: rt, headers: c.customHeaders, allowedHosts: allowedHosts}
 	}
 
-	c.httpClient = &http.Client{Transport: rt, CheckRedirect: refuseMethodChangingRedirect}
-
-	// Configure cookie jar and SSO transport if cookie file is provided.
-	// refuseMethodChangingRedirect stays in place: ssoTransport resolves
-	// 301/302/303 on mutating methods itself and never hands one back to the
-	// client, so the policy only ever sees method-preserving redirects.
-	if c.cookieFile != "" {
-		jar, err := c.createCookieJar()
-		if err != nil {
-			return fmt.Errorf("failed to create cookie jar: %w", err)
-		}
-		c.httpClient.Jar = jar
-
-		// ssoClient uses the underlying transport (not ssoTransport) to avoid infinite loops.
-		// It needs its own permissive policy rather than refuseMethodChangingRedirect: the
-		// SSO flow hops across IdP hosts, and those hops are all GET, so only the loop
-		// limit matters here.
-		ssoClient := &http.Client{
-			Transport: rt,
-			Jar:       jar,
-			Timeout:   ssoTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= maxRedirects {
-					return fmt.Errorf("stopped after %d redirects", maxRedirects)
-				}
-				return nil
-			},
-		}
-
-		c.httpClient.Transport = &ssoTransport{
-			rt:             rt,
-			ssoClient:      ssoClient,
-			allowedDomains: c.ssoAllowedDomains,
-		}
-		dbg.Debugf("ssoTransport: initialized with cookie file %q and %d pre-approved SSO domains", c.cookieFile, len(c.ssoAllowedDomains))
-	}
-
-	return nil
+	return rt, nil
 }
 
 // WithProxy routes requests through proxyURL. A nil proxyURL uses the proxy
@@ -367,6 +388,33 @@ func WithSSOAllowedDomains(domains map[string]struct{}) ClientOption {
 		c.ssoAllowedDomains = domains
 		return nil
 	}
+}
+
+// parseSSODomains turns the comma-separated sso_domain value into an allowlist,
+// using the same list form as container_registry_domains. A single value stays a
+// one-element list, so configs written before the key accepted a list keep working.
+// The list form is what makes a real SSO flow expressible: an identity provider
+// legitimately bounces through several hosts before returning to the instance, and
+// every hop is checked against this allowlist.
+//
+// Entries are lowercased to match the hostname comparison in isDomainAllowed. A
+// scheme, port, path or wildcard is rejected rather than ignored, because each
+// would silently never match a hostname and leave the user retrying a value that
+// cannot work.
+func parseSSODomains(value string) (map[string]struct{}, error) {
+	entries := config.ParseDomains(value)
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	domains := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if strings.ContainsAny(entry, "/:*") {
+			return nil, fmt.Errorf("invalid sso_domain entry %q: give a bare hostname such as idp.example.com, with no scheme, port, path, or wildcard", entry)
+		}
+		domains[strings.ToLower(entry)] = struct{}{}
+	}
+	return domains, nil
 }
 
 // FromConfigOption customizes how NewClientFromConfig resolves credentials
@@ -597,10 +645,16 @@ func NewClientFromConfig(repoHost string, cfg config.Config, isGraphQL bool, use
 	if cookieFile != "" {
 		options = append(options, WithCookieFile(cookieFile))
 
-		// Load pre-approved SSO domain from config
+		// Load the pre-approved SSO domains from config. Surface a malformed entry
+		// instead of dropping it: a silently unusable allowlist shows up later as a
+		// consent error naming the host the user thought they had just approved.
 		ssoDomain, _ := cfg.Get(repoHost, "sso_domain")
-		if ssoDomain != "" {
-			options = append(options, WithSSOAllowedDomains(map[string]struct{}{ssoDomain: {}}))
+		ssoDomains, err := parseSSODomains(ssoDomain)
+		if err != nil {
+			return nil, err
+		}
+		if len(ssoDomains) > 0 {
+			options = append(options, WithSSOAllowedDomains(ssoDomains))
 		}
 	}
 

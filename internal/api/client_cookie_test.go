@@ -75,7 +75,7 @@ func TestCreateCookieJar_MultipleDomains(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			req, err := http.NewRequest("GET", tc.url, nil)
+			req, err := http.NewRequest("GET", tc.url, http.NoBody)
 			require.NoError(t, err, "failed to create request")
 
 			cookies := jar.Cookies(req.URL)
@@ -121,7 +121,7 @@ example.com	FALSE	/	TRUE	%d	exact_cookie	value3
 
 	// The jar should contain cookies for all domains
 	// Note: The cookie jar's Cookies() method returns cookies based on domain matching
-	req, _ := http.NewRequest("GET", "https://www.example.com/path", nil)
+	req, _ := http.NewRequest("GET", "https://www.example.com/path", http.NoBody)
 	cookies := jar.Cookies(req.URL)
 
 	// At least one cookie should be available (root_cookie matches subdomains)

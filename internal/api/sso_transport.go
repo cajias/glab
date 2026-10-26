@@ -25,9 +25,11 @@ type ssoTransport struct {
 	allowedDomains map[string]struct{}
 }
 
-const maxRedirects = 10
-const ssoTimeout = 30 * time.Second
-const maxBodySize = 10 * 1024 * 1024 // 10 MB
+const (
+	maxRedirects = 10
+	ssoTimeout   = 30 * time.Second
+	maxBodySize  = 10 * 1024 * 1024 // 10 MB
+)
 
 // requiresMethodPreservation returns true for status codes where Go's http.Client
 // converts POST to GET (301/302/303). 307/308 already preserve the method.
@@ -114,9 +116,22 @@ func isMutatingMethod(method string) bool {
 		method == http.MethodPatch || method == http.MethodDelete
 }
 
+// isDomainAllowed reports whether domain is in the configured sso_domain list.
+// The lookup is lowercased on both sides, since a hostname from a Location
+// header keeps whatever case the responder sent.
 func (t *ssoTransport) isDomainAllowed(domain string) bool {
-	_, ok := t.allowedDomains[domain]
+	_, ok := t.allowedDomains[strings.ToLower(domain)]
 	return ok
+}
+
+// redactedURL renders a Location header value without its userinfo, which a
+// hostile responder could otherwise plant in a log line.
+func redactedURL(location string) string {
+	u, err := url.Parse(location)
+	if err != nil {
+		return "<unparsable location>"
+	}
+	return u.Redacted()
 }
 
 // RoundTrip performs the request and handles SSO/same-host redirects for 301/302/303.
@@ -149,7 +164,7 @@ func (t *ssoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.storeCookies(resp, req.URL)
 
 	location := resp.Header.Get("Location")
-	dbg.Debugf("ssoTransport: %s %s -> %d %s", req.Method, req.URL, resp.StatusCode, location)
+	dbg.Debugf("ssoTransport: %s %s -> %d %s", req.Method, req.URL.Redacted(), resp.StatusCode, redactedURL(location))
 
 	if isSSORedirect(req.URL.Host, req.URL.Scheme, location) {
 		return t.handleSSORedirect(req, resp, location, bodyBytes)
@@ -186,7 +201,7 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 	}
 
 	ctx := req.Context()
-	ssoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, redirectURL.String(), nil)
+	ssoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, redirectURL.String(), http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSO request: %w", err)
 	}
@@ -194,6 +209,11 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 	// Follow SSO redirects until redirected back to the original API path
 	originalHost := normalizeHost(req.URL.Host, req.URL.Scheme)
 	originalPath := req.URL.Path
+	// This policy allows method-changing redirects, which the API client's
+	// refuseMethodChangingRedirect does not, because the SSO flow legitimately hops
+	// across IdP hosts and every hop is a GET. Each hop is still allowlisted: the
+	// consent check above only ever sees the first Location, so without a check here
+	// hops 2..maxRedirects could go anywhere.
 	ssoFlowClient := &http.Client{
 		Transport: t.ssoClient.Transport,
 		Jar:       t.ssoClient.Jar,
@@ -205,31 +225,35 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 			if len(via) >= maxRedirects {
 				return fmt.Errorf("stopped after %d redirects", maxRedirects)
 			}
+			// Returning to the instance on another path is part of the flow.
+			if normalizeHost(r.URL.Host, r.URL.Scheme) == originalHost {
+				return nil
+			}
+			if host := r.URL.Hostname(); !t.isDomainAllowed(host) {
+				return fmt.Errorf("SSO redirect to %s is not allowed; sso_domain is a comma-separated list, so add it with `glab config set sso_domain <current-value>,%s -h <hostname>`", host, host)
+			}
 			return nil
 		},
 	}
 
-	dbg.Debugf("ssoTransport: SSO flow GET %s", redirectURL)
+	dbg.Debugf("ssoTransport: SSO flow GET %s", redirectURL.Redacted())
 	ssoResp, err := ssoFlowClient.Do(ssoReq)
 	if err != nil {
 		return nil, fmt.Errorf("SSO flow request failed: %w", err)
 	}
 	defer drainAndClose(ssoResp)
 
-	// Store cookies from final redirect (not auto-stored with ErrUseLastResponse)
-	cookieURL := req.URL
-	if loc := ssoResp.Header.Get("Location"); loc != "" {
-		if parsed, err := url.Parse(loc); err == nil && parsed.Host != "" {
-			cookieURL = parsed
-		}
-	}
-	t.storeCookies(ssoResp, cookieURL)
+	// Store cookies from the final response (not auto-stored with ErrUseLastResponse),
+	// scoped to the origin that actually produced it. Scoping them to the Location it
+	// points at instead would let any responder in the flow set cookies for the
+	// instance's host, which the retry below then replays to the real GitLab.
+	t.storeCookies(ssoResp, ssoResp.Request.URL)
 
 	if ssoResp.StatusCode >= http.StatusBadRequest {
 		return nil, fmt.Errorf("SSO authentication failed: IdP returned status %d; cookies may be expired or invalid", ssoResp.StatusCode)
 	}
 
-	dbg.Debugf("ssoTransport: SSO complete (%d), retrying %s %s", ssoResp.StatusCode, req.Method, req.URL)
+	dbg.Debugf("ssoTransport: SSO complete (%d), retrying %s %s", ssoResp.StatusCode, req.Method, req.URL.Redacted())
 
 	// Retry original request with fresh cookies from the jar
 	retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
@@ -239,9 +263,12 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 	copyHeaders(req, retryReq)
 	copyAuthHeaders(req, retryReq) // same-host retry: preserve auth credentials
 
-	// Use a no-redirect client so we can handle redirects with method preservation
+	// Use a no-redirect client so we can handle redirects with method preservation.
+	// This leg goes back to the instance, not the IdP, so it uses the instance's
+	// transport (t.rt) rather than the SSO one, which deliberately drops the
+	// instance's TLS exceptions.
 	retryClient := &http.Client{
-		Transport:     t.ssoClient.Transport,
+		Transport:     t.rt,
 		Jar:           t.ssoClient.Jar,
 		Timeout:       t.ssoClient.Timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -249,7 +276,7 @@ func (t *ssoTransport) handleSSORedirect(req *http.Request, resp *http.Response,
 
 	retryResp, err := retryClient.Do(retryReq)
 	if err != nil {
-		return nil, fmt.Errorf("retry %s %s failed after SSO: %w", req.Method, req.URL, err)
+		return nil, fmt.Errorf("retry %s %s failed after SSO: %w", req.Method, req.URL.Redacted(), err)
 	}
 
 	// If not a method-changing redirect (301/302/303), return directly
@@ -285,6 +312,14 @@ func (t *ssoTransport) followRedirects(ctx context.Context, origReq *http.Reques
 			return nil, fmt.Errorf("unexpected SSO redirect from %s to %s during retry; try 'glab auth login' to re-authenticate", currentURL.Host, redirectURL.Host)
 		}
 
+		// A scheme change on the same host never reaches the HTTPS check in
+		// handleSSORedirect, because normalizeHost only looks at host and port and so
+		// reads https->http as same-host. Reject it here, before copyAuthHeaders would
+		// attach credentials to a cleartext request.
+		if redirectURL.Scheme != origReq.URL.Scheme && !isLocalhost(redirectURL.Hostname()) {
+			return nil, fmt.Errorf("refusing to follow the redirect to %s: it downgrades the scheme from %s to %s, which would send credentials over a different transport", redirectURL.Redacted(), origReq.URL.Scheme, redirectURL.Scheme)
+		}
+
 		redirectReq, err := http.NewRequestWithContext(ctx, origReq.Method, redirectURL.String(), bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create redirect request: %w", err)
@@ -299,10 +334,10 @@ func (t *ssoTransport) followRedirects(ctx context.Context, origReq *http.Reques
 			}
 		}
 
-		dbg.Debugf("ssoTransport: redirect #%d: %s %s", redirectCount+1, origReq.Method, redirectURL)
+		dbg.Debugf("ssoTransport: redirect #%d: %s %s", redirectCount+1, origReq.Method, redirectURL.Redacted())
 		resp, err := t.rt.RoundTrip(redirectReq)
 		if err != nil {
-			return nil, fmt.Errorf("redirect to %s failed: %w", redirectURL, err)
+			return nil, fmt.Errorf("redirect to %s failed: %w", redirectURL.Redacted(), err)
 		}
 
 		t.storeCookies(resp, redirectReq.URL)

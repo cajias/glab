@@ -129,7 +129,10 @@ func TestSSOTransport_SSOFlowFails(t *testing.T) {
 	})
 
 	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(`{}`))
-	_, err := client.httpClient.Do(req)
+	resp, err := client.httpClient.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SSO authentication failed")
 }
@@ -146,7 +149,10 @@ func TestSSOTransport_SSOFlowConnectionFails(t *testing.T) {
 	})
 
 	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(`{}`))
-	_, err := client.httpClient.Do(req)
+	resp, err := client.httpClient.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SSO flow request failed")
 }
@@ -192,10 +198,10 @@ func TestSSOTransport_SameHostRedirect_PreservesMethod(t *testing.T) {
 
 func TestSSOTransport_SameHostRedirect_MultipleRedirects(t *testing.T) {
 	t.Parallel()
-	var requestCount int32
+	var requestCount atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		switch r.URL.Path {
 		case "/redirect1":
 			http.Redirect(w, r, "/redirect2", http.StatusFound)
@@ -218,7 +224,7 @@ func TestSSOTransport_SameHostRedirect_MultipleRedirects(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, int32(4), atomic.LoadInt32(&requestCount))
+	assert.Equal(t, int32(4), requestCount.Load())
 }
 
 func TestSSOTransport_SameHostRedirect_MaxRedirectsExceeded(t *testing.T) {
@@ -231,7 +237,10 @@ func TestSSOTransport_SameHostRedirect_MaxRedirectsExceeded(t *testing.T) {
 	client := setupSSOTestClient(t, server.URL, nil)
 
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/start", strings.NewReader(`{}`))
-	_, err := client.httpClient.Do(req)
+	resp, err := client.httpClient.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "stopped after") || strings.Contains(err.Error(), "redirects"))
 }
@@ -255,7 +264,7 @@ func TestSSOTransport_GETSameHostRedirect(t *testing.T) {
 
 	client := setupSSOTestClient(t, server.URL, nil)
 
-	req, _ := http.NewRequest(http.MethodGet, server.URL+"/redirect", nil)
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/redirect", http.NoBody)
 	resp, err := client.httpClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -359,7 +368,10 @@ func TestSSOTransport_ConsentRequired(t *testing.T) {
 	client := setupSSOTestClient(t, gitlabServer.URL, nil)
 
 	req, _ := http.NewRequest(http.MethodPost, gitlabServer.URL+"/api/v4/projects", bytes.NewBufferString(`{}`))
-	_, err := client.httpClient.Do(req)
+	resp, err := client.httpClient.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires consent")
 }
@@ -467,7 +479,8 @@ func TestSSOTransport_StoresCookiesFromRedirectResponse(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&idpRequestCount))
 
-	transport := client.httpClient.Transport.(*ssoTransport)
+	transport, ok := client.httpClient.Transport.(*ssoTransport)
+	require.True(t, ok, "expected httpClient.Transport to be *ssoTransport, got %T", client.httpClient.Transport)
 	gitlabURL, _ := url.Parse(gitlabServer.URL)
 	jarCookies := transport.ssoClient.Jar.Cookies(gitlabURL)
 
@@ -502,7 +515,10 @@ func TestSSOTransport_HTTPSEnforcement(t *testing.T) {
 			Header:     http.Header{"Location": []string{"http://idp.example.com/saml/auth"}},
 			Body:       io.NopCloser(strings.NewReader("")),
 		}
-		_, err := transport.handleSSORedirect(req, resp, "http://idp.example.com/saml/auth", []byte("{}"))
+		ssoResp, err := transport.handleSSORedirect(req, resp, "http://idp.example.com/saml/auth", []byte("{}"))
+		if ssoResp != nil {
+			defer ssoResp.Body.Close()
+		}
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "HTTPS required")
 	})
@@ -520,7 +536,10 @@ func TestSSOTransport_HTTPSEnforcement(t *testing.T) {
 			Header:     http.Header{"Location": []string{idpServer.URL + "/saml/auth"}},
 			Body:       io.NopCloser(strings.NewReader("")),
 		}
-		_, err := transport.handleSSORedirect(req, resp, idpServer.URL+"/saml/auth", []byte("{}"))
+		ssoResp, err := transport.handleSSORedirect(req, resp, idpServer.URL+"/saml/auth", []byte("{}"))
+		if ssoResp != nil {
+			defer ssoResp.Body.Close()
+		}
 		if err != nil {
 			assert.NotContains(t, err.Error(), "SSO redirect rejected")
 		}
@@ -543,9 +562,234 @@ func TestSSOTransport_HTTPSEnforcement(t *testing.T) {
 			Header:     http.Header{"Location": []string{localServer.URL + "/callback"}},
 			Body:       io.NopCloser(strings.NewReader("")),
 		}
-		_, err := localTransport.handleSSORedirect(req, resp, localServer.URL+"/callback", []byte("{}"))
+		ssoResp, err := localTransport.handleSSORedirect(req, resp, localServer.URL+"/callback", []byte("{}"))
+		if ssoResp != nil {
+			defer ssoResp.Body.Close()
+		}
 		if err != nil {
 			assert.NotContains(t, err.Error(), "SSO redirect rejected")
 		}
 	})
+}
+
+// fakeOrigin is the canned answer recordingTransport gives for one hostname.
+type fakeOrigin struct {
+	status   int
+	location string
+	setCooki string
+}
+
+// recordingTransport answers requests from a per-hostname table without touching
+// the network, so a test can drive a multi-host SSO flow using real hostnames.
+// Cookie jars scope by hostname and ignore the port, so httptest servers (all on
+// 127.0.0.1) cannot express "a cookie for the instance" versus "for the IdP".
+// It records every request it is asked to perform.
+type recordingTransport struct {
+	mu      sync.Mutex
+	seen    []*http.Request
+	origins map[string]fakeOrigin
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.seen = append(rt.seen, req.Clone(req.Context()))
+	rt.mu.Unlock()
+
+	origin, ok := rt.origins[req.URL.Hostname()]
+	if !ok {
+		return nil, fmt.Errorf("recordingTransport: unexpected request to %s", req.URL.Hostname())
+	}
+
+	header := http.Header{}
+	if origin.location != "" {
+		header.Set("Location", origin.location)
+	}
+	if origin.setCooki != "" {
+		header.Set("Set-Cookie", origin.setCooki)
+	}
+	// http.Transport populates Response.Request; mirror that so the code under
+	// test sees the origin that actually produced the response.
+	return &http.Response{
+		StatusCode: origin.status,
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+func (rt *recordingTransport) requests() []*http.Request {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return append([]*http.Request(nil), rt.seen...)
+}
+
+// newFakeSSOTransport wires an ssoTransport whose every leg is served by rt.
+func newFakeSSOTransport(rt http.RoundTripper, jar http.CookieJar, allowed ...string) *ssoTransport {
+	domains := make(map[string]struct{}, len(allowed))
+	for _, d := range allowed {
+		domains[d] = struct{}{}
+	}
+	return &ssoTransport{
+		rt:             rt,
+		ssoClient:      &http.Client{Transport: rt, Jar: jar, Timeout: ssoTimeout},
+		allowedDomains: domains,
+	}
+}
+
+// TestSSOTransport_CookiesScopedToRespondingOrigin covers the cookie-injection
+// finding: a responder in the SSO flow must not be able to set cookies for the
+// instance's host by naming it in a Location header.
+func TestSSOTransport_CookiesScopedToRespondingOrigin(t *testing.T) {
+	t.Parallel()
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+
+	rt := &recordingTransport{origins: map[string]fakeOrigin{
+		// The IdP answers 200 but names the instance in Location, and sets a
+		// session cookie. Location on a 200 is not followed, so this is the
+		// response handleSSORedirect stores cookies from.
+		"idp.example.com": {
+			status:   http.StatusOK,
+			location: "https://gitlab.example.com/",
+			setCooki: "_gitlab_session=ATTACKER_SESSION; Path=/",
+		},
+		"gitlab.example.com": {status: http.StatusCreated},
+	}}
+
+	transport := newFakeSSOTransport(rt, jar, "idp.example.com")
+
+	req, err := http.NewRequest(http.MethodPost, "https://gitlab.example.com/api/v4/projects", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	resp, err := transport.handleSSORedirect(req, nil, "https://idp.example.com/saml/auth", []byte(`{}`))
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+	require.NoError(t, err)
+
+	gitlabURL, err := url.Parse("https://gitlab.example.com/")
+	require.NoError(t, err)
+	for _, c := range jar.Cookies(gitlabURL) {
+		assert.NotEqual(t, "_gitlab_session", c.Name,
+			"a cookie set by idp.example.com must not be scoped to the instance host")
+	}
+
+	// It must still be stored against the origin that really sent it.
+	idpURL, err := url.Parse("https://idp.example.com/")
+	require.NoError(t, err)
+	var names []string
+	for _, c := range jar.Cookies(idpURL) {
+		names = append(names, c.Name)
+	}
+	assert.Contains(t, names, "_gitlab_session", "the cookie belongs to the responding origin")
+}
+
+// TestSSOTransport_PerHopAllowlist covers the finding that the sso_domain check
+// only gated the first hop, leaving later hops of the flow unrestricted.
+func TestSSOTransport_PerHopAllowlist(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		allowed     []string
+		origins     map[string]fakeOrigin
+		wantErr     string
+		wantVisited []string
+	}{
+		{
+			name:    "second hop to a host outside sso_domain is refused",
+			allowed: []string{"idp-a.example.com"},
+			origins: map[string]fakeOrigin{
+				"idp-a.example.com":  {status: http.StatusFound, location: "https://evil.example.com/steal"},
+				"evil.example.com":   {status: http.StatusOK},
+				"gitlab.example.com": {status: http.StatusCreated},
+			},
+			wantErr: "SSO redirect to evil.example.com is not allowed",
+		},
+		{
+			name:    "multi-domain sso_domain permits a legitimate multi-hop flow",
+			allowed: []string{"idp-a.example.com", "idp-b.example.com"},
+			origins: map[string]fakeOrigin{
+				"idp-a.example.com":  {status: http.StatusFound, location: "https://idp-b.example.com/federate"},
+				"idp-b.example.com":  {status: http.StatusFound, location: "https://gitlab.example.com/api/v4/projects"},
+				"gitlab.example.com": {status: http.StatusCreated},
+			},
+			wantVisited: []string{"idp-a.example.com", "idp-b.example.com", "gitlab.example.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			jar, err := cookiejar.New(nil)
+			require.NoError(t, err)
+
+			rt := &recordingTransport{origins: tt.origins}
+			transport := newFakeSSOTransport(rt, jar, tt.allowed...)
+
+			req, err := http.NewRequest(http.MethodPost, "https://gitlab.example.com/api/v4/projects", strings.NewReader(`{}`))
+			require.NoError(t, err)
+
+			resp, err := transport.handleSSORedirect(req, nil, "https://idp-a.example.com/saml/auth", []byte(`{}`))
+			if resp != nil {
+				defer resp.Body.Close()
+			}
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Contains(t, err.Error(), "sso_domain", "the error must name the user's remedy")
+				for _, r := range rt.requests() {
+					assert.NotEqual(t, "evil.example.com", r.URL.Hostname(),
+						"the refused host must never be contacted")
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+			var visited []string
+			for _, r := range rt.requests() {
+				visited = append(visited, r.URL.Hostname())
+			}
+			assert.Equal(t, tt.wantVisited, visited)
+		})
+	}
+}
+
+// TestSSOTransport_RejectsSchemeDowngrade covers the finding that an https->http
+// redirect on the same host reads as same-host, bypasses the HTTPS check, and
+// then has auth headers copied onto it.
+func TestSSOTransport_RejectsSchemeDowngrade(t *testing.T) {
+	t.Parallel()
+	rt := &recordingTransport{origins: map[string]fakeOrigin{
+		"gitlab.example.com": {status: http.StatusOK},
+	}}
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	transport := newFakeSSOTransport(rt, jar)
+
+	req, err := http.NewRequest(http.MethodPost, "https://gitlab.example.com/api/v4/projects", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	req.Header.Set("Private-Token", "glpat-SECRET")
+	req.Header.Set("Authorization", "Bearer SECRET")
+
+	resp, err := transport.followRedirects(t.Context(), req, req.URL,
+		"http://gitlab.example.com/api/v4/projects", []byte(`{}`), false)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+
+	// Assert the security property before the error, so a regression reports the
+	// credential leak itself rather than just a missing error.
+	for _, r := range rt.requests() {
+		assert.Empty(t, r.Header.Get("Private-Token"),
+			"the token must not be sent over the downgraded scheme")
+		assert.Empty(t, r.Header.Get("Authorization"),
+			"the bearer token must not be sent over the downgraded scheme")
+	}
+	assert.Empty(t, rt.requests(), "no request may be made over the downgraded scheme")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "downgrades the scheme")
 }

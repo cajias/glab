@@ -334,7 +334,11 @@ var KeySchema = []KeyDef{
 		Name: "sso_domain", Scope: ScopePerHost, Type: TypeString,
 		UserSettable: true,
 		EnvVars:      []string{"GLAB_SSO_DOMAIN", "SSO_DOMAIN"},
-		Description:  "Identity provider domain that SSO redirects from this host may go to.\nRedirects to any other domain are refused. Requires `sso_cookie_file`.",
+		Description: "The identity provider domains that SSO redirects from this host may go to,\n" +
+			"separated by commas. Redirects to any other domain are refused. An SSO flow\n" +
+			"often passes through several hosts before it returns to the GitLab host, and\n" +
+			"every hop is checked, so list all of them, not just the first. Requires\n" +
+			"`sso_cookie_file`.",
 	},
 	{
 		Name: "container_registry_domains", Scope: ScopePerHost, Type: TypeString,

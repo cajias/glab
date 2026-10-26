@@ -117,7 +117,7 @@ For more information, see
 | `SKIP_TLS_VERIFY` | `skip_tls_verify` | - | Alternative name for `GLAB_SKIP_TLS_VERIFY`, checked after it. |
 | `GLAB_SSO_COOKIE_FILE` | `sso_cookie_file` | - | Path to a Netscape/Mozilla format cookie file used to authenticate against a GitLab instance behind an identity provider that requires browser-based SSO. |
 | `SSO_COOKIE_FILE` | `sso_cookie_file` | - | Alternative name for `GLAB_SSO_COOKIE_FILE`, checked after it. |
-| `GLAB_SSO_DOMAIN` | `sso_domain` | - | Identity provider domain that SSO redirects from this host may go to. Redirects to any other domain are refused. Requires `sso_cookie_file`. |
+| `GLAB_SSO_DOMAIN` | `sso_domain` | - | The identity provider domains that SSO redirects from this host may go to, separated by commas. Redirects to any other domain are refused. An SSO flow often passes through several hosts before it returns to the GitLab host, and every hop is checked, so list all of them, not just the first. Requires `sso_cookie_file`. |
 | `SSO_DOMAIN` | `sso_domain` | - | Alternative name for `GLAB_SSO_DOMAIN`, checked after it. |
 | `GLAB_USE_KEYRING` | `use_keyring` | - | Store the host's credentials in the operating system's keyring (true/false). Set automatically by `glab auth login`, which defaults to `true` when a keyring backend is available. Empty is treated as false (plaintext file storage). |
 | `USE_KEYRING` | `use_keyring` | - | Alternative name for `GLAB_USE_KEYRING`, checked after it. |

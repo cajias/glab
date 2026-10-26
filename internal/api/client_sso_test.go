@@ -58,10 +58,10 @@ func TestCheckRedirect_TooManyRedirects(t *testing.T) {
 
 	via := make([]*http.Request, maxRedirects)
 	for i := range via {
-		via[i], _ = http.NewRequest(http.MethodGet, fmt.Sprintf("https://example.com/redirect%d", i), nil)
+		via[i], _ = http.NewRequest(http.MethodGet, fmt.Sprintf("https://example.com/redirect%d", i), http.NoBody)
 	}
 
-	redirectReq, _ := http.NewRequest(http.MethodGet, "https://example.com/redirect10", nil)
+	redirectReq, _ := http.NewRequest(http.MethodGet, "https://example.com/redirect10", http.NoBody)
 	err = client.httpClient.CheckRedirect(redirectReq, via)
 
 	require.Error(t, err)
@@ -175,3 +175,132 @@ func TestIsLocalhost(t *testing.T) {
 	}
 }
 
+// TestSSOClient_DoesNotInheritInstanceTLSExceptions covers the finding that the
+// SSO legs reused the instance's transport, so skip_tls_verify disabled
+// certificate validation on the hop carrying the IdP session cookie and the
+// client certificate was offered to the IdP.
+func TestSSOClient_DoesNotInheritInstanceTLSExceptions(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+	futureTimestamp := time.Now().AddDate(1, 0, 0).Unix()
+	cookieContent := fmt.Sprintf(".example.com\tTRUE\t/\tTRUE\t%d\tsession\tvalue1\n", futureTimestamp)
+	require.NoError(t, os.WriteFile(cookieFile, []byte(cookieContent), 0o600))
+
+	// Content is irrelevant: newTransport only needs the file to be readable to
+	// build a RootCAs pool from it.
+	caFile := filepath.Join(tmpDir, "ca.pem")
+	require.NoError(t, os.WriteFile(caFile, []byte("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n"), 0o600))
+
+	client := &Client{
+		baseURL:       "https://gitlab.example.com/api/v4",
+		cookieFile:    cookieFile,
+		caFile:        caFile,
+		allowInsecure: true,
+	}
+	require.NoError(t, client.initializeHTTPClient())
+
+	transport, ok := client.httpClient.Transport.(*ssoTransport)
+	require.True(t, ok, "expected httpClient.Transport to be *ssoTransport, got %T", client.httpClient.Transport)
+
+	instanceRT, ok := transport.rt.(*http.Transport)
+	require.True(t, ok, "expected the instance transport to be *http.Transport, got %T", transport.rt)
+	ssoRT, ok := transport.ssoClient.Transport.(*http.Transport)
+	require.True(t, ok, "expected the SSO transport to be *http.Transport, got %T", transport.ssoClient.Transport)
+
+	require.NotSame(t, instanceRT, ssoRT, "the SSO legs must not share the instance's transport")
+
+	assert.True(t, instanceRT.TLSClientConfig.InsecureSkipVerify,
+		"the instance keeps the skip_tls_verify the user asked for")
+	assert.False(t, ssoRT.TLSClientConfig.InsecureSkipVerify,
+		"the SSO legs must validate certificates even when the instance skips verification")
+	assert.Empty(t, ssoRT.TLSClientConfig.Certificates,
+		"the client certificate must not be offered to the identity provider")
+	assert.NotNil(t, ssoRT.TLSClientConfig.RootCAs,
+		"the configured CA is preserved: a corporate CA is often what the IdP chain needs")
+}
+
+func TestParseSSODomains(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		value   string
+		want    map[string]struct{}
+		wantErr string
+	}{
+		{
+			name:  "empty value yields no allowlist",
+			value: "",
+		},
+		{
+			name:  "a single domain stays a one-element list",
+			value: "idp.example.com",
+			want:  map[string]struct{}{"idp.example.com": {}},
+		},
+		{
+			name:  "a comma-separated list covers a multi-hop flow",
+			value: "midway-auth.amazon.com,idp.federate.amazon.com",
+			want: map[string]struct{}{
+				"midway-auth.amazon.com":  {},
+				"idp.federate.amazon.com": {},
+			},
+		},
+		{
+			name:  "surrounding whitespace and empty entries are dropped",
+			value: " idp-a.example.com , , idp-b.example.com ,",
+			want: map[string]struct{}{
+				"idp-a.example.com": {},
+				"idp-b.example.com": {},
+			},
+		},
+		{
+			name:  "entries are lowercased to match the hostname comparison",
+			value: "IDP.Example.COM",
+			want:  map[string]struct{}{"idp.example.com": {}},
+		},
+		{
+			name:    "a scheme is rejected rather than silently never matching",
+			value:   "https://idp.example.com",
+			wantErr: `invalid sso_domain entry "https://idp.example.com"`,
+		},
+		{
+			name:    "a port is rejected",
+			value:   "idp.example.com:443",
+			wantErr: `invalid sso_domain entry "idp.example.com:443"`,
+		},
+		{
+			name:    "a path is rejected",
+			value:   "idp.example.com/saml",
+			wantErr: `invalid sso_domain entry "idp.example.com/saml"`,
+		},
+		{
+			name:    "a wildcard is rejected",
+			value:   "*.amazon.com",
+			wantErr: `invalid sso_domain entry "*.amazon.com"`,
+		},
+		{
+			name:    "one bad entry rejects the whole list",
+			value:   "idp-a.example.com,*.example.com",
+			wantErr: `invalid sso_domain entry "*.example.com"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseSSODomains(tt.value)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Contains(t, err.Error(), "bare hostname", "the error must say what a good value looks like")
+				assert.Nil(t, got)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
