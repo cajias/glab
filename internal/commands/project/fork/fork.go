@@ -2,11 +2,11 @@ package fork
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/spf13/cobra"
@@ -46,6 +46,27 @@ type options struct {
 	config          func() config.Config
 	apiClient       func(repoHost string) (*api.Client, error)
 	defaultHostname string
+
+	// waitFor, when set, replaces waiting for a duration, for tests.
+	waitFor func(ctx context.Context, d time.Duration) error
+}
+
+const (
+	forkImportPollInterval    = time.Second
+	forkImportMaxPollInterval = 5 * time.Second
+	forkImportTimeout         = 10 * time.Minute
+)
+
+func (o *options) wait(ctx context.Context, d time.Duration) error {
+	if o.waitFor != nil {
+		return o.waitFor(ctx, d)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
 }
 
 func NewCmdFork(f cmdutils.Factory) *cobra.Command {
@@ -242,10 +263,11 @@ func (o *options) run(ctx context.Context) error {
 	// The request returns immediately. To determine whether the fork of the project has completed,
 	// we query the import_status for the new project.
 	importStatus := ""
-	var importError error
 	maximumRetries := 3
 	retries := 0
 	skipFirstCheck := true
+	interval := forkImportPollInterval
+	var waited time.Duration
 
 	if !usingExisting && (forkedProject == nil || forkedProject.ImportStatus != "") {
 	loop:
@@ -258,17 +280,34 @@ func (o *options) run(ctx context.Context) error {
 					break loop
 				}
 
+				if waited >= forkImportTimeout {
+					return fmt.Errorf(
+						"timed out after %s waiting for fork %s to finish importing. Check its import_status later with: glab repo view %s --output json",
+						forkImportTimeout, forkedProject.PathWithNamespace, forkedProject.WebURL,
+					)
+				}
+				if err := o.wait(ctx, interval); err != nil {
+					return err
+				}
+				waited += interval
+				interval = min(interval*2, forkImportMaxPollInterval)
+
 				// Now it's safe to access forkedProject.ID
-				forkedProject, err = api.GetProject(labClient, forkedProject.ID)
+				p, err := api.GetProject(labClient, forkedProject.ID)
 				if err != nil {
-					o.io.LogErrorf("error checking fork status: %q", err.Error())
 					if retries == maximumRetries {
-						break loop
+						return fmt.Errorf(
+							"checking import status of fork %s: %w. Check its import_status later with: glab repo view %s --output json",
+							forkedProject.PathWithNamespace, err, forkedProject.WebURL,
+						)
 					}
+					o.io.LogErrorf("error checking fork status: %q", err.Error())
 					o.io.LogError("- Retrying...")
 					retries++
 					continue
 				}
+				retries = 0
+				forkedProject = p
 			}
 			skipFirstCheck = false
 
@@ -295,17 +334,11 @@ func (o *options) run(ctx context.Context) error {
 				o.io.LogError("- " + forkedProject.ImportStatus)
 				break loop
 			case "failed": // import failed
-				importError = errors.New(forkedProject.ImportError)
-				break loop
+				return fmt.Errorf("fork %s failed to import: %s", forkedProject.PathWithNamespace, forkedProject.ImportError)
 			default:
 				break loop
 			}
 		}
-	}
-
-	if importError != nil {
-		o.io.LogErrorf("%s: %q", c.Red("Fork failed"), importError.Error())
-		return nil
 	}
 
 	// Only print one message about the fork creation
