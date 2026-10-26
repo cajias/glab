@@ -46,10 +46,10 @@ func TestMrRebase(t *testing.T) {
 					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
 					Return(testMR, nil, nil)
 				tc.MockMergeRequests.EXPECT().
-					RebaseMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+					RebaseMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
 					Return(nil, nil)
 				tc.MockMergeRequests.EXPECT().
-					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
 					Return(&gitlab.MergeRequest{
 						BasicMergeRequest: gitlab.BasicMergeRequest{
 							ID:  123,
@@ -69,10 +69,10 @@ func TestMrRebase(t *testing.T) {
 					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
 					Return(testMR, nil, nil)
 				tc.MockMergeRequests.EXPECT().
-					RebaseMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+					RebaseMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
 					Return(nil, nil)
 				tc.MockMergeRequests.EXPECT().
-					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
 					Return(&gitlab.MergeRequest{
 						BasicMergeRequest: gitlab.BasicMergeRequest{
 							ID:  123,
@@ -102,10 +102,10 @@ func TestMrRebase(t *testing.T) {
 					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
 					Return(testMR, nil, nil)
 				tc.MockMergeRequests.EXPECT().
-					RebaseMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+					RebaseMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
 					Return(nil, nil)
 				tc.MockMergeRequests.EXPECT().
-					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any()).
+					GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
 					Return(&gitlab.MergeRequest{
 						BasicMergeRequest: gitlab.BasicMergeRequest{
 							ID:  123,

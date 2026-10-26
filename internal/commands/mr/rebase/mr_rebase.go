@@ -78,6 +78,7 @@ func (o *options) run(ctx context.Context) error {
 	}
 
 	return mrutils.RebaseMR(
+		ctx,
 		o.io,
 		client,
 		repo,

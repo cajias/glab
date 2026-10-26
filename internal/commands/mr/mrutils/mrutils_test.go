@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"git.sr.ht/~timofurrer/ugh"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go/v3"
+	gitlabtesting "gitlab.com/gitlab-org/api/client-go/v3/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/api"
 	"gitlab.com/gitlab-org/cli/internal/git"
@@ -1184,4 +1187,173 @@ User One	aaa	👍
 			assert.Equal(t, scenario.expected, stdout.String())
 		})
 	}
+}
+
+func Test_RebaseMR(t *testing.T) {
+	type status struct {
+		inProgress bool
+		sha        string
+		diverged   int64
+		mergeError string
+	}
+
+	testCases := []struct {
+		name       string
+		before     *gitlab.MergeRequest
+		statuses   []status
+		attempts   int
+		trustAfter int
+		wantErr    string
+		wantPolls  int
+		wantSleeps int
+	}{
+		{
+			name:       "ignores the stale status read before the rebase job starts",
+			statuses:   []status{{false, "old", 2, ""}, {true, "old", 2, ""}, {true, "old", 2, ""}, {false, "new", 0, ""}},
+			wantPolls:  4,
+			wantSleeps: 3,
+		},
+		{
+			name:      "completes when the head SHA changed between polls",
+			statuses:  []status{{false, "new", 2, ""}},
+			wantPolls: 1,
+		},
+		{
+			name:      "completes when the branch no longer diverges",
+			statuses:  []status{{false, "old", 0, ""}},
+			wantPolls: 1,
+		},
+		{
+			name:       "returns the merge error of a failed rebase",
+			statuses:   []status{{true, "old", 2, ""}, {false, "old", 2, "Rebase failed"}},
+			wantErr:    "Rebase failed",
+			wantPolls:  2,
+			wantSleeps: 1,
+		},
+		{
+			name: "returns a repeated merge error once the rebase was seen in progress",
+			before: &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{IID: 123, SHA: "old"},
+				MergeError:        "Rebase failed",
+			},
+			statuses:   []status{{true, "old", 2, "Rebase failed"}, {false, "old", 2, "Rebase failed"}},
+			wantErr:    "Rebase failed",
+			wantPolls:  2,
+			wantSleeps: 1,
+		},
+		{
+			name: "returns a repeated merge error once it outlasts the grace polls",
+			before: &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{IID: 123, SHA: "old"},
+				MergeError:        "Rebase failed",
+			},
+			statuses:   []status{{false, "old", 2, "Rebase failed"}, {false, "old", 2, "Rebase failed"}, {false, "old", 2, "Rebase failed"}},
+			trustAfter: 2,
+			wantErr:    "Rebase failed",
+			wantPolls:  3,
+			wantSleeps: 2,
+		},
+		{
+			name: "ignores a merge error left over from an earlier attempt",
+			before: &gitlab.MergeRequest{
+				BasicMergeRequest: gitlab.BasicMergeRequest{IID: 123, SHA: "old"},
+				MergeError:        "old error",
+			},
+			statuses:   []status{{false, "old", 2, "old error"}, {false, "new", 0, "old error"}},
+			wantPolls:  2,
+			wantSleeps: 1,
+		},
+		{
+			name:       "times out when the rebase never happens",
+			statuses:   []status{{false, "old", 2, ""}, {false, "old", 2, ""}, {false, "old", 2, ""}},
+			attempts:   3,
+			wantErr:    "timed out waiting for the rebase of merge request !123",
+			wantPolls:  3,
+			wantSleeps: 2,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			sleeps := 0
+			poll := rebasePolling{interval: time.Second, attempts: 300, wait: func(context.Context, time.Duration) error {
+				sleeps++
+				return nil
+			}}
+			if tc.attempts > 0 {
+				poll.attempts = tc.attempts
+			}
+			poll.trustMergeErrorAfter = poll.attempts
+			if tc.trustAfter > 0 {
+				poll.trustMergeErrorAfter = tc.trustAfter
+			}
+
+			polls := 0
+			testClient := gitlabtesting.NewTestClient(t)
+			testClient.MockMergeRequests.EXPECT().
+				RebaseMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+				Return(nil, nil)
+			testClient.MockMergeRequests.EXPECT().
+				GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ any, _ int64, opts *gitlab.GetMergeRequestsOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+					require.True(t, *opts.IncludeRebaseInProgress)
+					require.True(t, *opts.IncludeDivergedCommitsCount)
+					require.Less(t, polls, len(tc.statuses), "unexpected extra status read")
+					s := tc.statuses[polls]
+					polls++
+					return &gitlab.MergeRequest{
+						BasicMergeRequest:    gitlab.BasicMergeRequest{IID: 123, SHA: s.sha},
+						RebaseInProgress:     s.inProgress,
+						DivergedCommitsCount: s.diverged,
+						MergeError:           s.mergeError,
+					}, nil, nil
+				}).
+				AnyTimes()
+
+			before := tc.before
+			if before == nil {
+				before = &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: 123, SHA: "old"}}
+			}
+			ios, _, _, _ := cmdtest.TestIOStreams()
+
+			err := rebaseMR(t.Context(), ios, testClient.Client, glrepo.New("OWNER", "REPO", "gitlab.com"), before, nil, poll)
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantPolls, polls)
+			assert.Equal(t, tc.wantSleeps, sleeps)
+		})
+	}
+}
+
+func Test_RebaseMR_StopsWaitingWhenContextIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	polls := 0
+	testClient := gitlabtesting.NewTestClient(t)
+	testClient.MockMergeRequests.EXPECT().
+		RebaseMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+		Return(nil, nil)
+	testClient.MockMergeRequests.EXPECT().
+		GetMergeRequest("OWNER/REPO", int64(123), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _ int64, _ *gitlab.GetMergeRequestsOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+			polls++
+			cancel()
+			return &gitlab.MergeRequest{
+				BasicMergeRequest:    gitlab.BasicMergeRequest{IID: 123, SHA: "old"},
+				DivergedCommitsCount: 2,
+			}, nil, nil
+		})
+
+	before := &gitlab.MergeRequest{BasicMergeRequest: gitlab.BasicMergeRequest{IID: 123, SHA: "old"}}
+	ios, _, _, _ := cmdtest.TestIOStreams()
+	// An hour-long interval: the test only finishes because the wait honours ctx.
+	poll := rebasePolling{interval: time.Hour, attempts: 300, wait: waitOrDone}
+
+	err := rebaseMR(ctx, ios, testClient.Client, glrepo.New("OWNER", "REPO", "gitlab.com"), before, nil, poll)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, polls)
 }
