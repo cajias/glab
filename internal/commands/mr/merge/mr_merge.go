@@ -100,6 +100,8 @@ func NewCmdMerge(f cmdutils.Factory) *cobra.Command {
 	mrMergeCmd.Flags().BoolVarP(&opts.setAutoMerge, "when-pipeline-succeeds", "", true, "Merge only when pipeline succeeds")
 	_ = mrMergeCmd.Flags().MarkDeprecated("when-pipeline-succeeds", "use --auto-merge instead.")
 	mrMergeCmd.MarkFlagsMutuallyExclusive("squash", "rebase")
+	// A rebase replaces the head commit, so the merge would always fail the --sha check.
+	mrMergeCmd.MarkFlagsMutuallyExclusive("sha", "rebase")
 
 	return mrMergeCmd
 }
@@ -149,7 +151,7 @@ func (o *options) run(x cmdutils.Factory, cmd *cobra.Command, args []string) err
 
 	if o.io.IsOutputTTY() && !o.skipPrompts {
 		if !o.squashBeforeMerge && !o.rebaseBeforeMerge && o.mergeCommitMessage == "" {
-			o.mergeMethod, err = mergeMethodSurvey(cmd.Context(), o.io)
+			o.mergeMethod, err = mergeMethodSurvey(cmd.Context(), o.io, o.sha == "")
 			if err != nil {
 				return err
 			}
@@ -231,7 +233,7 @@ func (o *options) run(x cmdutils.Factory, cmd *cobra.Command, args []string) err
 	}
 
 	if o.rebaseBeforeMerge {
-		err := mrutils.RebaseMR(o.io, apiClient, repo, mr, nil)
+		err := mrutils.RebaseMR(cmd.Context(), o.io, apiClient, repo, mr, nil)
 		if err != nil {
 			return err
 		}
@@ -314,17 +316,18 @@ func (o *options) run(x cmdutils.Factory, cmd *cobra.Command, args []string) err
 	return nil
 }
 
-func mergeMethodSurvey(ctx context.Context, io *iostreams.IOStreams) (MRMergeMethod, error) {
+// allowRebase is false with --sha, for the same reason the two flags are mutually exclusive.
+func mergeMethodSurvey(ctx context.Context, io *iostreams.IOStreams, allowRebase bool) (MRMergeMethod, error) {
 	type mergeOption struct {
 		title  string
 		method MRMergeMethod
 	}
 
-	mergeOpts := []mergeOption{
-		{title: "Create a merge commit", method: MRMergeMethodMerge},
-		{title: "Rebase and merge", method: MRMergeMethodRebase},
-		{title: "Squash and merge", method: MRMergeMethodSquash},
+	mergeOpts := []mergeOption{{title: "Create a merge commit", method: MRMergeMethodMerge}}
+	if allowRebase {
+		mergeOpts = append(mergeOpts, mergeOption{title: "Rebase and merge", method: MRMergeMethodRebase})
 	}
+	mergeOpts = append(mergeOpts, mergeOption{title: "Squash and merge", method: MRMergeMethodSquash})
 
 	var options []string
 	for _, v := range mergeOpts {

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -384,43 +385,78 @@ var GetMRForBranch = func(ctx context.Context, ios *iostreams.IOStreams, apiClie
 	return mrMap[pickedMR], nil
 }
 
-func RebaseMR(ios *iostreams.IOStreams, apiClient *gitlab.Client, repo glrepo.Interface, mr *gitlab.MergeRequest, rebaseOpts *gitlab.RebaseMergeRequestOptions) error {
+type rebasePolling struct {
+	interval time.Duration
+	attempts int
+	// trustMergeErrorAfter is the poll after which a merge_error equal to the
+	// one from before the rebase is reported instead of treated as stale.
+	trustMergeErrorAfter int
+	wait                 func(context.Context, time.Duration) error
+}
+
+func RebaseMR(ctx context.Context, ios *iostreams.IOStreams, apiClient *gitlab.Client, repo glrepo.Interface, mr *gitlab.MergeRequest, rebaseOpts *gitlab.RebaseMergeRequestOptions) error {
+	return rebaseMR(ctx, ios, apiClient, repo, mr, rebaseOpts, rebasePolling{interval: time.Second, attempts: 300, trustMergeErrorAfter: 10, wait: waitOrDone})
+}
+
+// waitOrDone waits for d, or returns ctx.Err() as soon as ctx is done.
+func waitOrDone(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func rebaseMR(ctx context.Context, ios *iostreams.IOStreams, apiClient *gitlab.Client, repo glrepo.Interface, mr *gitlab.MergeRequest, rebaseOpts *gitlab.RebaseMergeRequestOptions, poll rebasePolling) error {
 	ios.StartSpinner("Sending rebase request...")
-	_, err := apiClient.MergeRequests.RebaseMergeRequest(repo.FullName(), mr.IID, rebaseOpts)
+	_, err := apiClient.MergeRequests.RebaseMergeRequest(repo.FullName(), mr.IID, rebaseOpts, gitlab.WithContext(ctx))
 	if err != nil {
 		return err
 	}
 	ios.StopSpinner("")
 
-	opts := &gitlab.GetMergeRequestsOptions{}
-	opts.IncludeRebaseInProgress = new(true)
-	ios.StartSpinner("Checking rebase status...")
-	errorMSG := ""
-	i := 0
-	for {
-		mr, err := api.GetMR(apiClient, repo.FullName(), mr.IID, opts)
-		if err != nil {
-			errorMSG = err.Error()
-			break
-		}
-		if i == 0 {
-			ios.StopSpinner("")
-			ios.StartSpinner("Rebase in progress...")
-		}
-		if !mr.RebaseInProgress {
-			if mr.MergeError != "" && mr.MergeError != "null" {
-				errorMSG = mr.MergeError
+	opts := &gitlab.GetMergeRequestsOptions{
+		IncludeRebaseInProgress:     new(true),
+		IncludeDivergedCommitsCount: new(true),
+	}
+	ios.StartSpinner("Rebase in progress...")
+	defer ios.StopSpinner("")
+
+	// The rebase API only queues a job, so rebase_in_progress can read false
+	// before the job starts. Only trust it once the rebase has visibly happened.
+	seenInProgress := false
+	for i := range poll.attempts {
+		if i > 0 {
+			if err := poll.wait(ctx, poll.interval); err != nil {
+				return err
 			}
-			break
 		}
-		i++
+		cur, _, err := apiClient.MergeRequests.GetMergeRequest(repo.FullName(), mr.IID, opts, gitlab.WithContext(ctx))
+		if err != nil {
+			return err
+		}
+		if cur.RebaseInProgress {
+			seenInProgress = true
+			continue
+		}
+		shaChanged := mr.SHA != "" && cur.SHA != mr.SHA
+		hasMergeError := cur.MergeError != "" && cur.MergeError != "null"
+		// merge_error is not cleared when a rebase starts, so it may be stale.
+		// GitLab reports rebase_in_progress while the job is queued, so once a
+		// few polls have passed without it, a repeated error is this rebase's.
+		if !shaChanged && hasMergeError && (seenInProgress || cur.MergeError != mr.MergeError || i >= poll.trustMergeErrorAfter) {
+			return errors.New(cur.MergeError)
+		}
+		if seenInProgress || shaChanged || cur.DivergedCommitsCount == 0 {
+			ios.StopSpinner("")
+			ios.LogInfof("%s %s\n", ios.Color().GreenCheck(), "Rebase successful!")
+			return nil
+		}
 	}
-	ios.StopSpinner("")
-	if errorMSG != "" {
-		return errors.New(errorMSG)
-	}
-	ios.LogInfof("%s %s\n", ios.Color().GreenCheck(), "Rebase successful!")
-	return nil
+	return fmt.Errorf("timed out waiting for the rebase of merge request !%d to complete", mr.IID)
 }
 
 // PrintMRApprovalState renders an output to summarize the approval state of a merge request
