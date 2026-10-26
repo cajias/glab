@@ -2,6 +2,7 @@ package releaseutils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -104,6 +105,22 @@ func AssetsFromArgs(args []string) ([]*upload.ReleaseFile, error) {
 		assets = append(assets, rf)
 	}
 	return assets, nil
+}
+
+// AssetLinksFromJSON parses the value of --assets-links. A null element is
+// refused here, before the command sends any request, because it decodes to a
+// nil link and the release commands dereference every link.
+func AssetLinksFromJSON(assetLinksJSON string) ([]*upload.ReleaseAsset, error) {
+	var links []*upload.ReleaseAsset
+	if err := json.Unmarshal([]byte(assetLinksJSON), &links); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON string: %w", err)
+	}
+	for i, link := range links {
+		if link == nil {
+			return nil, fmt.Errorf("failed to parse JSON string: the asset link at index %d is null", i)
+		}
+	}
+	return links, nil
 }
 
 func CreateReleaseAssets(ctx context.Context, io *iostreams.IOStreams, client *gitlab.Client, assetFiles []*upload.ReleaseFile, assetLinks []*upload.ReleaseAsset, repoName, tagName, packageName string, usePackageRegistry bool) error {

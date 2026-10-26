@@ -3,7 +3,6 @@ package create
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -242,9 +241,9 @@ func (o *options) complete(flags *pflag.FlagSet, args []string) error {
 	o.assetFiles = assetFiles
 
 	if o.assetLinksAsJSON != "" {
-		err := json.Unmarshal([]byte(o.assetLinksAsJSON), &o.assetLink)
+		o.assetLink, err = releaseutils.AssetLinksFromJSON(o.assetLinksAsJSON)
 		if err != nil {
-			return fmt.Errorf("failed to parse JSON string: %w", err)
+			return err
 		}
 	}
 

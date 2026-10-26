@@ -447,6 +447,50 @@ func TestReleaseCreate_UpdateWithAssetsLinksJSON(t *testing.T) {
 	assert.Empty(t, output.Stderr())
 }
 
+func TestReleaseCreate_InvalidAssetsLinksJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		assetsLinks string
+		wantErr     string
+	}{
+		{
+			name:        "only a null link",
+			assetsLinks: `[null]`,
+			wantErr:     "failed to parse JSON string: the asset link at index 0 is null",
+		},
+		{
+			name:        "a null link after a valid one",
+			assetsLinks: `[{"name": "any-name", "url": "https://example.com/any-asset-url"}, null]`,
+			wantErr:     "failed to parse JSON string: the asset link at index 1 is null",
+		},
+		{
+			name:        "malformed JSON",
+			assetsLinks: `[{"name": "any-name"`,
+			wantErr:     "failed to parse JSON string: unexpected end of JSON input",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// No expectations: the links are rejected before any request is sent.
+			testClient := gitlabtesting.NewTestClient(t)
+
+			exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, false,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", glinstance.DefaultHostname),
+			)
+
+			_, err := exec(`0.0.1 --notes "test release" --assets-links='` + tt.assetsLinks + `'`)
+
+			require.EqualError(t, err, tt.wantErr)
+		})
+	}
+}
+
 func TestReleaseCreateWithPublishToCatalog(t *testing.T) {
 	// This test uses httptest.NewServer because the catalog publish API uses raw HTTP
 	// via client.Do() rather than a GitLab client-go service interface.

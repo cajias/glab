@@ -2,9 +2,7 @@ package upload
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -136,9 +134,10 @@ func (o *options) validate() error {
 	}
 
 	if o.assetLinksAsJSON != "" {
-		err := json.Unmarshal([]byte(o.assetLinksAsJSON), &o.assetLinks)
+		var err error
+		o.assetLinks, err = releaseutils.AssetLinksFromJSON(o.assetLinksAsJSON)
 		if err != nil {
-			return fmt.Errorf("failed to parse JSON string: %w", err)
+			return err
 		}
 	}
 
