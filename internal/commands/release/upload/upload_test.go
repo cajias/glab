@@ -182,3 +182,47 @@ func TestReleaseUpload_WithAssetsLinksJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestReleaseUpload_InvalidAssetsLinksJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		assetsLinks string
+		wantErr     string
+	}{
+		{
+			name:        "only a null link",
+			assetsLinks: `[null]`,
+			wantErr:     "failed to parse JSON string: the asset link at index 0 is null",
+		},
+		{
+			name:        "a null link after a valid one",
+			assetsLinks: `[{"name": "any-name", "url": "https://example.com/any-asset-url"}, null]`,
+			wantErr:     "failed to parse JSON string: the asset link at index 1 is null",
+		},
+		{
+			name:        "malformed JSON",
+			assetsLinks: `[{"name": "any-name"`,
+			wantErr:     "failed to parse JSON string: unexpected end of JSON input",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// No expectations: the links are rejected before any request is sent.
+			testClient := gitlabtesting.NewTestClient(t)
+
+			exec := cmdtest.SetupCmdForTest(t, NewCmdUpload, false,
+				cmdtest.WithGitLabClient(testClient.Client),
+				cmdtest.WithBaseRepo("OWNER", "REPO", ""),
+			)
+
+			_, err := exec(`0.0.1 --assets-links='` + tt.assetsLinks + `'`)
+
+			require.EqualError(t, err, tt.wantErr)
+		})
+	}
+}
