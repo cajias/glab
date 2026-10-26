@@ -112,6 +112,7 @@ func (o *options) run(ctx context.Context) error {
 	}
 
 	var runners []*gitlab.Runner
+	var resp *gitlab.Response
 	var scopeLabel string
 
 	listOptsBase := gitlab.ListOptions{
@@ -121,13 +122,13 @@ func (o *options) run(ctx context.Context) error {
 
 	switch {
 	case o.instance:
-		runners, _, err = client.Runners.ListRunners(listOpts, gitlab.WithContext(ctx))
+		runners, resp, err = client.Runners.ListRunners(listOpts, gitlab.WithContext(ctx))
 		if err != nil {
 			return err
 		}
 		scopeLabel = "instance"
 	case o.group != "":
-		runners, _, err = client.Runners.ListGroupsRunners(o.group, &gitlab.ListGroupsRunnersOptions{
+		runners, resp, err = client.Runners.ListGroupsRunners(o.group, &gitlab.ListGroupsRunnersOptions{
 			ListOptions: listOptsBase,
 		}, gitlab.WithContext(ctx))
 		if err != nil {
@@ -138,7 +139,7 @@ func (o *options) run(ctx context.Context) error {
 		if repoErr != nil {
 			return repoErr
 		}
-		runners, _, err = client.Runners.ListProjectRunners(repo.FullName(), &gitlab.ListProjectRunnersOptions{
+		runners, resp, err = client.Runners.ListProjectRunners(repo.FullName(), &gitlab.ListProjectRunnersOptions{
 			ListOptions: listOptsBase,
 		}, gitlab.WithContext(ctx))
 		if err != nil {
@@ -151,15 +152,18 @@ func (o *options) run(ctx context.Context) error {
 	case "json":
 		return o.io.PrintJSON(runners)
 	default:
-		return o.printTable(runners, scopeLabel)
+		return o.printTable(runners, resp, scopeLabel)
 	}
 }
 
-func (o *options) printTable(runners []*gitlab.Runner, scopeLabel string) error {
+func (o *options) printTable(runners []*gitlab.Runner, resp *gitlab.Response, scopeLabel string) error {
 	title := utils.NewListTitle("runner")
 	title.RepoName = scopeLabel
 	title.Page = int(o.page)
 	title.CurrentPageTotal = len(runners)
+	if resp != nil {
+		title.Total = int(resp.TotalItems)
+	}
 
 	if err := o.io.StartPager(); err != nil {
 		return err

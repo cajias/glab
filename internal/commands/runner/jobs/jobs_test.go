@@ -4,6 +4,7 @@ package jobs
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/MakeNowJust/heredoc/v2"
@@ -82,6 +83,58 @@ func TestRunnerJobs_OutputJSON(t *testing.T) {
 	assert.Equal(t, "feature", decoded[0].Ref)
 	require.NotNil(t, decoded[0].Project)
 	assert.Equal(t, "group/proj", decoded[0].Project.PathWithNamespace)
+}
+
+func TestRunnerJobs_HeaderTotal(t *testing.T) {
+	t.Parallel()
+
+	jobs := []*gitlab.Job{
+		{ID: 2, Status: "success", Stage: "test", Name: "test", Ref: "main", Project: &gitlab.Project{PathWithNamespace: "owner/repo"}},
+	}
+
+	tests := []struct {
+		name       string
+		cli        string
+		resp       *gitlab.Response
+		wantHeader string
+	}{
+		{
+			name:       "shows the total from the API",
+			cli:        "9 --page 3 --per-page 1",
+			resp:       &gitlab.Response{CurrentPage: 3, TotalPages: 53, TotalItems: 53},
+			wantHeader: "Showing 1 of 53 jobs on . (Page 3)\n",
+		},
+		{
+			name:       "without a total from the API",
+			cli:        "9",
+			resp:       &gitlab.Response{CurrentPage: 1, NextPage: 2},
+			wantHeader: "Showing 1 job on . (Page 1)\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc := gitlabtesting.NewTestClient(t)
+			tc.MockRunners.EXPECT().
+				ListRunnerJobs(int64(9), gomock.Any(), gomock.Any()).
+				Return(jobs, tt.resp, nil)
+
+			exec := cmdtest.SetupCmdForTest(
+				t,
+				NewCmd,
+				false,
+				cmdtest.WithApiClient(cmdtest.NewTestApiClient(t, nil, "", "", api.WithGitLabClient(tc.Client))),
+			)
+
+			out, err := exec(tt.cli)
+			require.NoError(t, err)
+
+			assert.True(t, strings.HasPrefix(out.String(), tt.wantHeader), "got %q", out.String())
+			assert.Empty(t, out.Stderr())
+		})
+	}
 }
 
 func TestRunnerJobs_InvalidRunnerID(t *testing.T) {
