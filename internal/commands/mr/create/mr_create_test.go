@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -276,6 +277,124 @@ func TestNewCmdCreate_RelatedIssue(t *testing.T) {
 	assert.Contains(t, outputLines[0], `!12 Draft: Resolve "this is a issue title" (feat-new-mr)`)
 	assert.Contains(t, output.Stderr(), "\nCreating draft merge request for feat-new-mr into master in OWNER/REPO\n\n")
 	assert.Contains(t, output.String(), "https://gitlab.com/OWNER/REPO/-/merge_requests/12")
+}
+
+func TestNewCmdCreate_RelatedIssueBranchCreation(t *testing.T) {
+	branchExists := &gitlab.ErrorResponse{StatusCode: http.StatusBadRequest, Message: "{message: Branch already exists}"}
+
+	tests := []struct {
+		name         string
+		branchErrors []error
+		wantBranches []string
+		wantMRBranch string
+		wantErr      string
+	}{
+		{
+			name:         "returns an error that is not about an existing branch",
+			branchErrors: []error{&gitlab.ErrorResponse{StatusCode: http.StatusForbidden, Message: "{message: 403 Forbidden}"}},
+			wantBranches: []string{"1-fix-crash-in-config-"},
+			wantErr:      `could not create branch "1-fix-crash-in-config-": 403 {message: 403 Forbidden}`,
+		},
+		{
+			name:         "uses a sanitized numbered branch when the branch exists",
+			branchErrors: []error{branchExists, nil},
+			wantBranches: []string{"1-fix-crash-in-config-", "1-fix-crash-in-config--1"},
+			wantMRBranch: "1-fix-crash-in-config--1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testClient := gitlabtesting.NewTestClient(t)
+			testClient.MockProjects.EXPECT().
+				GetProject("OWNER/REPO", gomock.Any()).
+				Return(&gitlab.Project{
+					ID:                   1,
+					DefaultBranch:        "master",
+					WebURL:               "http://gitlab.com/OWNER/REPO",
+					Name:                 "OWNER",
+					Path:                 "REPO",
+					MergeRequestsEnabled: true,
+					PathWithNamespace:    "OWNER/REPO",
+				}, nil, nil)
+			testClient.MockProjects.EXPECT().
+				ListProjectTargetBranchRules("OWNER/REPO", gomock.Any()).
+				Return([]gitlab.TargetBranchRule{}, nil, nil).
+				AnyTimes()
+			testClient.MockIssues.EXPECT().
+				GetIssue("OWNER/REPO", int64(1), gomock.Any()).
+				Return(&gitlab.Issue{ID: 1, IID: 1, ProjectID: 1, Title: "Fix: crash in ~/.config?"}, nil, nil)
+
+			var branches []string
+			testClient.MockBranches.EXPECT().
+				CreateBranch("OWNER/REPO", gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ any, opts *gitlab.CreateBranchOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.Branch, *gitlab.Response, error) {
+					branches = append(branches, *opts.Branch)
+					if err := tt.branchErrors[len(branches)-1]; err != nil {
+						return nil, nil, err
+					}
+					return &gitlab.Branch{Name: *opts.Branch}, nil, nil
+				}).
+				Times(len(tt.branchErrors))
+			if tt.wantMRBranch != "" {
+				testClient.MockMergeRequests.EXPECT().
+					CreateMergeRequest("OWNER/REPO", gomock.Any()).
+					DoAndReturn(func(_ any, opts *gitlab.CreateMergeRequestOptions, _ ...gitlab.RequestOptionFunc) (*gitlab.MergeRequest, *gitlab.Response, error) {
+						assert.Equal(t, tt.wantMRBranch, *opts.SourceBranch)
+						return &gitlab.MergeRequest{
+							BasicMergeRequest: gitlab.BasicMergeRequest{
+								IID:          12,
+								Title:        *opts.Title,
+								State:        "opened",
+								SourceBranch: *opts.SourceBranch,
+								TargetBranch: "master",
+								WebURL:       "https://gitlab.com/OWNER/REPO/-/merge_requests/12",
+							},
+						}, nil, nil
+					})
+			}
+
+			cs, csTeardown := test.InitCmdStubber()
+			defer csTeardown()
+			cs.Stub("HEAD branch: master\n")
+			cs.Stub(heredoc.Doc(`
+				deadbeef HEAD
+				deadb00f refs/remotes/upstream/feat-new-mr
+				deadbeef refs/remotes/origin/feat-new-mr
+			`))
+
+			pu, _ := url.Parse("https://gitlab.com/OWNER/REPO.git")
+			exec := cmdtest.SetupCmdForTest(t, NewCmdCreate, true,
+				cmdtest.WithGitLabClient(testClient.Client),
+				func(f *cmdtest.Factory) {
+					f.RemotesStub = func() (glrepo.Remotes, error) {
+						return glrepo.Remotes{
+							{
+								Remote: &git.Remote{Name: "upstream", Resolved: "head", PushURL: pu},
+								Repo:   glrepo.New("OWNER", "REPO", glinstance.DefaultHostname),
+							},
+							{
+								Remote: &git.Remote{Name: "origin", Resolved: "base", PushURL: pu},
+								Repo:   glrepo.New("monalisa", "REPO", glinstance.DefaultHostname),
+							},
+						}, nil
+					}
+					f.BranchStub = func() (string, error) {
+						return "feat-new-mr", nil
+					}
+				},
+			)
+
+			_, err := exec("--related-issue 1 --target-branch master --yes")
+
+			assert.Equal(t, tt.wantBranches, branches)
+			if tt.wantErr != "" {
+				require.EqualError(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestNewCmdCreate_TemplateFromCommitMessages(t *testing.T) {
