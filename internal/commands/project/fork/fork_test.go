@@ -3,11 +3,14 @@
 package fork
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"git.sr.ht/~timofurrer/ugh"
 	"github.com/stretchr/testify/assert"
@@ -18,6 +21,7 @@ import (
 	gitlabtesting "gitlab.com/gitlab-org/api/client-go/v3/testing"
 
 	"gitlab.com/gitlab-org/cli/internal/api"
+	"gitlab.com/gitlab-org/cli/internal/config"
 	"gitlab.com/gitlab-org/cli/internal/git"
 	"gitlab.com/gitlab-org/cli/internal/glinstance"
 	"gitlab.com/gitlab-org/cli/internal/glrepo"
@@ -404,4 +408,102 @@ func TestProjectForkExistingRepo(t *testing.T) {
 			}
 		})
 	}
+}
+
+func runForkImport(t *testing.T, statuses ...string) (*[]time.Duration, *bytes.Buffer, error) {
+	t.Helper()
+
+	tc := gitlabtesting.NewTestClient(t)
+	tc.MockProjects.EXPECT().
+		ForkProject("OWNER/REPO", gomock.Any(), gomock.Any()).
+		Return(&gitlab.Project{ID: 99, PathWithNamespace: "OWNER/baz", WebURL: "https://gitlab.example.com/OWNER/baz", ImportStatus: "scheduled"}, nil, nil)
+	for _, s := range statuses {
+		if s == "error" {
+			tc.MockProjects.EXPECT().
+				GetProject(int64(99), gomock.Any(), gomock.Any()).
+				Return(nil, nil, errors.New("boom"))
+			continue
+		}
+		p := &gitlab.Project{ID: 99, PathWithNamespace: "OWNER/baz", WebURL: "https://gitlab.example.com/OWNER/baz", ImportStatus: s}
+		if s == "failed" {
+			p.ImportError = "repository too large"
+		}
+		tc.MockProjects.EXPECT().
+			GetProject(int64(99), gomock.Any(), gomock.Any()).
+			Return(p, nil, nil)
+	}
+
+	ios, _, _, stderr := cmdtest.TestIOStreams()
+	var waits []time.Duration
+	opts := &options{
+		io:              ios,
+		repo:            "OWNER/REPO",
+		cloneSet:        true,
+		config:          config.NewBlankConfig,
+		defaultHostname: glinstance.DefaultHostname,
+		apiClient: func(string) (*api.Client, error) {
+			return cmdtest.NewTestApiClient(t, nil, "", glinstance.DefaultHostname, api.WithGitLabClient(tc.Client)), nil
+		},
+		waitFor: func(_ context.Context, d time.Duration) error {
+			waits = append(waits, d)
+			return nil
+		},
+	}
+
+	err := opts.run(t.Context())
+	return &waits, stderr, err
+}
+
+func TestProjectForkWaitsBetweenImportPolls(t *testing.T) {
+	waits, stderr, err := runForkImport(t, "scheduled", "started", "started", "started", "finished")
+
+	require.NoError(t, err)
+	assert.Equal(t, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 5 * time.Second, 5 * time.Second}, *waits)
+	assert.Contains(t, stderr.String(), "Created fork OWNER/baz")
+}
+
+func TestProjectForkRetriesImportPollAfterError(t *testing.T) {
+	waits, stderr, err := runForkImport(t, "error", "finished")
+
+	require.NoError(t, err)
+	assert.Len(t, *waits, 2)
+	assert.Contains(t, stderr.String(), "- Retrying...")
+	assert.Contains(t, stderr.String(), "Created fork OWNER/baz")
+}
+
+func TestProjectForkImportPollRetriesResetAfterSuccess(t *testing.T) {
+	_, stderr, err := runForkImport(t, "error", "error", "error", "started", "error", "error", "error", "finished")
+
+	require.NoError(t, err)
+	assert.Contains(t, stderr.String(), "Created fork OWNER/baz")
+}
+
+func TestProjectForkImportPollFailsAfterRetries(t *testing.T) {
+	_, stderr, err := runForkImport(t, "error", "error", "error", "error")
+
+	require.ErrorContains(t, err, "checking import status of fork OWNER/baz: boom")
+	require.ErrorContains(t, err, "glab repo view https://gitlab.example.com/OWNER/baz --output json")
+	assert.NotContains(t, stderr.String(), "Created fork")
+}
+
+func TestProjectForkImportFailed(t *testing.T) {
+	_, stderr, err := runForkImport(t, "started", "failed")
+
+	require.EqualError(t, err, "fork OWNER/baz failed to import: repository too large")
+	assert.NotContains(t, stderr.String(), "Created fork")
+}
+
+func TestProjectForkImportPollTimesOut(t *testing.T) {
+	// 1+2+4 s, then 5 s per poll until 10 min.
+	polls := 3 + int((forkImportTimeout-7*time.Second+forkImportMaxPollInterval-1)/forkImportMaxPollInterval)
+	statuses := make([]string, polls)
+	for i := range statuses {
+		statuses[i] = "started"
+	}
+
+	waits, _, err := runForkImport(t, statuses...)
+
+	require.ErrorContains(t, err, "timed out after 10m0s waiting for fork OWNER/baz to finish importing")
+	require.ErrorContains(t, err, "glab repo view https://gitlab.example.com/OWNER/baz --output json")
+	assert.Len(t, *waits, polls)
 }
