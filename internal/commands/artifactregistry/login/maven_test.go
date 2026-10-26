@@ -34,7 +34,7 @@ func TestLoginMaven_CreatesFileWhenAbsent(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	want := "<settings>\n" +
 		"  <servers>\n" +
@@ -76,7 +76,7 @@ func TestLoginMaven_PreservesUnrelatedContent(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, err := os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -94,8 +94,8 @@ func TestLoginMaven_UpdatesExistingAliasInPlace(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
-	require.NoError(t, loginMaven("my-alias", "tok2"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok2"))
 
 	got, err := os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -110,8 +110,8 @@ func TestLoginMaven_DifferentAliasAddsSeparateEntry(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
 
-	require.NoError(t, loginMaven("alias-one", "tok1"))
-	require.NoError(t, loginMaven("alias-two", "tok2"))
+	require.NoError(t, loginMaven("", "alias-one", "tok1"))
+	require.NoError(t, loginMaven("", "alias-two", "tok2"))
 
 	got, err := os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestLoginMaven_AddsServersSectionWhenAbsent(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	want := "<settings>\n" +
 		"  <mirrors>\n" +
@@ -174,7 +174,7 @@ func TestLoginMaven_InsertedBlockFollowsSectionIndentation(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	want := "<settings>\n" +
 		"\t<servers>\n" +
@@ -195,7 +195,7 @@ func TestLoginMaven_EscapesTokenAsXMLText(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
 
-	require.NoError(t, loginMaven("my-alias", "a&b<c>d"))
+	require.NoError(t, loginMaven("", "my-alias", "a&b<c>d"))
 
 	got, err := os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -203,7 +203,7 @@ func TestLoginMaven_EscapesTokenAsXMLText(t *testing.T) {
 
 	// A refresh over the escaped block must still find and replace it, rather
 	// than adding a second <server> for the same alias.
-	require.NoError(t, loginMaven("my-alias", "tok2"))
+	require.NoError(t, loginMaven("", "my-alias", "tok2"))
 
 	got, err = os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -232,7 +232,7 @@ func TestLoginMaven_EscapesTokenWhenAddingCredentialsToExistingBlock(t *testing.
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	require.NoError(t, loginMaven("my-alias", "a&b"))
+	require.NoError(t, loginMaven("", "my-alias", "a&b"))
 
 	got, err := os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -252,7 +252,7 @@ func TestLoginMaven_ExpandsSelfClosingServers(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	want := "<settings>\n" +
 		"  <servers>\n" +
@@ -275,7 +275,7 @@ func TestLoginMaven_LeavesFileIntactOnError(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	err := loginMaven("my-alias", "tok1")
+	err := loginMaven("", "my-alias", "tok1")
 	require.ErrorContains(t, err, "</settings>")
 
 	got, readErr := os.ReadFile(settingsPath(home))
@@ -295,7 +295,7 @@ func TestLoginMaven_RefusesToAddASecondServersSection(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	err := loginMaven("my-alias", "tok1")
+	err := loginMaven("", "my-alias", "tok1")
 	require.ErrorContains(t, err, "cannot edit")
 
 	got, readErr := os.ReadFile(settingsPath(home))
@@ -334,7 +334,7 @@ func TestLoginMaven_PreservesUserAddedChildrenOnRefresh(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	require.NoError(t, loginMaven("my-alias", "tok2"))
+	require.NoError(t, loginMaven("", "my-alias", "tok2"))
 
 	got, err := os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -365,7 +365,7 @@ func TestLoginMaven_AddsCredentialsToBlockWithoutThem(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(settingsPath(home), []byte(fixture), 0o600))
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, err := os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -385,11 +385,11 @@ func TestLoginMaven_UpdatingSecondAliasPreservesFirst(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
 
-	require.NoError(t, loginMaven("alias-one", "tok1"))
-	require.NoError(t, loginMaven("alias-two", "tok2"))
+	require.NoError(t, loginMaven("", "alias-one", "tok1"))
+	require.NoError(t, loginMaven("", "alias-two", "tok2"))
 	// alias-two's <server> block now sits after alias-one's. Refreshing it
 	// (a normal token-renewal call) must not disturb alias-one.
-	require.NoError(t, loginMaven("alias-two", "tok2-refreshed"))
+	require.NoError(t, loginMaven("", "alias-two", "tok2-refreshed"))
 
 	got, err := os.ReadFile(settingsPath(home))
 	require.NoError(t, err)
@@ -422,7 +422,7 @@ func TestLoginMaven_RefusesOneLineServerBlock(t *testing.T) {
 	fixture := "<settings>\n  <servers>\n    <server><id>my-alias</id></server>\n  </servers>\n</settings>\n"
 	writeSettings(t, home, fixture)
 
-	err := loginMaven("my-alias", "tok1")
+	err := loginMaven("", "my-alias", "tok1")
 	require.ErrorContains(t, err, "cannot edit")
 
 	got, readErr := os.ReadFile(settingsPath(home))
@@ -441,7 +441,7 @@ func TestLoginMaven_RefusesBlockWhoseLastChildSharesTheClosingLine(t *testing.T)
 	fixture := "<settings>\n  <servers>\n    <server>\n      <id>my-alias</id>\n      <username>foo</username></server>\n  </servers>\n</settings>\n"
 	writeSettings(t, home, fixture)
 
-	err := loginMaven("my-alias", "tok1")
+	err := loginMaven("", "my-alias", "tok1")
 	require.ErrorContains(t, err, "cannot edit")
 
 	got, readErr := os.ReadFile(settingsPath(home))
@@ -470,7 +470,7 @@ func TestLoginMaven_SkipsCommentedOutServersSection(t *testing.T) {
 		"</settings>\n"
 	writeSettings(t, home, fixture)
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -504,7 +504,7 @@ func TestLoginMaven_SkipsCommentedOutServerBlockForSameAlias(t *testing.T) {
 		"</settings>\n"
 	writeSettings(t, home, fixture)
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -536,7 +536,7 @@ func TestLoginMaven_CommentedCredentialDoesNotAbsorbTheRefresh(t *testing.T) {
 		"</settings>\n"
 	writeSettings(t, home, fixture)
 
-	require.NoError(t, loginMaven("my-alias", "tok2"))
+	require.NoError(t, loginMaven("", "my-alias", "tok2"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -559,7 +559,7 @@ func TestLoginMaven_AddsSectionWhenServersOnlyExistsInAComment(t *testing.T) {
 	fixture := "<settings>\n  <!-- <servers></servers> -->\n</settings>\n"
 	writeSettings(t, home, fixture)
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -579,7 +579,7 @@ func TestLoginMaven_ExpandsSelfClosingServersOnCRLF(t *testing.T) {
 
 	writeSettings(t, home, "<settings>\r\n  <servers/>\r\n</settings>\r\n")
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -599,7 +599,7 @@ func TestLoginMaven_TreatsEmptyFileAsAbsent(t *testing.T) {
 
 	writeSettings(t, home, "")
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -620,7 +620,7 @@ func TestLoginMaven_TreatsWhitespaceOnlyFileAsAbsent(t *testing.T) {
 
 	writeSettings(t, home, "\n\n  \n")
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -651,7 +651,7 @@ func TestLoginMaven_ProseCommentNamingServerKeepsTheLiveBlockVisible(t *testing.
 		"</settings>\n"
 	writeSettings(t, home, fixture)
 
-	require.NoError(t, loginMaven("my-alias", "tok2"))
+	require.NoError(t, loginMaven("", "my-alias", "tok2"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -683,7 +683,7 @@ func TestLoginMaven_ProseCommentNamingPasswordDoesNotDuplicateIt(t *testing.T) {
 		"</settings>\n"
 	writeSettings(t, home, fixture)
 
-	require.NoError(t, loginMaven("my-alias", "tok2"))
+	require.NoError(t, loginMaven("", "my-alias", "tok2"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -712,7 +712,7 @@ func TestLoginMaven_MatchesAnIDPaddedWithWhitespace(t *testing.T) {
 		"</settings>\n"
 	writeSettings(t, home, fixture)
 
-	require.NoError(t, loginMaven("my-alias", "tok2"))
+	require.NoError(t, loginMaven("", "my-alias", "tok2"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -733,7 +733,7 @@ func TestLoginMaven_ReportsASettingsCloseTagItCannotUse(t *testing.T) {
 	fixture := "<settings>\n  <mirrors/></settings>\n"
 	writeSettings(t, home, fixture)
 
-	err := loginMaven("my-alias", "tok1")
+	err := loginMaven("", "my-alias", "tok1")
 	require.ErrorContains(t, err, "it does not start its own line")
 
 	got, readErr := os.ReadFile(settingsPath(home))
@@ -751,7 +751,7 @@ func TestLoginMaven_IndentsPastACommentSharingTheClosingLine(t *testing.T) {
 
 	writeSettings(t, home, "<settings>\n  <servers>\n  <!-- one entry per registry --></servers>\n</settings>\n")
 
-	require.NoError(t, loginMaven("my-alias", "tok1"))
+	require.NoError(t, loginMaven("", "my-alias", "tok1"))
 
 	got, readErr := os.ReadFile(settingsPath(home))
 	require.NoError(t, readErr)
@@ -762,4 +762,19 @@ func TestLoginMaven_IndentsPastACommentSharingTheClosingLine(t *testing.T) {
 		"  <!-- one entry per registry --></servers>\n" +
 		"</settings>\n"
 	assert.Equal(t, want, string(got))
+}
+
+func TestLoginMaven_WritesConfigFile(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	path := filepath.Join(t.TempDir(), "ci", "settings.xml")
+	require.NoError(t, loginMaven(path, "my-alias", "tok1"))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), wantServerBlock("my-alias", "tok1"))
+
+	_, err = os.Stat(settingsPath(home))
+	assert.ErrorIs(t, err, os.ErrNotExist, "nothing may be written under ~/.m2 when a path is given")
 }

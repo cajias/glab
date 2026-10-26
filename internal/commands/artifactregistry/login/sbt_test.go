@@ -30,7 +30,7 @@ func sbtCredentialsLine(host, token string) string {
 func requireLoginSbt(t *testing.T, registry *url.URL, token string) {
 	t.Helper()
 
-	_, _, err := loginSbt(registry, token)
+	_, _, err := loginSbt("", registry, token)
 	require.NoError(t, err)
 }
 
@@ -42,7 +42,7 @@ func TestLoginSbt_WritesBothGlobalBases(t *testing.T) {
 	home := t.TempDir()
 	setHome(t, home)
 
-	written, skipped, err := loginSbt(mustURL(t, "https://ar.example.com"), "tok1")
+	written, skipped, err := loginSbt("", mustURL(t, "https://ar.example.com"), "tok1")
 	require.NoError(t, err)
 
 	assert.Equal(t, []sbtCredentialsFile{
@@ -192,7 +192,7 @@ func TestLoginSbt_FailsNamingTheFileItWroteWhenTheSecondWriteFails(t *testing.T)
 	// sbt 2.x base fails after the sbt 1.x file is written.
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".config"), nil, 0o600))
 
-	written, _, err := loginSbt(mustURL(t, "https://ar.example.com"), "tok1")
+	written, _, err := loginSbt("", mustURL(t, "https://ar.example.com"), "tok1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wrote "+sbtCredentialsPath(home)+" for sbt 1.x, but not the file for sbt 2.x")
 	assert.Equal(t, []sbtCredentialsFile{{readBy: "sbt 1.x", path: sbtCredentialsPath(home)}}, written)
@@ -213,7 +213,7 @@ func TestLoginSbt_FirstWriteFailureWritesNothing(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(sbtCredentialsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(sbtCredentialsPath(home), []byte(fixture), 0o600))
 
-	written, _, err := loginSbt(mustURL(t, "https://ar.example.com"), "tok1")
+	written, _, err := loginSbt("", mustURL(t, "https://ar.example.com"), "tok1")
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "wrote ")
 	assert.Empty(t, written)
@@ -459,7 +459,7 @@ func TestLoginSbt_RefusesAnUnterminatedComment(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(sbtCredentialsPath(home)), 0o700))
 	require.NoError(t, os.WriteFile(sbtCredentialsPath(home), []byte(fixture), 0o600))
 
-	_, _, err := loginSbt(mustURL(t, "https://ar.example.com"), "tok1")
+	_, _, err := loginSbt("", mustURL(t, "https://ar.example.com"), "tok1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unterminated /* comment")
 
@@ -545,4 +545,22 @@ func TestSbtCommentedLines(t *testing.T) {
 
 	assert.Equal(t, []bool{false, false, true, true, true, false, false, false}, commented)
 	assert.Equal(t, 0, depth)
+}
+
+func TestLoginSbt_WritesConfigFile(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	path := filepath.Join(t.TempDir(), "sbt", "2", "credentials.sbt")
+	written, skipped, err := loginSbt(path, mustURL(t, "https://ar.example.com"), "tok1")
+	require.NoError(t, err)
+	assert.Equal(t, []sbtCredentialsFile{{readBy: "--config-file", path: path}}, written)
+	assert.Empty(t, skipped)
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, sbtCredentialsLine("ar.example.com", "tok1")+"\n", string(got))
+
+	_, err = os.Stat(sbtCredentialsPath(home))
+	assert.ErrorIs(t, err, os.ErrNotExist, "nothing may be written under ~/.sbt when a path is given")
 }
