@@ -136,23 +136,25 @@ func mavenIndent(content string, start, end int) string {
 // matching the block it wrote.
 var mavenXMLText = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
-// loginMaven configures ~/.m2/settings.xml with a <server> block keyed by
-// <id>alias</id> so that Maven authenticates against the registry using HTTP
-// Basic auth ("__token__" / token). If a <server> with this alias's <id>
-// already exists, its credentials are updated in place; everything else in
-// the file is preserved byte-for-byte, including on the error path.
+// loginMaven configures path, or ~/.m2/settings.xml when path is empty, with a
+// <server> block keyed by <id>alias</id> so that Maven authenticates against
+// the registry using HTTP Basic auth ("__token__" / token). If a <server> with
+// this alias's <id> already exists, its credentials are updated in place;
+// everything else in the file is preserved byte-for-byte, including on the
+// error path.
 //
 // The registry URL is not a parameter: Maven's <server> block carries only the
 // alias/token pair, and the URL itself lives in the caller's pom.xml or
 // settings <repositories>, keyed by the same alias.
-func loginMaven(alias, token string) error {
-	home, err := homeDir()
-	if err != nil {
-		return err
+func loginMaven(path, alias, token string) error {
+	if path == "" {
+		home, err := homeDir()
+		if err != nil {
+			return err
+		}
+		path = filepath.Join(home, ".m2", "settings.xml")
 	}
-
-	dir := filepath.Join(home, ".m2")
-	path := filepath.Join(dir, "settings.xml")
+	dir := filepath.Dir(path)
 
 	content, err := os.ReadFile(path)
 	switch {

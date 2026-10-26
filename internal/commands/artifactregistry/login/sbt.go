@@ -199,15 +199,15 @@ func describeSbtCredentialsFiles(files []sbtCredentialsFile) string {
 }
 
 // loginSbt upserts a `credentials += Credentials("artifact-registry", host,
-// "__token__", token)` line in every file sbtCredentialsFilesFor returns, for
-// registry's host, matched by the host appearing as the second quoted argument,
-// so a different host's line is left untouched. It returns the files written
-// and the variable sbtCredentialsFilesFor skipped.
+// "__token__", token)` line in path, or in every file sbtCredentialsFilesFor
+// returns when path is empty, for registry's host, matched by the host appearing
+// as the second quoted argument, so a different host's line is left untouched.
+// It returns the files written and the variable sbtCredentialsFilesFor skipped.
 //
 // A failure after an earlier file was written still fails the login, and the
 // error names the files that do hold the token: a build that reads the file
 // that failed would go out unauthenticated after a login reported as done.
-func loginSbt(registry *url.URL, token string) ([]sbtCredentialsFile, string, error) {
+func loginSbt(path string, registry *url.URL, token string) ([]sbtCredentialsFile, string, error) {
 	// Hostname(), not Host: sbt's IvyAuthenticator and coursier both look
 	// credentials up by the port-less requesting host
 	// (Authenticator.getRequestingHost / URI.getHost). Writing "host:port"
@@ -222,12 +222,16 @@ func loginSbt(registry *url.URL, token string) ([]sbtCredentialsFile, string, er
 
 	line := sbtCredentialLine(sbtCredentialRealm, host, token)
 
-	home, err := homeDir()
-	if err != nil {
-		return nil, "", err
+	files := []sbtCredentialsFile{{readBy: "--config-file", path: path}}
+	skipped := ""
+	if path == "" {
+		home, err := homeDir()
+		if err != nil {
+			return nil, "", err
+		}
+		files, skipped = sbtCredentialsFilesFor(home, runtime.GOOS)
 	}
 
-	files, skipped := sbtCredentialsFilesFor(home, runtime.GOOS)
 	var written []sbtCredentialsFile
 	for _, file := range files {
 		if err := upsertSbtCredentialLine(file.path, host, line); err != nil {

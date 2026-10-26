@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -56,20 +57,24 @@ type writer struct {
 	usage      string
 	needsAlias bool
 	needsURL   bool
-	login      func(o *options, alias string, result *artifactregistry.ExchangeResult) error
+	// acceptsConfigFile is set for writers whose target file --config-file
+	// can replace.
+	acceptsConfigFile bool
+	login             func(o *options, alias string, result *artifactregistry.ExchangeResult) error
 }
 
 var writers = []writer{
 	{
-		flag:       "maven",
-		usage:      "Configure Maven to authenticate against the registry. Writes to ~/.m2/settings.xml.",
-		needsAlias: true,
-		needsURL:   false,
+		flag:              "maven",
+		usage:             "Configure Maven to authenticate against the registry. Writes to ~/.m2/settings.xml.",
+		needsAlias:        true,
+		needsURL:          false,
+		acceptsConfigFile: true,
 		login: func(o *options, alias string, result *artifactregistry.ExchangeResult) error {
-			if err := loginMaven(alias, result.Token); err != nil {
+			if err := loginMaven(o.configFile, alias, result.Token); err != nil {
 				return err
 			}
-			o.io.LogInfof("%s Configured Maven server %q for %s. Token expires at %s.\n", o.io.Color().GreenCheck(), alias, o.registry, result.ExpiresAt.Format(time.RFC3339))
+			o.io.LogInfof("%s Configured Maven server %q for %s%s. Token expires at %s.\n", o.io.Color().GreenCheck(), alias, o.registry, o.configFileSuffix(), result.ExpiresAt.Format(time.RFC3339))
 			return nil
 		},
 	},
@@ -109,12 +114,13 @@ var writers = []writer{
 		},
 	},
 	{
-		flag:       "sbt",
-		usage:      "Configure sbt to authenticate against the registry. Writes credentials.sbt to the sbt 1.x and 2.x global bases.",
-		needsAlias: false,
-		needsURL:   true,
+		flag:              "sbt",
+		usage:             "Configure sbt to authenticate against the registry. Writes credentials.sbt to the sbt 1.x and 2.x global bases.",
+		needsAlias:        false,
+		needsURL:          true,
+		acceptsConfigFile: true,
 		login: func(o *options, alias string, result *artifactregistry.ExchangeResult) error {
-			written, skipped, err := loginSbt(o.registryURL, result.Token)
+			written, skipped, err := loginSbt(o.configFile, o.registryURL, result.Token)
 			if err != nil {
 				return err
 			}
@@ -197,6 +203,7 @@ type options struct {
 	// cannot happen.
 	registryURL   *url.URL
 	registryAlias string
+	configFile    string
 
 	docker bool
 	writer *writer
@@ -237,9 +244,11 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			- %[1]s--docker%[1]s: registers %[1]sglab%[1]s as a Docker credential
 			  helper for the registry.
 			- %[1]s--maven%[1]s: writes a %[1]s<server>%[1]s block in
-			  %[1]s~/.m2/settings.xml%[1]s, keyed by %[1]s--registry-alias%[1]s.
+			  %[1]s~/.m2/settings.xml%[1]s, or %[1]s--config-file%[1]s, keyed by
+			  %[1]s--registry-alias%[1]s.
 			  Reference it from a %[1]s<repository>%[1]s carrying the same
-			  %[1]s<id>%[1]s.
+			  %[1]s<id>%[1]s. The token is written in plain text, so keep a
+			  %[1]s--config-file%[1]s out of version control.
 			- %[1]s--gradle%[1]s: writes %[1]s{alias}Url%[1]s,
 			  %[1]s{alias}Username%[1]s, and %[1]s{alias}Password%[1]s in
 			  %[1]s~/.gradle/gradle.properties%[1]s, where %[1]s{alias}%[1]s is
@@ -267,6 +276,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 			  reads none of them. An sbt shell or sbt 2.x server that is
 			  already running keeps the credentials it loaded, so run
 			  %[1]sreload%[1]s in it, or %[1]ssbt shutdown%[1]s, after you log in.
+			  To write a different file, pass it with %[1]s--config-file%[1]s. It
+			  must be a %[1]s.sbt%[1]s file that sbt loads, not a properties file
+			  such as %[1]s~/.sbt/.credentials%[1]s.
 
 			Token lifetime:
 
@@ -319,6 +331,9 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 
 			# Configure sbt to authenticate against a registry for two hours
 			glab artifact-registry login --sbt --registry https://ar.example.com --duration 2h
+
+			# Configure Maven through a settings.xml passed to mvn with -s
+			glab artifact-registry login --maven --registry https://ar.example.com --config-file ~/.m2/ci-settings.xml
 		`),
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
@@ -356,6 +371,7 @@ func NewCmd(f cmdutils.Factory) *cobra.Command {
 	cmd.Flags().StringVar(&opts.registry, "registry", "", "Registry to authenticate against. For --docker, a bare hostname; for others, typically a URL.")
 	cobra.CheckErr(cmd.MarkFlagRequired("registry"))
 	cmd.Flags().StringVar(&opts.registryAlias, "registry-alias", "", "Alias/ID to register the registry under (Maven/Gradle only). Defaults to a name derived from --registry.")
+	cmd.Flags().StringVar(&opts.configFile, "config-file", "", "File to write (Maven/sbt only). Defaults to ~/.m2/settings.xml for --maven and the sbt 1.x and 2.x global bases for --sbt, where it replaces every file --sbt writes.")
 	// --duration is accepted and ignored on the --docker path, deliberately:
 	// that credential helper exchanges its own token for every request, with its
 	// own lifetime (artifactregistry.DockerHelperDuration), so there is no token
@@ -407,6 +423,20 @@ func (o *options) validate() error {
 
 	if o.registryAlias != "" && o.writer != nil && o.writer.needsAlias && !registryAliasRe.MatchString(o.registryAlias) {
 		return &cmdutils.FlagError{Err: fmt.Errorf("invalid --registry-alias: must contain only letters, digits, '.', '_', and '-' (got %q)", o.registryAlias)}
+	}
+
+	if o.configFile != "" && o.writer != nil && o.writer.acceptsConfigFile {
+		// A trailing separator names a directory even when it does not exist
+		// yet; the writer would create it and then fail to rename onto it.
+		info, err := os.Stat(o.configFile)
+		if os.IsPathSeparator(o.configFile[len(o.configFile)-1]) || (err == nil && info.IsDir()) {
+			return &cmdutils.FlagError{Err: fmt.Errorf("invalid --config-file: %q is a directory; pass the path of the file to write", o.configFile)}
+		}
+		// sbt loads only .sbt files from its global base, and the Scala line
+		// this writes would corrupt a properties file like ~/.sbt/.credentials.
+		if o.writer.flag == "sbt" && !strings.HasSuffix(o.configFile, ".sbt") {
+			return &cmdutils.FlagError{Err: fmt.Errorf("invalid --config-file: %q is not a .sbt file; --sbt writes a Scala credentials line, which sbt loads only from a .sbt file", o.configFile)}
+		}
 	}
 
 	if o.hostname != "" {
@@ -519,6 +549,9 @@ func (o *options) run(ctx context.Context) error {
 	if o.registryAlias != "" && (o.writer == nil || !o.writer.needsAlias) {
 		o.io.LogErrorf("%s --registry-alias is ignored outside --maven/--gradle logins.\n", o.io.Color().WarnIcon())
 	}
+	if o.configFile != "" && (o.writer == nil || !o.writer.acceptsConfigFile) {
+		o.io.LogErrorf("%s --config-file is ignored outside --maven/--sbt logins.\n", o.io.Color().WarnIcon())
+	}
 
 	// Resolved once, then used everywhere: the token exchange must run against
 	// the same host the domain is recorded under. Load-bearing rather than
@@ -575,6 +608,15 @@ func (o *options) run(ctx context.Context) error {
 	}
 
 	return o.writer.login(o, alias, result)
+}
+
+// configFileSuffix names --config-file in a success message, so a mistyped
+// path shows up at login rather than as a build with no credentials.
+func (o *options) configFileSuffix() string {
+	if o.configFile == "" {
+		return ""
+	}
+	return fmt.Sprintf(" in %q", o.configFile)
 }
 
 // defaultRegistryAlias derives a default alias/ID from registry, which may

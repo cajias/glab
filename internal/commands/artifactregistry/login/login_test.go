@@ -258,6 +258,72 @@ func TestLogin_RegistryAliasIgnoredOutsideMavenGradleWarning(t *testing.T) {
 	assert.Contains(t, out.ErrBuf.String(), "--registry-alias is ignored")
 }
 
+func TestLogin_ConfigFileIgnoredOutsideMavenSbtWarning(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeGlab(t, binDir)
+	setPath(t, binDir)
+	setHome(t, t.TempDir())
+
+	srv := dockerTokenServer(t)
+	exec := newTestExec(t, newServerConfig(t, srv, glinstance.DefaultHostname))
+
+	out, err := exec("--docker --registry registry.example.com --config-file settings.xml")
+	require.NoError(t, err)
+	assert.Contains(t, out.ErrBuf.String(), "--config-file is ignored")
+}
+
+func TestLogin_ConfigFileMustNotBeDirectory(t *testing.T) {
+	for _, tool := range []string{"--maven", "--sbt"} {
+		t.Run(tool, func(t *testing.T) {
+			exec := cmdtest.SetupCmdForTest(t, NewCmd, false)
+
+			_, err := exec(tool + " --registry https://ar.example.com --config-file " + t.TempDir())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid --config-file")
+		})
+
+		t.Run(tool+" trailing separator on a missing directory", func(t *testing.T) {
+			setHome(t, t.TempDir())
+			srv, count := artifactregistrytest.NewTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("unexpected request to fake server: %s %s", r.Method, r.URL.Path)
+				w.WriteHeader(http.StatusInternalServerError)
+			})
+			exec := newWriterTestExec(t, srv)
+			dir := filepath.Join(t.TempDir(), "newdir")
+
+			_, err := exec(tool + " --registry https://ar.example.com --config-file " + dir + string(os.PathSeparator))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "is a directory")
+			assert.EqualValues(t, 0, count.Load(), "a directory path must be rejected before the token exchange")
+			assert.NoDirExists(t, dir)
+		})
+	}
+}
+
+// TestLogin_Sbt_ConfigFileMustBeSbtFile pins that --sbt refuses a file sbt
+// would not load as Scala, such as the ~/.sbt/.credentials properties file,
+// before the token exchange and without touching the file.
+func TestLogin_Sbt_ConfigFileMustBeSbtFile(t *testing.T) {
+	setHome(t, t.TempDir())
+	srv, count := artifactregistrytest.NewTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request to fake server: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	exec := newWriterTestExec(t, srv)
+	path := filepath.Join(t.TempDir(), ".credentials")
+	const fixture = "realm=Sonatype Nexus Repository Manager\nhost=example.com\n"
+	require.NoError(t, os.WriteFile(path, []byte(fixture), 0o600))
+
+	_, err := exec("--sbt --registry https://ar.example.com --config-file " + path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not a .sbt file")
+	assert.EqualValues(t, 0, count.Load(), "a non-.sbt path must be rejected before the token exchange")
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, fixture, string(got))
+}
+
 func TestLogin_Npm_RegistryMustHaveSchemeAndHost(t *testing.T) {
 	exec := cmdtest.SetupCmdForTest(t, NewCmd, false)
 
@@ -663,6 +729,42 @@ func TestLogin_Maven_DispatchesToWriterAfterExchangingToken(t *testing.T) {
 	_, err := exec("--maven --registry https://ar.example.com")
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, count.Load())
+}
+
+func TestLogin_ConfigFile_WritesNamedFileOnly(t *testing.T) {
+	for _, tc := range []struct {
+		tool, file, wantMessage string
+	}{
+		{tool: "--maven", file: "ci-settings.xml", wantMessage: "Configured Maven server"},
+		{tool: "--sbt", file: "credentials.sbt", wantMessage: "Configured sbt"},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			home := t.TempDir()
+			setHome(t, home)
+			configFile := filepath.Join(t.TempDir(), tc.file)
+
+			wantToken := artifactregistrytest.MakeJWT(t, jwt.RegisteredClaims{
+				Issuer:    "https://gitlab.example.com",
+				Subject:   "gid://gitlab/User/1",
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			})
+			srv, _ := tokenServer(t, wantToken, &wireRequest{})
+			exec := newWriterTestExec(t, srv)
+
+			out, err := exec(tc.tool + " --registry https://ar.example.com --config-file " + configFile)
+			require.NoError(t, err)
+
+			content, err := os.ReadFile(configFile)
+			require.NoError(t, err)
+			assert.Contains(t, string(content), wantToken)
+			assert.Contains(t, out.OutBuf.String(), tc.wantMessage)
+			assert.Contains(t, out.OutBuf.String(), configFile, "the success message must name --config-file so a mistyped path is visible")
+
+			entries, err := os.ReadDir(home)
+			require.NoError(t, err)
+			assert.Empty(t, entries, "nothing may be written under HOME when --config-file is set")
+		})
+	}
 }
 
 // TestLogin_Maven_ForwardsDurationToExchange pins the --duration value the
